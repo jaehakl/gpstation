@@ -40,6 +40,15 @@ SessionLocal = async_sessionmaker(
 )
 
 
+async def get_db():
+    async with SessionLocal() as db:
+        try:
+            yield db
+        except Exception:
+            await db.rollback()
+            raise
+
+
 naming_convention = {
     "ix": "ix_%(column_0_label)s",
     "uq": "uq_%(table_name)s_%(column_0_name)s",

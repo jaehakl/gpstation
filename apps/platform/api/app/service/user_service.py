@@ -5,6 +5,9 @@ from models import UserAdminUpdate, UserData
 from user_auth.db import User
 
 
+ALLOWED_USER_ROLES = {"admin", "user", "unauthorized"}
+
+
 NON_NULL_USER_FIELDS = {
     "role",
     "status",

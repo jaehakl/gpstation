@@ -35,7 +35,7 @@ async function send<T>(method: HttpMethod, url: string, data?: unknown): Promise
 
 async function refreshAuth() {
   if (!refreshPromise) {
-    refreshPromise = send<{ ok: true }>('get', '/auth/refresh')
+    refreshPromise = send<{ ok: true }>('get', '/web/auth/refresh')
       .then(() => undefined)
       .finally(() => {
         refreshPromise = null;
@@ -53,7 +53,7 @@ export async function request<T>(
   try {
     return await send<T>(method, url, data);
   } catch (error) {
-    if (url === '/auth/refresh' || getResponseStatus(error) !== 401) {
+    if (url === '/web/auth/refresh' || getResponseStatus(error) !== 401) {
       throw error;
     }
 

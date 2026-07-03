@@ -5,7 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from db import Base, engine
 from settings import settings
-from user_auth.routes import router as auth_router
 
 
 def server():
@@ -27,10 +26,9 @@ def server():
         CORSMiddleware,
         allow_credentials=True,
         allow_origins=origins,
-        allow_methods=["GET", "POST", "OPTIONS", "PUT", "DELETE"],
+        allow_methods=["GET", "POST", "OPTIONS", "PUT", "PATCH", "DELETE"],
         allow_headers=["*"],
     )
-    app.include_router(auth_router)
 
     async def start():
         app.state.progress = 0

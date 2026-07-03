@@ -1,7 +1,15 @@
 // YOU MUST OPEN ALL FRONTEND SOURCE FILES with UTF-8 ENCODING to READ KOREAN CHARACTERS CORRECTLY.
 
 import { API_URL, request } from './http';
-import type { DbTableColumns, UserAdminUpdate, UserData } from './types';
+import type {
+  AccessKeyCreate,
+  AccessKeyCreateResult,
+  AccessKeyData,
+  DbTableColumns,
+  UserAdminUpdate,
+  UserData,
+  WorkerSessionData,
+} from './types';
 
 export { API_URL };
 
@@ -12,11 +20,11 @@ type DbTableDefinition = {
 
 export function startGoogleLogin() {
   const returnTo = window.location.href;
-  window.location.href = `${API_URL}/auth/google/start?return_to=${encodeURIComponent(returnTo)}`;
+  window.location.href = `${API_URL}/web/auth/google/start?return_to=${encodeURIComponent(returnTo)}`;
 }
 
 export async function logout() {
-  await request<{ ok: true }>('post', '/auth/logout');
+  await request<{ ok: true }>('post', '/web/auth/logout');
 }
 
 export const dbTables = {
@@ -45,7 +53,7 @@ export const dbTables = {
     },
     fetchMe: async () => {
       try {
-        return await request<UserData>('get', '/users/me');
+        return await request<UserData>('get', '/web/users/me');
       } catch {
         return null;
       }
@@ -53,14 +61,14 @@ export const dbTables = {
     listUsers: (limit: number, offset: number) =>
       request<UserData[]>(
         'get',
-        `/users?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`,
+        `/web/users?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`,
       ),
     getUser: (userId: string) =>
-      request<UserData>('get', `/users/${encodeURIComponent(userId)}`),
+      request<UserData>('get', `/web/users/${encodeURIComponent(userId)}`),
     updateUser: (userId: string, payload: UserAdminUpdate) =>
-      request<UserData>('patch', `/users/${encodeURIComponent(userId)}`, payload),
+      request<UserData>('patch', `/web/users/${encodeURIComponent(userId)}`, payload),
     deleteUser: (userId: string) =>
-      request<{ ok: true }>('delete', `/users/${encodeURIComponent(userId)}`),
+      request<{ ok: true }>('delete', `/web/users/${encodeURIComponent(userId)}`),
   },
 
   WorkerSession: {
@@ -91,6 +99,8 @@ export const dbTables = {
       updated_at: { label: '수정일', type: 'datetime', readOnly: true },
       metadata_json: { label: '메타데이터', type: 'json' },
     },
+    listWorkerSessions: () =>
+      request<WorkerSessionData[]>('get', '/web/worker-sessions'),
   },
 
   AccessKey: {
@@ -113,6 +123,12 @@ export const dbTables = {
       revoked_at: { label: '폐기일', type: 'datetime' },
       metadata_json: { label: '메타데이터', type: 'json' },
     },
+    listMyAccessKeys: () =>
+      request<AccessKeyData[]>('get', '/web/users/me/access-keys'),
+    createMyAccessKey: (payload: AccessKeyCreate) =>
+      request<AccessKeyCreateResult>('post', '/web/users/me/access-keys', payload),
+    revokeMyAccessKey: (accessKeyId: string) =>
+      request<{ ok: true }>('delete', `/web/users/me/access-keys/${encodeURIComponent(accessKeyId)}`),
   },
 
   Job: {

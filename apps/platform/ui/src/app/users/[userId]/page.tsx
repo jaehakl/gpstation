@@ -2,10 +2,10 @@
 
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { Save, Trash2 } from 'lucide-react';
+import { Clipboard, KeyRound, RefreshCw, Save, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { dbTables } from '../../../api/api';
-import type { UserAdminUpdate, UserData, UserRole } from '../../../api/types';
+import type { AccessKeyData, UserAdminUpdate, UserData, UserRole } from '../../../api/types';
 import { useAuthStore } from '../../../stores/authStore';
 
 type UserFormState = {
@@ -72,6 +72,19 @@ function nullableText(value: string) {
   return trimmed ? trimmed : null;
 }
 
+function nullableAccessKeyExpiresAt(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const date = new Date(trimmed);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error('만료일 값이 올바르지 않습니다.');
+  }
+  return date.toISOString();
+}
+
 function requiredText(value: string, label: string) {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -130,9 +143,26 @@ export default function UserDetailPage() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [accessKeys, setAccessKeys] = useState<AccessKeyData[]>([]);
+  const [accessKeyName, setAccessKeyName] = useState('');
+  const [accessKeyExpiresAt, setAccessKeyExpiresAt] = useState('');
+  const [createdAccessKeySecret, setCreatedAccessKeySecret] = useState<string | null>(null);
+  const [isAccessKeyLoading, setIsAccessKeyLoading] = useState(false);
+  const [isAccessKeyCreating, setIsAccessKeyCreating] = useState(false);
+  const [revokingAccessKeyId, setRevokingAccessKeyId] = useState<string | null>(null);
+  const [accessKeyError, setAccessKeyError] = useState<string | null>(null);
+  const [accessKeyMessage, setAccessKeyMessage] = useState<string | null>(null);
 
   const isAdmin = currentUser?.roles.includes('admin') || currentUser?.role === 'admin';
   const isSelf = Boolean(currentUser && userId && currentUser.id === userId);
+  const canManageAccessKeys = Boolean(
+    isSelf &&
+      currentUser &&
+      (currentUser.roles.includes('admin') ||
+        currentUser.roles.includes('user') ||
+        currentUser.role === 'admin' ||
+        currentUser.role === 'user'),
+  );
 
   const loadUser = useCallback(async () => {
     if (!authReady || !currentUser || !userId) {
@@ -162,6 +192,33 @@ export default function UserDetailPage() {
       window.clearTimeout(timeoutId);
     };
   }, [loadUser]);
+
+  const loadAccessKeys = useCallback(async () => {
+    if (!authReady || !currentUser || !isSelf || !canManageAccessKeys) {
+      setAccessKeys([]);
+      return;
+    }
+
+    setIsAccessKeyLoading(true);
+    setAccessKeyError(null);
+    try {
+      setAccessKeys(await dbTables.AccessKey.listMyAccessKeys());
+    } catch (loadError) {
+      setAccessKeyError(loadError instanceof Error ? loadError.message : 'AccessKey 목록을 불러오지 못했습니다.');
+    } finally {
+      setIsAccessKeyLoading(false);
+    }
+  }, [authReady, canManageAccessKeys, currentUser, isSelf]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      void loadAccessKeys();
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [loadAccessKeys]);
 
   async function saveUser() {
     if (!userId || !form) {
@@ -206,6 +263,62 @@ export default function UserDetailPage() {
       setError(deleteError instanceof Error ? deleteError.message : '계정을 삭제하지 못했습니다.');
     } finally {
       setIsDeleting(false);
+    }
+  }
+
+  async function createAccessKey() {
+    setIsAccessKeyCreating(true);
+    setAccessKeyError(null);
+    setAccessKeyMessage(null);
+    setCreatedAccessKeySecret(null);
+    try {
+      const result = await dbTables.AccessKey.createMyAccessKey({
+        name: requiredText(accessKeyName, 'AccessKey 이름'),
+        expires_at: nullableAccessKeyExpiresAt(accessKeyExpiresAt),
+      });
+      setAccessKeys((items) => [result.access_key, ...items.filter((item) => item.id !== result.access_key.id)]);
+      setAccessKeyName('');
+      setAccessKeyExpiresAt('');
+      setCreatedAccessKeySecret(result.secret);
+      setAccessKeyMessage('AccessKey를 생성했습니다. 원문 키는 지금만 확인할 수 있습니다.');
+    } catch (createError) {
+      setAccessKeyError(createError instanceof Error ? createError.message : 'AccessKey를 생성하지 못했습니다.');
+    } finally {
+      setIsAccessKeyCreating(false);
+    }
+  }
+
+  async function revokeAccessKey(accessKeyId: string) {
+    if (!window.confirm('이 AccessKey를 폐기할까요?')) {
+      return;
+    }
+
+    setRevokingAccessKeyId(accessKeyId);
+    setAccessKeyError(null);
+    setAccessKeyMessage(null);
+    try {
+      await dbTables.AccessKey.revokeMyAccessKey(accessKeyId);
+      setCreatedAccessKeySecret(null);
+      setAccessKeyMessage('AccessKey를 폐기했습니다.');
+      await loadAccessKeys();
+    } catch (revokeError) {
+      setAccessKeyError(revokeError instanceof Error ? revokeError.message : 'AccessKey를 폐기하지 못했습니다.');
+    } finally {
+      setRevokingAccessKeyId(null);
+    }
+  }
+
+  async function copyCreatedAccessKeySecret() {
+    if (!createdAccessKeySecret) {
+      return;
+    }
+
+    setAccessKeyError(null);
+    try {
+      await navigator.clipboard.writeText(createdAccessKeySecret);
+      setAccessKeyMessage('AccessKey를 복사했습니다.');
+    } catch {
+      setAccessKeyError('클립보드에 복사하지 못했습니다.');
     }
   }
 
@@ -361,6 +474,162 @@ export default function UserDetailPage() {
                 </div>
               </div>
             )}
+
+            {isSelf ? (
+              <div className="border-t border-[var(--app-border)] pt-5">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-[0.14em] text-[var(--app-muted)]">
+                      AccessKey
+                    </p>
+                    <h2 className="mt-1 text-xl font-black">API 접근 키</h2>
+                  </div>
+                  {canManageAccessKeys ? (
+                    <button
+                      type="button"
+                      className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[#2e2d2d] bg-white px-3 text-sm font-extrabold transition hover:bg-[#f3f3f3] disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={isAccessKeyLoading}
+                      onClick={() => {
+                        void loadAccessKeys();
+                      }}
+                    >
+                      <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                      {isAccessKeyLoading ? '새로고침 중' : '새로고침'}
+                    </button>
+                  ) : null}
+                </div>
+
+                {accessKeyError ? (
+                  <p className="mt-4 rounded-lg border border-[#f2c4c4] bg-[var(--app-accent-soft)] px-3 py-2 text-sm font-bold text-[#9a2525]">
+                    {accessKeyError}
+                  </p>
+                ) : null}
+
+                {accessKeyMessage ? (
+                  <p className="mt-4 rounded-lg border border-[#b9dfc1] bg-[#f1fff3] px-3 py-2 text-sm font-bold text-[#1f6f2e]">
+                    {accessKeyMessage}
+                  </p>
+                ) : null}
+
+                {!canManageAccessKeys ? (
+                  <p className="mt-4 rounded-lg border border-[#f2d8a8] bg-[#fff8e8] px-3 py-2 text-sm font-bold text-[#73510d]">
+                    AccessKey는 승인된 admin 또는 user 계정만 생성할 수 있습니다.
+                  </p>
+                ) : (
+                  <>
+                    {createdAccessKeySecret ? (
+                      <div className="mt-4 rounded-lg border border-[#b9dfc1] bg-[#f1fff3] p-3">
+                        <p className="text-sm font-black text-[#1f6f2e]">새 AccessKey</p>
+                        <code className="mt-2 block break-all rounded-lg border border-[#b9dfc1] bg-white px-3 py-2 text-xs font-bold text-[#0f0f0f]">
+                          {createdAccessKeySecret}
+                        </code>
+                        <button
+                          type="button"
+                          className="mt-3 inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-[#2e2d2d] bg-white px-3 text-xs font-black transition hover:bg-[#f3f3f3]"
+                          onClick={() => {
+                            void copyCreatedAccessKeySecret();
+                          }}
+                        >
+                          <Clipboard className="h-4 w-4" aria-hidden="true" />
+                          복사
+                        </button>
+                      </div>
+                    ) : null}
+
+                    <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px_auto] lg:items-end">
+                      <TextField
+                        label="AccessKey 이름"
+                        value={accessKeyName}
+                        onChange={setAccessKeyName}
+                      />
+                      <label className="grid gap-1 text-sm font-bold">
+                        만료일
+                        <input
+                          type="datetime-local"
+                          className="h-11 rounded-lg border border-[var(--app-border)] bg-white px-3 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus)]"
+                          value={accessKeyExpiresAt}
+                          onChange={(event) => setAccessKeyExpiresAt(event.target.value)}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-[#2e2d2d] bg-[#2c2c2c] px-4 text-sm font-extrabold text-white transition hover:bg-[#1f1f1f] disabled:cursor-not-allowed disabled:opacity-50"
+                        disabled={isAccessKeyCreating || !accessKeyName.trim()}
+                        onClick={() => {
+                          void createAccessKey();
+                        }}
+                      >
+                        <KeyRound className="h-4 w-4" aria-hidden="true" />
+                        {isAccessKeyCreating ? '생성 중' : '키 생성'}
+                      </button>
+                    </div>
+
+                    <div className="mt-4 overflow-hidden rounded-lg border border-[var(--app-border)]">
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[900px] border-collapse text-left text-sm">
+                          <thead className="bg-[#f7f7f7] text-xs font-black uppercase text-[var(--app-muted)]">
+                            <tr>
+                              <th className="px-3 py-3">이름</th>
+                              <th className="px-3 py-3">Prefix</th>
+                              <th className="px-3 py-3">상태</th>
+                              <th className="px-3 py-3">생성일</th>
+                              <th className="px-3 py-3">마지막 사용</th>
+                              <th className="px-3 py-3">만료일</th>
+                              <th className="px-3 py-3 text-right">작업</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {isAccessKeyLoading ? (
+                              <tr>
+                                <td className="px-3 py-6 text-center font-bold text-[var(--app-muted)]" colSpan={7}>
+                                  AccessKey 목록을 불러오는 중입니다.
+                                </td>
+                              </tr>
+                            ) : accessKeys.length === 0 ? (
+                              <tr>
+                                <td className="px-3 py-6 text-center font-bold text-[var(--app-muted)]" colSpan={7}>
+                                  생성된 AccessKey가 없습니다.
+                                </td>
+                              </tr>
+                            ) : (
+                              accessKeys.map((item) => (
+                                <tr key={item.id} className="border-t border-[var(--app-border)]">
+                                  <td className="px-3 py-3 font-black">{item.name}</td>
+                                  <td className="px-3 py-3 font-mono text-xs font-bold">{item.key_prefix}</td>
+                                  <td className="px-3 py-3 font-bold">{item.status}</td>
+                                  <td className="px-3 py-3 font-semibold text-[var(--app-muted)]">
+                                    {formatDate(item.created_at)}
+                                  </td>
+                                  <td className="px-3 py-3 font-semibold text-[var(--app-muted)]">
+                                    {formatDate(item.last_used_at)}
+                                  </td>
+                                  <td className="px-3 py-3 font-semibold text-[var(--app-muted)]">
+                                    {formatDate(item.expires_at)}
+                                  </td>
+                                  <td className="px-3 py-3 text-right">
+                                    <button
+                                      type="button"
+                                      className="inline-flex h-9 items-center gap-2 rounded-lg border border-[#b02c2c] bg-white px-3 text-xs font-black text-[#9a2525] transition hover:bg-[var(--app-accent-soft)] disabled:cursor-not-allowed disabled:opacity-50"
+                                      disabled={item.status !== 'active' || revokingAccessKeyId === item.id}
+                                      onClick={() => {
+                                        void revokeAccessKey(item.id);
+                                      }}
+                                    >
+                                      <Trash2 className="h-4 w-4" aria-hidden="true" />
+                                      {revokingAccessKeyId === item.id ? '폐기 중' : '폐기'}
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </section>
