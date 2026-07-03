@@ -1,0 +1,10 @@
+services:
+  voicevox:
+    image: voicevox/voicevox_engine:cpu-latest
+    container_name: onigiri-voicevox
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      NVIDIA_VISIBLE_DEVICES: all
+    ports:
+      - "50021:50021"
+    gpus: all
