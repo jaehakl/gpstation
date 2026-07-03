@@ -1,18 +1,19 @@
 from typing import Callable, List, Optional
 
 from fastapi import Depends, HTTPException, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import UserData
-from user_auth.routes import check_user
+from user_auth.routes import check_user, get_db
 
 
-async def get_user_optional(request: Request) -> Optional[UserData]:
+async def get_user_optional(request: Request, db: AsyncSession = Depends(get_db)) -> Optional[UserData]:
     """
     Returns the current user if authenticated; otherwise None.
     Raises for non-auth related errors to avoid hiding real failures.
     """
     try:
-        return await check_user(request)
+        return await check_user(request, db)
     except HTTPException as exc:
         if exc.status_code == status.HTTP_401_UNAUTHORIZED:
             return None

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, LogIn, LogOut } from 'lucide-react';
+import { LayoutDashboard, LogIn, LogOut, User, Users } from 'lucide-react';
 import { type ReactNode } from 'react';
 import { useAuthStore, useBootstrapAuth } from '../stores/authStore';
 
@@ -84,7 +84,8 @@ function Sidebar({ pathname }: { pathname: string }) {
   const logoutUser = useAuthStore((state) => state.logoutUser);
   const displayName = user?.display_name?.trim() || user?.username || user?.email || '사용자';
   const userInitial = displayName.slice(0, 1).toUpperCase();
-  const isActive = pathname === '/';
+  const isAdmin = user?.roles.includes('admin') || user?.role === 'admin';
+  const accountPath = user ? `/users/${user.id}` : '/login';
 
   return (
     <div className="flex h-full flex-col">
@@ -109,7 +110,7 @@ function Sidebar({ pathname }: { pathname: string }) {
           href="/"
           className={[
             'flex h-12 items-center gap-3 rounded-lg border px-4 text-sm font-extrabold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus)]',
-            isActive
+            pathname === '/'
               ? 'border-[#404040] bg-[#2c2c2c] text-white'
               : 'border-[#2e2d2d] bg-[#f3f3f3] hover:bg-[#e9e9e9]',
           ].join(' ')}
@@ -117,6 +118,32 @@ function Sidebar({ pathname }: { pathname: string }) {
           <LayoutDashboard className="h-4 w-4" aria-hidden="true" />
           홈
         </Link>
+        <Link
+          href={accountPath}
+          className={[
+            'mt-3 flex h-12 items-center gap-3 rounded-lg border px-4 text-sm font-extrabold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus)]',
+            pathname === accountPath
+              ? 'border-[#404040] bg-[#2c2c2c] text-white'
+              : 'border-[#2e2d2d] bg-[#f3f3f3] hover:bg-[#e9e9e9]',
+          ].join(' ')}
+        >
+          <User className="h-4 w-4" aria-hidden="true" />
+          내 계정
+        </Link>
+        {isAdmin ? (
+          <Link
+            href="/users"
+            className={[
+              'mt-3 flex h-12 items-center gap-3 rounded-lg border px-4 text-sm font-extrabold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus)]',
+              pathname === '/users'
+                ? 'border-[#404040] bg-[#2c2c2c] text-white'
+                : 'border-[#2e2d2d] bg-[#f3f3f3] hover:bg-[#e9e9e9]',
+            ].join(' ')}
+          >
+            <Users className="h-4 w-4" aria-hidden="true" />
+            사용자
+          </Link>
+        ) : null}
       </nav>
 
       <div className="border-t border-[var(--app-border)] p-5">

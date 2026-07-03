@@ -1,7 +1,7 @@
 // YOU MUST OPEN ALL FRONTEND SOURCE FILES with UTF-8 ENCODING to READ KOREAN CHARACTERS CORRECTLY.
 
 import { API_URL, request } from './http';
-import type { DbTableColumns, UserData } from './types';
+import type { DbTableColumns, UserAdminUpdate, UserData } from './types';
 
 export { API_URL };
 
@@ -45,22 +45,22 @@ export const dbTables = {
     },
     fetchMe: async () => {
       try {
-        return await request<UserData>('get', '/auth/me');
+        return await request<UserData>('get', '/users/me');
       } catch {
         return null;
       }
     },
-    getAllUsersAdmin: (limit: number, offset: number) =>
+    listUsers: (limit: number, offset: number) =>
       request<UserData[]>(
         'get',
-        `/user_admin/get_all_users/${encodeURIComponent(String(limit))}/${encodeURIComponent(String(offset))}`,
+        `/users?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`,
       ),
-    deleteUserAdmin: (id: string) =>
-      request<boolean>('get', `/user_admin/delete/${encodeURIComponent(id)}`),
-    getUserSummaryAdmin: (userId: string) =>
-      request<UserData | null>('get', `/user_data/summary/admin/${encodeURIComponent(userId)}`),
-    getUserSummaryUser: () =>
-      request<UserData | null>('get', '/user_data/summary/user'),
+    getUser: (userId: string) =>
+      request<UserData>('get', `/users/${encodeURIComponent(userId)}`),
+    updateUser: (userId: string, payload: UserAdminUpdate) =>
+      request<UserData>('patch', `/users/${encodeURIComponent(userId)}`, payload),
+    deleteUser: (userId: string) =>
+      request<{ ok: true }>('delete', `/users/${encodeURIComponent(userId)}`),
   },
 
   WorkerSession: {

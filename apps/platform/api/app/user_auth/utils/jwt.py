@@ -26,7 +26,7 @@ def make_token(sub: str, ttl_sec: int, extra: Dict[str, Any] | None = None) -> s
 
 
 def make_access(user: User) -> str:
-    role = user.role or "user"
+    role = user.role or "unauthorized"
     extra = {
         "role": role,
         "roles": [role],

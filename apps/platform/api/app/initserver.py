@@ -40,6 +40,23 @@ def server():
             except Exception:
                 pass
             await conn.run_sync(Base.metadata.create_all)
+            await conn.exec_driver_sql("ALTER TABLE users ALTER COLUMN role SET DEFAULT 'unauthorized';")
+            await conn.exec_driver_sql(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM pg_constraint
+                        WHERE conname = 'ck_users_role'
+                    ) THEN
+                        ALTER TABLE users
+                        ADD CONSTRAINT ck_users_role
+                        CHECK (role IN ('admin','user','unauthorized')) NOT VALID;
+                    END IF;
+                END $$;
+                """
+            )
 
         print("service is started.")
 

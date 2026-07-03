@@ -10,6 +10,7 @@ import requests
 
 from db import SessionLocal
 from models import UserData
+from service.user_service import user_to_data
 from settings import settings
 from user_auth.db import Identity, OAuthProvider, OAuthState, User
 from user_auth.utils.auth_utils import pop_return_to_cookie, pkce_challenge, random_urlsafe, set_return_to_cookie
@@ -21,6 +22,7 @@ AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPES = "openid email profile"
 PROVIDER = OAuthProvider.google
+ALLOWED_USER_ROLES = {"admin", "user", "unauthorized"}
 
 
 async def get_db():
@@ -117,7 +119,7 @@ async def google_callback(request: Request, state: str = "", code: str = "", db:
             user = User(
                 email=email,
                 display_name=name,
-                role="user",
+                role="unauthorized",
                 status="active",
             )
             db.add(user)
@@ -158,7 +160,7 @@ async def google_callback(request: Request, state: str = "", code: str = "", db:
 
 
 @router.get("/me", response_model=UserData)
-async def check_user(request: Request) -> UserData:
+async def check_user(request: Request, db: AsyncSession = Depends(get_db)) -> UserData:
     token = request.cookies.get("access_token")
     if not token:
         auth = request.headers.get("Authorization", "")
@@ -180,25 +182,15 @@ async def check_user(request: Request) -> UserData:
     if not user_id:
         raise HTTPException(status_code=401, detail="Token missing sub")
 
-    status_value = claims.get("status") or ("active" if claims.get("is_active", True) else "inactive")
-    if status_value != "active":
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    if user.status != "active":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User inactive")
+    if user.role not in ALLOWED_USER_ROLES:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user role")
 
-    role = claims.get("role")
-    roles = claims.get("roles") or ([role] if role else [])
-    return UserData(
-        id=str(user_id),
-        email=claims.get("email"),
-        username=claims.get("username"),
-        display_name=claims.get("display_name"),
-        role=role,
-        status=status_value,
-        is_active=status_value == "active",
-        created_at=claims.get("created_at"),
-        updated_at=claims.get("updated_at"),
-        last_login_at=claims.get("last_login_at"),
-        roles=roles,
-    )
+    return user_to_data(user)
 
 
 @router.get("/refresh")

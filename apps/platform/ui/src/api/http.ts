@@ -5,7 +5,7 @@ import axios from 'axios';
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || '/api';
 export const API_URL = apiBaseUrl.replace(/\/+$/, '') || '/api';
 
-type HttpMethod = 'get' | 'post' | 'delete';
+type HttpMethod = 'get' | 'post' | 'patch' | 'delete';
 
 const apiClient = axios.create({
   baseURL: API_URL,

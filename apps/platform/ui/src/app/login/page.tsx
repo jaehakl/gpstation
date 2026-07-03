@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { LogOut } from 'lucide-react';
+import { LogIn, LogOut } from 'lucide-react';
 import { useAuthStore } from '../../stores/authStore';
 
 export default function LoginPage() {
@@ -42,6 +42,12 @@ export default function LoginPage() {
               </div>
             </div>
 
+            {user.role === 'unauthorized' ? (
+              <p className="rounded-lg border border-[#f2d8a8] bg-[#fff8e8] px-3 py-2 text-sm font-bold text-[#73510d]">
+                관리자 승인 전 계정입니다. 승인 전에는 내 계정 조회와 계정 삭제만 사용할 수 있습니다.
+              </p>
+            ) : null}
+
             <button
               type="button"
               className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-[#2e2d2d] bg-white px-3 text-sm font-extrabold text-[#0f0f0f] transition hover:bg-[#f3f3f3] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus)]"
@@ -54,10 +60,10 @@ export default function LoginPage() {
             </button>
 
             <Link
-              href="/"
+              href={`/users/${user.id}`}
               className="inline-flex h-11 w-full items-center justify-center rounded-lg border border-[#b02c2c] bg-[var(--app-accent)] px-3 text-sm font-extrabold text-white transition hover:bg-[var(--app-accent-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus)]"
             >
-              홈으로 이동
+              내 계정으로 이동
             </Link>
           </div>
         ) : (
@@ -66,12 +72,7 @@ export default function LoginPage() {
             className="flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-[#b02c2c] bg-[var(--app-accent)] px-3 text-sm font-extrabold text-white transition hover:bg-[var(--app-accent-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus)]"
             onClick={startLogin}
           >
-            <span
-              className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white text-xs font-black text-[#4285f4]"
-              aria-hidden="true"
-            >
-              G
-            </span>
+            <LogIn className="h-4 w-4" aria-hidden="true" />
             Google로 로그인
           </button>
         )}

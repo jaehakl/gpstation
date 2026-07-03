@@ -37,7 +37,7 @@ class User(TimestampMixin, Base):
     username: Mapped[Optional[str]] = mapped_column(Text)
     display_name: Mapped[Optional[str]] = mapped_column(Text)
     password_hash: Mapped[Optional[str]] = mapped_column(Text)
-    role: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'user'"))
+    role: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'unauthorized'"))
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'active'"))
     credit_balance: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, server_default=text("0"))
     credit_pending: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False, server_default=text("0"))
@@ -51,6 +51,10 @@ class User(TimestampMixin, Base):
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
 
     __table_args__ = (
+        CheckConstraint(
+            "role IN ('admin','user','unauthorized')",
+            name="ck_users_role",
+        ),
         Index("uq_users_email_lower", func.lower(email), unique=True),
         Index("uq_users_username_lower", func.lower(username), unique=True),
     )
