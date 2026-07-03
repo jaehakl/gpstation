@@ -6,6 +6,10 @@ import type {
   AccessKeyCreateResult,
   AccessKeyData,
   DbTableColumns,
+  JobCreateRequest,
+  JobCreateResult,
+  JobData,
+  JobDetailData,
   UserAdminUpdate,
   UserData,
   WorkerSessionData,
@@ -163,6 +167,15 @@ export const dbTables = {
       updated_at: { label: '수정일', type: 'datetime', readOnly: true },
       metadata_json: { label: '메타데이터', type: 'json' },
     },
+    listJobs: (limit: number, offset: number) =>
+      request<JobData[]>(
+        'get',
+        `/web/jobs?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`,
+      ),
+    getJob: (jobId: string) =>
+      request<JobDetailData>('get', `/web/jobs/${encodeURIComponent(jobId)}`),
+    createJob: (payload: JobCreateRequest) =>
+      request<JobCreateResult>('post', '/web/jobs', payload),
   },
 
   JobMessage: {

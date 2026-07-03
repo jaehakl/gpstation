@@ -2,6 +2,7 @@
 
 export type UserRole = 'admin' | 'user' | 'unauthorized';
 export type UserDecimal = string | number;
+export type JobTaskType = 'llm_single' | 'sdxl_t2i' | 'embedding';
 
 export type UserData = {
   id: string;
@@ -69,6 +70,75 @@ export type AccessKeyCreateResult = {
   secret: string;
 };
 
+export type JobData = {
+  id: string;
+  requester_user_id: string;
+  worker_user_id?: string | null;
+  worker_session_id?: string | null;
+  task_type: string;
+  status: string;
+  priority: number;
+  required_model_id?: string | null;
+  required_vram_gb?: UserDecimal | null;
+  required_trust_tier?: string | null;
+  verification_policy?: string | null;
+  price_limit_credit?: UserDecimal | null;
+  estimated_cost_credit?: UserDecimal | null;
+  final_cost_credit?: UserDecimal | null;
+  worker_reward_credit?: UserDecimal | null;
+  platform_fee_credit?: UserDecimal | null;
+  lease_expires_at?: string | null;
+  retry_count: number;
+  max_retries: number;
+  started_at?: string | null;
+  completed_at?: string | null;
+  failed_at?: string | null;
+  cancelled_at?: string | null;
+  error_code?: string | null;
+  error_message?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  metadata_json?: Record<string, unknown>;
+};
+
+export type JobMessageData = {
+  id: string;
+  job_id: string;
+  kind: string;
+  role: string;
+  status: string;
+  parent_message_id?: string | null;
+  created_by_user_id?: string | null;
+  created_at?: string | null;
+  metadata_json?: Record<string, unknown>;
+};
+
+export type JobMessagePartData = {
+  id: string;
+  message_id: string;
+  object_id?: string | null;
+  name?: string | null;
+  part_type: string;
+  sort_order: number;
+  required: boolean;
+  created_at?: string | null;
+  metadata_json?: Record<string, unknown>;
+};
+
+export type StoredObjectData = {
+  id: string;
+  object_type: string;
+  storage_backend: string;
+  uri?: string | null;
+  mime_type?: string | null;
+  size_bytes?: number | null;
+  sha256?: string | null;
+  created_by_user_id?: string | null;
+  expires_at?: string | null;
+  created_at?: string | null;
+  metadata_json?: Record<string, unknown>;
+};
+
 export type WorkerSessionData = {
   id: string;
   user_id: string;
@@ -93,6 +163,26 @@ export type WorkerSessionData = {
   created_at?: string | null;
   updated_at?: string | null;
   metadata_json?: Record<string, unknown>;
+};
+
+export type JobDetailData = {
+  job: JobData;
+  messages: JobMessageData[];
+  message_parts: JobMessagePartData[];
+  stored_objects: StoredObjectData[];
+  worker_session?: WorkerSessionData | null;
+};
+
+export type JobCreateRequest = {
+  task_type: JobTaskType;
+  request_json: Record<string, unknown>;
+};
+
+export type JobCreateResult = {
+  job_id: string;
+  message_id: string;
+  task_type: string;
+  status: string;
 };
 
 export type DbColumnType =

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, LogIn, LogOut, User, Users } from 'lucide-react';
+import { Briefcase, LayoutDashboard, LogIn, LogOut, User, Users } from 'lucide-react';
 import { type ReactNode } from 'react';
 import { useAuthStore, useBootstrapAuth } from '../stores/authStore';
 
@@ -85,6 +85,12 @@ function Sidebar({ pathname }: { pathname: string }) {
   const displayName = user?.display_name?.trim() || user?.username || user?.email || '사용자';
   const userInitial = displayName.slice(0, 1).toUpperCase();
   const isAdmin = user?.roles.includes('admin') || user?.role === 'admin';
+  const canUseJobs = Boolean(
+    user?.roles.includes('admin') ||
+      user?.roles.includes('user') ||
+      user?.role === 'admin' ||
+      user?.role === 'user',
+  );
   const accountPath = user ? `/users/${user.id}` : '/login';
 
   return (
@@ -118,6 +124,20 @@ function Sidebar({ pathname }: { pathname: string }) {
           <LayoutDashboard className="h-4 w-4" aria-hidden="true" />
           홈
         </Link>
+        {canUseJobs ? (
+          <Link
+            href="/jobs"
+            className={[
+              'mt-3 flex h-12 items-center gap-3 rounded-lg border px-4 text-sm font-extrabold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus)]',
+              pathname === '/jobs' || pathname.startsWith('/jobs/')
+                ? 'border-[#404040] bg-[#2c2c2c] text-white'
+                : 'border-[#2e2d2d] bg-[#f3f3f3] hover:bg-[#e9e9e9]',
+            ].join(' ')}
+          >
+            <Briefcase className="h-4 w-4" aria-hidden="true" />
+            작업
+          </Link>
+        ) : null}
         <Link
           href={accountPath}
           className={[

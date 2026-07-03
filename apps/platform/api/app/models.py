@@ -86,6 +86,89 @@ class AccessKeyCreateResult(BaseModel):
     secret: str
 
 
+class JobCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_type: str
+    request_json: dict[str, Any]
+
+
+class JobCreateResult(BaseModel):
+    job_id: str
+    message_id: str
+    task_type: str
+    status: str
+
+
+class JobData(BaseModel):
+    id: str
+    requester_user_id: str
+    worker_user_id: Optional[str] = None
+    worker_session_id: Optional[str] = None
+    task_type: str
+    status: str
+    priority: int
+    required_model_id: Optional[str] = None
+    required_vram_gb: Optional[Decimal] = None
+    required_trust_tier: Optional[str] = None
+    verification_policy: Optional[str] = None
+    price_limit_credit: Optional[Decimal] = None
+    estimated_cost_credit: Optional[Decimal] = None
+    final_cost_credit: Optional[Decimal] = None
+    worker_reward_credit: Optional[Decimal] = None
+    platform_fee_credit: Optional[Decimal] = None
+    lease_expires_at: Optional[datetime] = None
+    retry_count: int
+    max_retries: int
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    failed_at: Optional[datetime] = None
+    cancelled_at: Optional[datetime] = None
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class JobMessageData(BaseModel):
+    id: str
+    job_id: str
+    kind: str
+    role: str
+    status: str
+    parent_message_id: Optional[str] = None
+    created_by_user_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class JobMessagePartData(BaseModel):
+    id: str
+    message_id: str
+    object_id: Optional[str] = None
+    name: Optional[str] = None
+    part_type: str
+    sort_order: int
+    required: bool
+    created_at: Optional[datetime] = None
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class StoredObjectData(BaseModel):
+    id: str
+    object_type: str
+    storage_backend: str
+    uri: Optional[str] = None
+    mime_type: Optional[str] = None
+    size_bytes: Optional[int] = None
+    sha256: Optional[str] = None
+    created_by_user_id: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+
 class WorkerSessionData(BaseModel):
     id: str
     user_id: str
@@ -110,3 +193,11 @@ class WorkerSessionData(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class JobDetailData(BaseModel):
+    job: JobData
+    messages: list[JobMessageData]
+    message_parts: list[JobMessagePartData]
+    stored_objects: list[StoredObjectData]
+    worker_session: Optional[WorkerSessionData] = None
