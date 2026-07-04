@@ -1,55 +1,82 @@
 GP Station (gps.qutat.com)
 
 <제공 가치>
-- 컴퓨팅 자원 풀링 시스템
-- 컴퓨팅 자원을 사용하지 않을 때 다른 사람의 작업을 처리하도록 하여 크레딧을 쌓고, 쌓을 크레딧으로 필요할 때 다른 사람의 컴퓨팅 자원을 이용한다.
-- 컴퓨팅 자원이 부족한 환경(모바일, 노트북, 웹서버 등)에서도 고성능 컴퓨팅 자원이 요구되는 작업을 처리할 수 있다.
+- 고성능 컴퓨터를 Worker 로 돌려놓고, 컴퓨팅 자원이 부족한 환경(모바일, 노트북, 웹서버 등)에서 API 처럼 사용한다.
 - 대상 : 로컬 AI 모델(LLM, SDXL 등) 사용을 위해 VRAM 24 GB 이상급 컴퓨팅 파워를 보유하고 있는 리테일 사용자들.
 
-<아키텍처>
-(1) 플랫폼서버
-- 로그인 된 클라이언트들 및 작업 현황, 이용률 등을 모니터링한다.
-- 간단한 챗봇이나 이미지 생성 같은 건 여기에서 바로 할 수 있다.
-- 컴퓨팅 공급자 용 API 와 사용자 용 API 를 각각 제공한다.
-- 사용자는 API 를 통해 쿼리를 업로드할 수 있고, 이를 통해 자신이 자체 개발한 앱에 통합하여 활용할 수도 있다.
 
-(2) 클라이언트
-- 인증된 계정으로 로그인한다.
-- 플랫폼 서버 API로부터 새로운 매칭되는 작업이 있으면 가져온다.
-- 작업을 수행하고 결과를 플랫폼 서버 API 로 리턴한다.
-- 작업 수행 / 중지 제어
-- 작업 내역, 크레딧 획득량 등 모니터링
-- GPU 스펙 및 상태(온도, 메모리 점유율 등) 로그 모니터링
-- 모델 설치, 연결, 관리
-
-<검토 사항>
-- 로그를 철저하게 남기는 게 중요하다. (보안, 프라이버시 분쟁 발생 및 보상 크레딧 책정 관련 등)
-- 보안, 프라이버시, 신뢰도 차원에서 작업자의 신용도 관리가 필요하며, 신용도에 따른 크레딧 차등 지급, 작업 요청자에게 신용도에 따른 필터링, 화이트리스트 등 기능 필요
-- 작업자 별 VRAM, 보유 모델 등에 따른 구분이 필요하다.
-- Race condition 은 어떻게 방지할 수 있을까?
-- 데이터 삭제는 어떤 기준으로 하는 게 좋을까?
-- 모든 작업 PC들이 자동으로 무조건 1초 마다 eventloop 처럼 api 에 새 요청이 있는지 fetch 시키면 서버에 부담이 되지는 않을까? (게다가 사용자도 작업이 완료되었는지 여부를 eventloop 로 새로고침해야할것이다.)
-- 미완성된 결과물을 돌려줬는지 어떻게 검증하는가? (예를 들어 31B 모델로 계산할 것을 주문했는데 3B 모델로 바꿔치기하여 싸게 돌린 결과를 돌려주면서 크레딧만 빨아간다거나)
+<작업 흐름>
+1. 사용자/API가 GP Station에 session 생성 요청
+2. GP Station이 Worker 메인 앱에 session_start 명령 전송
+3. Worker 메인 앱이 worker subprocess 실행
+4. subprocess가 WebRTC PeerConnection 준비
+5. subprocess가 메인 앱에 signaling endpoint 준비 완료 보고
+6. 메인 앱이 GP Station에 session_ready 보고
+7. 사용자/API가 GP Station에서 session_id와 short-lived token을 받음
+8. 사용자/API가 GP Station signaling API/WebSocket에 접속
+9. 사용자/API와 subprocess가 GP Station을 통해 SDP/ICE 교환
+10. WebRTC DataChannel 체결
+11. 이후 사용자/API ⇄ worker subprocess 직접 통신
+12. 작업 종료 또는 timeout 시 subprocess 종료
 
 
-<개발 순서>
-1. AccessKey 생성 및 worker 로그인
+<구조도>
+
+[Worker Main App]
+      │
+      │ WebSocket control
+      ▼
+[GP Station Server]
+      ▲
+      │ signaling API/WebSocket
+      │
+[Client / Backend / Browser]
+
+연결 체결 후:
+
+[Client / Backend / Browser]
+      ⇄ WebRTC DataChannel ⇄
+[Worker Subprocess]
 
 
-1. 플랫폼상에서 직접 Job 등록/관리
+<프로세스 별 동작>
 
-- LLM
-- SDXL
-- embedding
+Worker Main App
+- GP Station과 WebSocket control channel 유지
+- session_start 수신
+- worker subprocess 생성
+- subprocess와 local IPC 연결
+- signaling 메시지 proxy
+- subprocess lifecycle 관리
+
+Worker Subprocess
+- WebRTC PeerConnection 담당
+- DataChannel 담당
+- job protocol 처리
+- 직접 client/backend/browser와 통신
+- close/cancel/progress/result 처리
+
+GP Station
+- session 생성
+- 권한 검증
+- session descriptor 제공
+- signaling relay
+- session metadata 저장
+- TTL/상태/쿼터 관리
+
+Client/Backend/Browser
+- session descriptor 조회
+- WebRTC offer 생성
+- signaling 수행
+- DataChannel로 subprocess 직접 제어
 
 
-2. API
-
-- 수동 job fecth
-
-
-
-3. 클라이언트 개발
-
-
-
+<모노레포 패키지 구성>
+- 공통 Protocol
+- Worker Subprocess
+- Worker Main App
+- GP Station server
+- GP Station SDK for python (for Third Party App)
+- GP Station SDK for JS (for Third Party App Web Client)
+- 테스트용 Third Party App 
+- 테스트용 Third Party App Web Client
