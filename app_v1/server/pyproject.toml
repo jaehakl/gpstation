@@ -1,0 +1,33 @@
+[project]
+name = "gpstation-v1-server"
+version = "0.1.0"
+description = "GP Station v1 in-memory orchestration server"
+authors = [{ name = "GP Station" }]
+requires-python = ">=3.11,<3.15"
+dependencies = [
+    "fastapi>=0.115,<0.117",
+    "pydantic-settings>=2.8,<3.0",
+    "uvicorn[standard]>=0.34,<0.36",
+    "gpstation-v1-protocol",
+]
+
+[project.scripts]
+gpstation-v1-server = "gpstation_server.__main__:main"
+
+[tool.poetry]
+packages = [{ include = "gpstation_server" }]
+
+[tool.poetry.dependencies]
+gpstation-v1-protocol = { path = "../protocol", develop = true }
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0,<10.0"
+pytest-asyncio = ">=1.0,<2.0"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

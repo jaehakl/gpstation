@@ -1,0 +1,34 @@
+[project]
+name = "gpstation-v1-worker"
+version = "0.1.0"
+description = "GP Station v1 worker main app and subprocess runtime"
+authors = [{ name = "GP Station" }]
+requires-python = ">=3.11,<3.15"
+dependencies = [
+    "aiortc>=1.9,<2.0",
+    "pydantic-settings>=2.8,<3.0",
+    "typer>=0.12,<1.0",
+    "websockets>=12.0,<16.0",
+    "gpstation-v1-protocol",
+]
+
+[project.scripts]
+gpstation-v1-worker = "gpstation_worker_v1.cli:app"
+
+[tool.poetry]
+packages = [{ include = "gpstation_worker_v1" }]
+
+[tool.poetry.dependencies]
+gpstation-v1-protocol = { path = "../protocol", develop = true }
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0,<10.0"
+pytest-asyncio = ">=1.0,<2.0"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

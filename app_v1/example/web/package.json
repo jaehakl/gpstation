@@ -1,0 +1,28 @@
+{
+  "name": "gpstation-v1-example-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --webpack --port 3001",
+    "build": "next build --webpack",
+    "start": "next start --port 3001",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@gpstation/v1-js-sdk": "file:../../sdk/js",
+    "lucide-react": "^1.21.0",
+    "next": "16.2.9",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "16.2.9",
+    "typescript": "^6.0.3"
+  }
+}

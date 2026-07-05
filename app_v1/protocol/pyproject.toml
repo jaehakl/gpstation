@@ -1,0 +1,19 @@
+[project]
+name = "gpstation-v1-protocol"
+version = "0.1.0"
+description = "Shared GP Station v1 protocol models"
+authors = [{ name = "GP Station" }]
+requires-python = ">=3.11,<3.15"
+dependencies = [
+    "pydantic>=2.10,<3.0",
+]
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0,<10.0"
+
+[tool.poetry]
+packages = [{ include = "gpstation_protocol" }]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
