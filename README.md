@@ -71,12 +71,9 @@ Client/Backend/Browser
 - DataChannel로 subprocess 직접 제어
 
 
-<모노레포 패키지 구성>
-- 공통 Protocol
-- Worker Subprocess
-- Worker Main App
-- GP Station server
-- GP Station SDK for python (for Third Party App)
-- GP Station SDK for JS (for Third Party App Web Client)
-- 테스트용 Third Party App 
-- 테스트용 Third Party App Web Client
+<Server DB>
+- Users
+- AccessKey
+- Workers
+- Masters
+- Slaves
