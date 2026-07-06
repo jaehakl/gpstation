@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -11,6 +12,8 @@ from pydantic import BaseModel
 
 
 DEMO_USER_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, "gpstation-v1:demo-user"))
+APP_ROOT = Path(__file__).resolve().parents[1]
+ENV_FILE = APP_ROOT / ".env"
 
 
 class TokenPrincipal(BaseModel):
@@ -21,7 +24,8 @@ class TokenPrincipal(BaseModel):
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="GPSTATION_V1_",
-        env_file=".env",
+        env_file=str(ENV_FILE),
+        env_file_encoding="utf-8",
         extra="ignore",
     )
 

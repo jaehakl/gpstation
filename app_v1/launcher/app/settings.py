@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from socket import gethostname
 from urllib.parse import urlparse, urlunparse
 
@@ -7,9 +8,15 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+APP_ROOT = Path(__file__).resolve().parents[1]
+ENV_FILE = APP_ROOT / ".env"
+
+
 class LauncherSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="GPSTATION_V1_",
+        env_file=str(ENV_FILE),
+        env_file_encoding="utf-8",
         extra="ignore",
     )
 

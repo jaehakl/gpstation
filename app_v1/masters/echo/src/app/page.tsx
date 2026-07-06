@@ -11,6 +11,7 @@ import {
 } from '@gpstation/v1-master-js-sdk';
 
 const defaultApiBaseUrl = process.env.NEXT_PUBLIC_GPSTATION_V1_API_URL || 'http://127.0.0.1:8100';
+const defaultAccessToken = process.env.NEXT_PUBLIC_GPSTATION_V1_ACCESS_TOKEN || 'demo-client-token';
 
 type LogItem = {
   id: number;
@@ -24,7 +25,7 @@ type DisplayFile = ReceivedFile & {
 
 export default function Home() {
   const [apiBaseUrl, setApiBaseUrl] = useState(defaultApiBaseUrl);
-  const [token, setToken] = useState('demo-client-token');
+  const [token, setToken] = useState(defaultAccessToken);
   const [launchers, setLaunchers] = useState<LauncherSessionView[]>([]);
   const [selectedLauncherId, setSelectedLauncherId] = useState('');
   const [selectedSlaveAppId, setSelectedSlaveAppId] = useState('echo');

@@ -16,4 +16,6 @@ npm run dev
 
 Open `http://127.0.0.1:3001`, use `demo-client-token`, refresh launchers, choose a launcher and slave app, connect, and send an echo message.
 
+The demo reads `NEXT_PUBLIC_GPSTATION_V1_API_URL` and `NEXT_PUBLIC_GPSTATION_V1_ACCESS_TOKEN` from `app_v1/masters/echo/.env`. Use `env.example` as the shared local template.
+
 The dev server uses Webpack because Next 16 Turbopack currently does not resolve this local scoped `file:` SDK dependency reliably.

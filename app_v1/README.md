@@ -19,4 +19,14 @@ Fresh MVP implementation for the README flow. This directory is intentionally se
 4. Open the example web client with `demo-client-token`.
 5. Refresh launchers, select the connected launcher and `echo` slave app, create a session, and call a handler such as `echo.request` with JSON and optional files.
 
+## Environment Files
+
+Runtime settings that change by environment live in each app root:
+
+- `server/.env`: server DB URL, host/port, public URL, CORS origins, session timeouts, and demo bearer tokens.
+- `launcher/.env`: server API URL, launcher access token, optional launcher name, and launcher timing settings.
+- `masters/echo/.env`: browser demo server URL and default client token.
+
+Each app also has an `env.example` file with the same local defaults. The `.env` files are local-only and ignored by git.
+
 See each package README for dependency installation details.

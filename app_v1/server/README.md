@@ -22,6 +22,8 @@ The server uses `GPSTATION_V1_DB_URL` for Postgres. The default local value is:
 postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/gpstation_v1
 ```
 
+Environment-specific server values live in `app_v1/server/.env`. Use `app_v1/server/env.example` as the shared template for local setup.
+
 Demo tokens are enabled by default:
 
 - Client: `demo-client-token`
