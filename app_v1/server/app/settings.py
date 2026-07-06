@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import uuid
 from functools import lru_cache
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from pydantic import BaseModel
+
+
+DEMO_USER_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, "gpstation-v1:demo-user"))
 
 
 class TokenPrincipal(BaseModel):
@@ -17,9 +21,11 @@ class TokenPrincipal(BaseModel):
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="GPSTATION_V1_",
+        env_file=".env",
         extra="ignore",
     )
 
+    db_url: str = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/gpstation_v1"
     host: str = "127.0.0.1"
     port: int = 8100
     reload: bool = False
@@ -30,8 +36,8 @@ class Settings(BaseSettings):
     cors_origins: str = "http://127.0.0.1:3001,http://localhost:3001"
     tokens: dict[str, TokenPrincipal] = Field(
         default_factory=lambda: {
-            "demo-client-token": TokenPrincipal(user_id="demo-user", scopes=["client"]),
-            "demo-worker-token": TokenPrincipal(user_id="demo-user", scopes=["worker"]),
+            "demo-client-token": TokenPrincipal(user_id=DEMO_USER_ID, scopes=["client"]),
+            "demo-worker-token": TokenPrincipal(user_id=DEMO_USER_ID, scopes=["worker"]),
         }
     )
 
@@ -55,3 +61,6 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+settings = get_settings()

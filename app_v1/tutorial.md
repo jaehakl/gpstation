@@ -8,7 +8,7 @@ GP Station v1 MVP의 목표는 아주 좁고 명확합니다.
 
 중요한 범위 제한도 있습니다.
 
-- 서버 상태는 메모리에만 저장합니다.
+- durable 상태는 Postgres에 저장하고, live WebSocket 객체만 프로세스 메모리에 둡니다.
 - 사용자는 자기 소유 worker만 사용할 수 있습니다.
 - 과금, marketplace, quota, persistent DB는 없습니다.
 - 첫 master 클라이언트는 JS 브라우저입니다.
@@ -148,12 +148,12 @@ Authorization: Bearer demo-client-token
 }
 ```
 
-이 요청은 `server/app/main.py`의 `create_session()`으로 들어옵니다. 서버는 다음 일을 합니다.
+이 요청은 `server/app/routers/v1/sessions.py`의 `create_session()`으로 들어옵니다. 서버는 다음 일을 합니다.
 
 1. token을 확인해서 사용자를 찾습니다.
 2. `worker_session_id`가 같은 사용자 소유인지 확인합니다.
 3. `slave_app_id`가 해당 worker가 광고한 app인지 확인합니다.
-4. 메모리에 `ClientSession`을 만듭니다.
+4. DB에 `slave_sessions` row를 만들고, live ready 이벤트만 runtime registry에 둡니다.
 5. worker main process로 `session.start` 메시지를 보냅니다.
 6. slave subprocess가 준비됐다는 `session.ready`를 기다립니다.
 7. master에 signaling URL과 short-lived session token을 돌려줍니다.
@@ -239,17 +239,17 @@ DataChannel request control frame 예:
 
 ## 7. Server 코드 읽기
 
-서버의 핵심은 두 파일입니다.
+서버의 핵심은 DB 모델, service layer, router layer, runtime registry로 나뉩니다.
 
-`server/app/state.py`는 메모리 상태 저장소입니다.
+`server/app/db.py`와 `server/app/user_auth/db.py`는 장기보관 테이블을 정의합니다.
 
-- `WorkerConnection`: 현재 서버에 연결된 worker
-- `ClientSession`: 브라우저가 만든 작업 세션
-- `RuntimeState`: workers와 sessions를 관리하는 class
+- `users`, `identities`, `sessions`, `oauth_states`, `auth_audit`: OAuth/JWT용 auth 테이블
+- `access_keys`: 이후 AccessKey 인증 전환을 위한 테이블
+- `workers`, `slave_sessions`: v1 orchestration 현재 상태와 session 보관 데이터
 
-`RuntimeState`는 실제 DB가 아닙니다. 서버 프로세스가 종료되면 모든 worker/session 정보는 사라집니다. MVP에서는 E2E 연결을 증명하는 것이 목적이라 의도적으로 단순하게 두었습니다.
+`server/app/state.py`는 DB가 아니라 live WebSocket registry입니다. 서버 프로세스가 들고 있어야 하는 `WebSocket` 객체, client pending signal, `asyncio.Event`만 여기에 남습니다.
 
-`server/app/main.py`는 HTTP/WebSocket endpoint를 담습니다.
+`server/app/routers/v1/*`는 HTTP/WebSocket endpoint를 담습니다.
 
 - `GET /health`: 서버 상태 확인
 - `GET /v1/workers`: 현재 사용자 소유 worker 목록
@@ -257,13 +257,13 @@ DataChannel request control frame 예:
 - `WS /v1/workers/control`: worker main process가 붙는 control channel
 - `WS /v1/sessions/{session_id}/signal`: 브라우저 signaling channel
 
-인증은 `server/app/auth.py`와 `settings.py`에 있습니다. 지금은 production 인증이 아니라 static bearer token map입니다.
+인증은 `server/app/auth.py`와 `settings.py`에 있습니다. 지금은 production 인증이 아니라 static bearer token map입니다. 단, 기본 demo principal은 startup 때 `users` table에 deterministic UUID로 seed됩니다.
 
 기본값:
 
 ```text
-demo-client-token -> user_id demo-user, scope client
-demo-worker-token -> user_id demo-user, scope worker
+demo-client-token -> deterministic demo user UUID, scope client
+demo-worker-token -> deterministic demo user UUID, scope worker
 ```
 
 서버는 `client` scope로 REST API를 열고, `worker` scope로 worker control WebSocket을 엽니다.
@@ -570,11 +570,10 @@ DataChannel이 안 열리면:
 
 1. echo 외의 실제 slave app plugin 추가
 2. Python master SDK에 WebRTC client 기능 추가
-3. in-memory state를 DB 또는 Redis로 이동
-4. static token map을 기존 사용자/auth 시스템과 연결
-5. worker capacity와 multi-session 정책 정의
-6. timeout, cancel, progress, result 메시지를 DataChannel protocol에 추가
-7. master 예제에서 request/response history와 binary payload 테스트 추가
+3. static token map을 기존 사용자/auth 시스템과 연결
+4. worker capacity와 multi-session 정책 정의
+5. timeout, cancel, progress, result 메시지를 DataChannel protocol에 추가
+6. master 예제에서 request/response history와 binary payload 테스트 추가
 
 ## 14. 한 줄 요약
 

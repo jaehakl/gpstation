@@ -2,7 +2,7 @@
 
 ## Completed MVP Status
 - [x] Foundation: repository-local `app_v1/` layout, protocol contracts, config examples, and run notes.
-- [x] Server orchestration: FastAPI server, in-memory worker/session registries, auth, TTL cleanup, and signaling relay.
+- [x] Server orchestration: FastAPI server, DB-backed worker/session state, static bearer auth, TTL cleanup, and signaling relay.
 - [x] Slave launcher runtime: control WebSocket client, slave subprocess lifecycle, JSON-lines IPC, and `aiortc` DataChannel handler calls.
 - [x] Master path: TypeScript SDK and example web client.
 - [x] Hardening and verification: tests and build/type checks.
@@ -11,7 +11,6 @@
 
 ## Next Implementation Targets
 - [ ] Replace demo static bearer tokens with the real user/auth model.
-- [ ] Move worker/session state from in-memory storage to a persistent or shared backend.
 - [ ] Extend slave app DataChannel protocols from `echo` to real job messages: start, cancel, progress, result, and error.
 - [ ] Add Python master SDK WebRTC support, not only REST session creation.
 - [ ] Define worker capacity policy for multiple concurrent sessions.
@@ -20,14 +19,14 @@
 ## MVP Scope
 - A user connects only to worker sessions owned by that same user.
 - The master client explicitly selects `worker_session_id` and `slave_app_id`.
-- The v1 server stores workers and sessions in memory only.
+- The v1 server stores durable worker, slave, and session state in Postgres; live WebSocket handles stay in process memory.
 - The first successful end-to-end scenario is the `echo` slave app WebRTC DataChannel handler call.
 - Billing, marketplace matching, persistent session storage, and quota enforcement are out of scope.
 
 ## Local Demo Defaults
 - Client token: `demo-client-token`
 - Worker token: `demo-worker-token`
-- Demo user id: `demo-user`
+- Demo user id: deterministic UUID seeded into the `users` table
 - Server URL: `http://127.0.0.1:8100`
 - DataChannel label: `gpstation.v1`
 

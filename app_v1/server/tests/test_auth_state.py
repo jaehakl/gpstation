@@ -1,10 +1,9 @@
-import asyncio
-
 import pytest
 from fastapi import HTTPException
 
 from app.auth import authenticate_token
-from app.state import RuntimeState
+from app.settings import DEMO_USER_ID
+from app.state import RuntimeRegistry
 
 
 class DummyWebSocket:
@@ -15,7 +14,7 @@ class DummyWebSocket:
 def test_authenticate_demo_client_token():
     principal = authenticate_token("demo-client-token")
 
-    assert principal.user_id == "demo-user"
+    assert principal.user_id == DEMO_USER_ID
     assert "client" in principal.scopes
 
 
@@ -25,59 +24,28 @@ def test_authenticate_rejects_unknown_token():
 
 
 @pytest.mark.asyncio
-async def test_session_requires_owned_worker():
-    state = RuntimeState()
-    worker = await state.register_worker(
-        user_id="user-a",
-        worker_name="test",
-        slave_app_ids=["echo"],
-        websocket=DummyWebSocket(),
-    )
+async def test_runtime_registry_tracks_live_worker_and_session():
+    registry = RuntimeRegistry()
+    websocket = DummyWebSocket()
 
-    session = await state.create_session(
-        user_id="user-a",
-        worker_session_id=worker.id,
-        slave_app_id="echo",
-        ttl_seconds=60,
-    )
+    worker = await registry.register_worker("worker-1", websocket)
+    session = await registry.register_session("session-1", worker.id)
+    await registry.mark_session_ready(session.id)
 
-    assert session.worker_session_id == worker.id
-    assert session.slave_app_id == "echo"
-    with pytest.raises(KeyError):
-        await state.create_session(
-            user_id="user-b",
-            worker_session_id=worker.id,
-            slave_app_id="echo",
-            ttl_seconds=60,
-        )
-
-    with pytest.raises(ValueError):
-        await state.create_session(
-            user_id="user-a",
-            worker_session_id=worker.id,
-            slave_app_id="missing",
-            ttl_seconds=60,
-        )
+    assert (await registry.get_worker(worker.id)).websocket is websocket
+    assert (await registry.get_session(session.id)).status == "ready"
 
 
 @pytest.mark.asyncio
-async def test_expired_session_cleanup_closes_session():
-    state = RuntimeState()
-    worker = await state.register_worker(
-        user_id="user-a",
-        worker_name="test",
-        slave_app_ids=["echo"],
-        websocket=DummyWebSocket(),
-    )
-    session = await state.create_session(
-        user_id="user-a",
-        worker_session_id=worker.id,
-        slave_app_id="echo",
-        ttl_seconds=10,
-    )
-    session.expires_at = session.created_at
+async def test_runtime_registry_worker_disconnect_releases_sessions():
+    registry = RuntimeRegistry()
+    worker = await registry.register_worker("worker-1", DummyWebSocket())
+    session = await registry.register_session("session-1", worker.id)
 
-    closed = await state.collect_expired_sessions()
+    affected = await registry.remove_worker(worker.id)
 
-    assert [item.id for item in closed] == [session.id]
-    assert await state.get_session(session.id) is None
+    assert [item.id for item in affected] == [session.id]
+    assert await registry.get_worker(worker.id) is None
+    assert await registry.get_session(session.id) is None
+    assert session.ready_event.is_set()
+    assert session.status == "error"
