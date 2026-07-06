@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import SlaveSession, Worker
+from app.db import SlaveSession, Launcher
 from app.user_auth.utils.auth_utils import hash_token, random_urlsafe
 
 
@@ -25,26 +25,26 @@ class SessionService:
         db: AsyncSession,
         *,
         user_id: str,
-        worker_id: str,
+        launcher_id: str,
         slave_app_id: str,
         ttl_seconds: int,
         master_ip_address: str | None,
         master_user_agent: str | None,
     ) -> tuple[SlaveSession, str]:
-        worker = await db.get(Worker, worker_id)
-        if worker is None or worker.user_id != user_id or worker.disconnected_at is not None:
-            raise KeyError("worker not available")
-        if worker.status not in {"ready", "busy"}:
-            raise KeyError("worker not available")
+        launcher = await db.get(Launcher, launcher_id)
+        if launcher is None or launcher.user_id != user_id or launcher.disconnected_at is not None:
+            raise KeyError("launcher not available")
+        if launcher.status not in {"ready", "busy"}:
+            raise KeyError("launcher not available")
 
-        if slave_app_id not in {str(item) for item in (worker.slave_app_ids or [])}:
+        if slave_app_id not in {str(item) for item in (launcher.slave_app_ids or [])}:
             raise ValueError("slave app not available")
 
         now = datetime.now(timezone.utc)
         token = random_urlsafe(32)
         session = SlaveSession(
             user_id=user_id,
-            worker_id=worker.id,
+            launcher_id=launcher.id,
             slave_app_id=slave_app_id,
             master_ip_address=master_ip_address,
             master_user_agent=master_user_agent,
@@ -56,11 +56,11 @@ class SessionService:
         db.add(session)
         await db.flush()
 
-        active_session_ids = list(worker.active_session_ids or [])
+        active_session_ids = list(launcher.active_session_ids or [])
         if session.id not in active_session_ids:
             active_session_ids.append(session.id)
-        worker.active_session_ids = active_session_ids
-        worker.status = "busy"
+        launcher.active_session_ids = active_session_ids
+        launcher.status = "busy"
 
         await db.commit()
         await db.refresh(session)
@@ -122,13 +122,13 @@ class SessionService:
         session.status = status
         session.closed_at = datetime.now(timezone.utc)
         session.last_error = reason if status in {"error", "expired"} else session.last_error
-        if session.worker_id:
-            worker = await db.get(Worker, session.worker_id)
-            if worker is not None:
-                active_session_ids = [item for item in (worker.active_session_ids or []) if item != session_id]
-                worker.active_session_ids = active_session_ids
-                if worker.disconnected_at is None and not active_session_ids:
-                    worker.status = "ready"
+        if session.launcher_id:
+            launcher = await db.get(Launcher, session.launcher_id)
+            if launcher is not None:
+                active_session_ids = [item for item in (launcher.active_session_ids or []) if item != session_id]
+                launcher.active_session_ids = active_session_ids
+                if launcher.disconnected_at is None and not active_session_ids:
+                    launcher.status = "ready"
 
         await db.commit()
         await db.refresh(session)

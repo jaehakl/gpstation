@@ -11,7 +11,7 @@ from sdk.protocol.messages import ClientSignalMessage
 from app.auth import Principal, require_client
 from app.db import SessionLocal, get_db
 from app.models import SessionCreateRequest, SessionCreateResult
-from app.service.realtime_service import safe_close_client, safe_send_json, send_to_worker, stop_worker_session
+from app.service.realtime_service import safe_close_client, safe_send_json, send_to_launcher, stop_launcher_session
 from app.service.session_service import SessionService
 from app.settings import settings
 from app.state import runtime
@@ -32,21 +32,21 @@ async def create_session(
         session, token = await SessionService.create_session(
             db,
             user_id=principal.user_id,
-            worker_id=body.worker_session_id,
+            launcher_id=body.launcher_session_id,
             slave_app_id=body.slave_app_id,
             ttl_seconds=ttl_seconds,
             master_ip_address=client.host if client else None,
             master_user_agent=request.headers.get("user-agent"),
         )
     except KeyError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Worker not available") from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Launcher not available") from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Slave app not available") from exc
 
-    runtime_session = await runtime.register_session(str(session.id), str(session.worker_id))
+    runtime_session = await runtime.register_session(str(session.id), str(session.launcher_id))
     try:
-        await send_to_worker(
-            str(session.worker_id),
+        await send_to_launcher(
+            str(session.launcher_id),
             {
                 "type": "session.start",
                 "session_id": str(session.id),
@@ -56,7 +56,7 @@ async def create_session(
             },
         )
     except HTTPException:
-        await close_session_and_worker(db, str(session.id), "worker unavailable", status="error")
+        await close_session_and_launcher(db, str(session.id), "launcher unavailable", status="error")
         raise
 
     try:
@@ -65,18 +65,18 @@ async def create_session(
             timeout=settings.session_ready_timeout_seconds,
         )
     except TimeoutError as exc:
-        await close_session_and_worker(db, str(session.id), "ready timeout", status="error")
-        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Worker session start timed out") from exc
+        await close_session_and_launcher(db, str(session.id), "ready timeout", status="error")
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Launcher session start timed out") from exc
 
     await db.refresh(session)
     if session.status != "ready":
-        detail = session.last_error or runtime_session.last_error or "Worker session failed"
-        await close_session_and_worker(db, str(session.id), detail, status="error")
+        detail = session.last_error or runtime_session.last_error or "Launcher session failed"
+        await close_session_and_launcher(db, str(session.id), detail, status="error")
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail)
 
     return SessionCreateResult(
         session_id=str(session.id),
-        worker_session_id=str(session.worker_id),
+        launcher_session_id=str(session.launcher_id),
         slave_app_id=session.slave_app_id,
         signaling_url=build_signaling_url(str(session.id), token),
         token=token,
@@ -90,7 +90,7 @@ async def client_signal(websocket: WebSocket, session_id: str) -> None:
     await websocket.accept()
     async with SessionLocal() as db:
         session = await SessionService.verify_session_token(db, session_id, token)
-        if session is None or session.worker_id is None:
+        if session is None or session.launcher_id is None:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
 
@@ -107,10 +107,10 @@ async def client_signal(websocket: WebSocket, session_id: str) -> None:
             while True:
                 payload = await websocket.receive_json()
                 message = ClientSignalMessage.model_validate(payload)
-                await send_to_worker(
-                    str(session.worker_id),
+                await send_to_launcher(
+                    str(session.launcher_id),
                     {
-                        "type": "signal.to_worker",
+                        "type": "signal.to_launcher",
                         "session_id": session_id,
                         "signal": message.signal.model_dump(exclude_none=True),
                     },
@@ -121,10 +121,10 @@ async def client_signal(websocket: WebSocket, session_id: str) -> None:
             await safe_send_json(websocket, {"type": "session.error", "detail": str(exc)})
         finally:
             await runtime.detach_client(session_id, websocket)
-            await close_session_and_worker(db, session_id, "client disconnected")
+            await close_session_and_launcher(db, session_id, "client disconnected")
 
 
-async def close_session_and_worker(
+async def close_session_and_launcher(
     db: AsyncSession,
     session_id: str,
     reason: str,
@@ -133,9 +133,9 @@ async def close_session_and_worker(
 ) -> None:
     db_session = await SessionService.close_session(db, session_id, reason, status=status)
     runtime_session = await runtime.close_session(session_id)
-    worker_id = runtime_session.worker_id if runtime_session else str(db_session.worker_id) if db_session and db_session.worker_id else None
-    if worker_id is not None:
-        await stop_worker_session(worker_id, session_id, reason)
+    launcher_id = runtime_session.launcher_id if runtime_session else str(db_session.launcher_id) if db_session and db_session.launcher_id else None
+    if launcher_id is not None:
+        await stop_launcher_session(launcher_id, session_id, reason)
     if runtime_session is not None:
         await safe_close_client(runtime_session, reason)
 

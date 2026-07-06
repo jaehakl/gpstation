@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     tokens: dict[str, TokenPrincipal] = Field(
         default_factory=lambda: {
             "demo-client-token": TokenPrincipal(user_id=DEMO_USER_ID, scopes=["client"]),
-            "demo-worker-token": TokenPrincipal(user_id=DEMO_USER_ID, scopes=["worker"]),
+            "demo-launcher-token": TokenPrincipal(user_id=DEMO_USER_ID, scopes=["launcher"]),
         }
     )
 

@@ -77,4 +77,4 @@ def load_manifest(manifest_path: Path) -> SlaveApp:
 
 
 def default_plugins_dir() -> Path:
-    return Path(__file__).resolve().parents[2] / "executables"
+    return Path(__file__).resolve().parents[2] / "slaves"

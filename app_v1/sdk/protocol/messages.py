@@ -17,22 +17,22 @@ class SignalPayload(StrictModel):
     sdpMLineIndex: int | None = None
 
 
-class WorkerHello(StrictModel):
-    type: Literal["worker.hello"]
-    worker_name: str
+class LauncherHello(StrictModel):
+    type: Literal["launcher.hello"]
+    launcher_name: str
     slave_app_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class WorkerHeartbeat(StrictModel):
-    type: Literal["worker.heartbeat"]
+class LauncherHeartbeat(StrictModel):
+    type: Literal["launcher.heartbeat"]
     status: Literal["ready", "busy"] = "ready"
     active_session_ids: list[str] = Field(default_factory=list)
 
 
-class WorkerAccepted(StrictModel):
-    type: Literal["worker.accepted"]
-    worker_session_id: str
+class LauncherAccepted(StrictModel):
+    type: Literal["launcher.accepted"]
+    launcher_session_id: str
     server_time: str
 
 
@@ -68,8 +68,8 @@ class SessionError(StrictModel):
     detail: str
 
 
-class SignalToWorker(StrictModel):
-    type: Literal["signal.to_worker"]
+class SignalToLauncher(StrictModel):
+    type: Literal["signal.to_launcher"]
     session_id: str
     signal: SignalPayload
 
@@ -91,15 +91,15 @@ class Pong(StrictModel):
 
 ControlMessage = Annotated[
     Union[
-        WorkerHello,
-        WorkerHeartbeat,
-        WorkerAccepted,
+        LauncherHello,
+        LauncherHeartbeat,
+        LauncherAccepted,
         SessionStart,
         SessionReady,
         SessionStop,
         SessionClosed,
         SessionError,
-        SignalToWorker,
+        SignalToLauncher,
         SignalToClient,
         Ping,
         Pong,

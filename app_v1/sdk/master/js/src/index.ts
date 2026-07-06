@@ -1,7 +1,7 @@
-export type WorkerSessionView = {
+export type LauncherSessionView = {
   id: string;
   user_id: string;
-  worker_name: string;
+  launcher_name: string;
   status: string;
   slave_app_ids: string[];
   active_session_count: number;
@@ -11,7 +11,7 @@ export type WorkerSessionView = {
 
 export type SessionDescriptor = {
   session_id: string;
-  worker_session_id: string;
+  launcher_session_id: string;
   slave_app_id: string;
   signaling_url: string;
   token: string;
@@ -92,7 +92,7 @@ export type GpStationClientOptions = {
 };
 
 export type CreateSessionOptions = {
-  workerSessionId: string;
+  launcherSessionId: string;
   slaveAppId?: string;
   ttlSeconds?: number;
 };
@@ -143,15 +143,15 @@ export class GpStationClient {
     this.rtcConfig = options.rtcConfig;
   }
 
-  async listWorkers(): Promise<WorkerSessionView[]> {
-    return this.request<WorkerSessionView[]>('/v1/workers');
+  async listLaunchers(): Promise<LauncherSessionView[]> {
+    return this.request<LauncherSessionView[]>('/v1/launchers');
   }
 
   async createSession(options: CreateSessionOptions): Promise<SessionDescriptor> {
     return this.request<SessionDescriptor>('/v1/sessions', {
       method: 'POST',
       body: JSON.stringify({
-        worker_session_id: options.workerSessionId,
+        launcher_session_id: options.launcherSessionId,
         slave_app_id: options.slaveAppId ?? 'echo',
         ttl_seconds: options.ttlSeconds,
       }),
@@ -394,7 +394,7 @@ export class GpStationPeer {
       const [callId, pending] = entry;
       clearTimeout(pending.timer);
       this.pending.delete(callId);
-      pending.reject(new Error(message.detail || message.code || 'worker error'));
+      pending.reject(new Error(message.detail || message.code || 'launcher error'));
       return;
     }
 

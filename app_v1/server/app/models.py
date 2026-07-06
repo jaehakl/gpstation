@@ -5,10 +5,10 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class WorkerSessionView(BaseModel):
+class LauncherSessionView(BaseModel):
     id: str
     user_id: str
-    worker_name: str
+    launcher_name: str
     status: str
     slave_app_ids: list[str]
     active_session_count: int
@@ -19,14 +19,14 @@ class WorkerSessionView(BaseModel):
 class SessionCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    worker_session_id: str
+    launcher_session_id: str
     slave_app_id: str = "echo"
     ttl_seconds: int | None = Field(default=None, ge=10, le=3600)
 
 
 class SessionCreateResult(BaseModel):
     session_id: str
-    worker_session_id: str
+    launcher_session_id: str
     slave_app_id: str
     signaling_url: str
     token: str

@@ -98,12 +98,12 @@ class AccessKey(Base):
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
-class Worker(TimestampMixin, Base):
-    __tablename__ = "workers"
+class Launcher(TimestampMixin, Base):
+    __tablename__ = "launchers"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=uuid_text)
     user_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    worker_name: Mapped[str] = mapped_column(Text, nullable=False)
+    launcher_name: Mapped[str] = mapped_column(Text, nullable=False)
     ip_address: Mapped[Optional[str]] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     slave_app_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
@@ -118,7 +118,7 @@ class SlaveSession(TimestampMixin, Base):
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=uuid_text)
     user_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    worker_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("workers.id", ondelete="SET NULL"))
+    launcher_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("launchers.id", ondelete="SET NULL"))
     slave_app_id: Mapped[str] = mapped_column(Text, nullable=False)
     master_ip_address: Mapped[Optional[str]] = mapped_column(Text)
     master_user_agent: Mapped[Optional[str]] = mapped_column(Text)

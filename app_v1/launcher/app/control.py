@@ -6,14 +6,14 @@ from typing import Any
 
 import websockets
 
-from app.settings import WorkerSettings
+from app.settings import LauncherSettings
 from app.slave_registry import load_default_registry
 from app.subprocess_manager import SessionManager
 
 BACKOFF_SECONDS = [1, 2, 5, 10, 30]
 
 
-async def run_slave_launcher(settings: WorkerSettings) -> None:
+async def run_slave_launcher(settings: LauncherSettings) -> None:
     attempt = 0
     while True:
         delay = BACKOFF_SECONDS[min(attempt, len(BACKOFF_SECONDS) - 1)]
@@ -31,7 +31,7 @@ async def run_slave_launcher(settings: WorkerSettings) -> None:
             await asyncio.sleep(delay)
 
 
-async def run_connection(settings: WorkerSettings) -> None:
+async def run_connection(settings: LauncherSettings) -> None:
     headers = {"Authorization": f"Bearer {settings.access_token}"}
     async with await open_websocket(settings.control_websocket_url, headers) as websocket:
         send_lock = asyncio.Lock()
@@ -43,22 +43,22 @@ async def run_connection(settings: WorkerSettings) -> None:
                 websocket,
                 send_lock,
                 {
-                    "type": "worker.hello",
-                    "worker_name": settings.worker_name,
+                    "type": "launcher.hello",
+                    "launcher_name": settings.launcher_name,
                     "slave_app_ids": registry.ids(),
                     "metadata": {},
                 },
             )
             accepted = json.loads(await websocket.recv())
-            if accepted.get("type") != "worker.accepted":
-                raise RuntimeError(f"Expected worker.accepted, received {accepted.get('type')}")
-            print(f"Worker session: {accepted.get('worker_session_id')}", flush=True)
+            if accepted.get("type") != "launcher.accepted":
+                raise RuntimeError(f"Expected launcher.accepted, received {accepted.get('type')}")
+            print(f"Launcher session: {accepted.get('launcher_session_id')}", flush=True)
 
             async for raw_message in websocket:
                 await handle_server_message(manager, json.loads(raw_message))
         finally:
             heartbeat_task.cancel()
-            await manager.stop_all("worker shutdown")
+            await manager.stop_all("launcher shutdown")
             try:
                 await heartbeat_task
             except asyncio.CancelledError:
@@ -81,7 +81,7 @@ async def send_heartbeats(
     websocket: Any,
     send_lock: asyncio.Lock,
     manager: SessionManager,
-    settings: WorkerSettings,
+    settings: LauncherSettings,
 ) -> None:
     while True:
         await asyncio.sleep(settings.heartbeat_interval_seconds)
@@ -89,7 +89,7 @@ async def send_heartbeats(
             websocket,
             send_lock,
             {
-                "type": "worker.heartbeat",
+                "type": "launcher.heartbeat",
                 "status": "busy" if manager.active_session_ids() else "ready",
                 "active_session_ids": manager.active_session_ids(),
             },
@@ -105,7 +105,7 @@ async def handle_server_message(manager: SessionManager, message: dict[str, Any]
             int(message["ttl_seconds"]),
         )
         return
-    if message_type == "signal.to_worker":
+    if message_type == "signal.to_launcher":
         await manager.forward_signal(str(message["session_id"]), message["signal"])
         return
     if message_type == "session.stop":

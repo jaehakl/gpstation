@@ -1,6 +1,6 @@
 # GP Station v1 Server
 
-FastAPI server for the v1 MVP. It stores durable worker and slave session state in Postgres while keeping live WebSocket handles in process memory.
+FastAPI server for the v1 MVP. It stores durable launcher and slave session state in Postgres while keeping live WebSocket handles in process memory.
 
 ## Install
 
@@ -25,6 +25,6 @@ postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/gpstation_v1
 Demo tokens are enabled by default:
 
 - Client: `demo-client-token`
-- Worker: `demo-worker-token`
+- Launcher: `demo-launcher-token`
 
 The default demo principal is seeded into the `users` table with a deterministic UUID on startup. OAuth/JWT tables and `access_keys` are created for the next auth step, but the current server still authenticates these static bearer tokens.

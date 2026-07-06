@@ -34,7 +34,7 @@ def config_check() -> None:
             {
                 "api_url": settings.api_url,
                 "control_websocket_url": settings.control_websocket_url,
-                "worker_name": settings.worker_name,
+                "launcher_name": settings.launcher_name,
                 "heartbeat_interval_seconds": settings.heartbeat_interval_seconds,
                 "session_ready_timeout_seconds": settings.session_ready_timeout_seconds,
                 "access_token": "set" if settings.access_token else "missing",

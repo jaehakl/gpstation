@@ -6,32 +6,32 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sdk.protocol.messages import WorkerHello, parse_control_message
+from sdk.protocol.messages import LauncherHello, parse_control_message
 from app.auth import Principal, authenticate_authorization, require_client
 from app.db import SessionLocal, get_db
-from app.models import WorkerSessionView
+from app.models import LauncherSessionView
 from app.service.realtime_service import safe_close_client, safe_send_json
 from app.service.session_service import SessionService
-from app.service.worker_service import WorkerService
+from app.service.launcher_service import LauncherService
 from app.state import runtime, utcnow
 
-router = APIRouter(prefix="/workers", tags=["v1-workers"])
+router = APIRouter(prefix="/launchers", tags=["v1-launchers"])
 
 
-@router.get("", response_model=list[WorkerSessionView])
-async def list_workers(
+@router.get("", response_model=list[LauncherSessionView])
+async def list_launchers(
     principal: Principal = Depends(require_client),
     db: AsyncSession = Depends(get_db),
-) -> list[WorkerSessionView]:
-    return await WorkerService.list_workers_for_user(db, principal.user_id)
+) -> list[LauncherSessionView]:
+    return await LauncherService.list_launchers_for_user(db, principal.user_id)
 
 
 @router.websocket("/control")
-async def worker_control(websocket: WebSocket) -> None:
-    worker_id: str | None = None
+async def launcher_control(websocket: WebSocket) -> None:
+    launcher_id: str | None = None
     try:
         principal = authenticate_authorization(websocket.headers.get("authorization", ""))
-        principal.require_scope("worker")
+        principal.require_scope("launcher")
     except HTTPException:
         await websocket.accept()
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
@@ -42,53 +42,53 @@ async def worker_control(websocket: WebSocket) -> None:
         try:
             hello_payload = await websocket.receive_json()
             hello = parse_control_message(hello_payload)
-            if not isinstance(hello, WorkerHello):
+            if not isinstance(hello, LauncherHello):
                 await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
                 return
 
-            worker = await WorkerService.create_connected_worker(
+            launcher = await LauncherService.create_connected_launcher(
                 db,
                 user_id=principal.user_id,
-                worker_name=hello.worker_name,
+                launcher_name=hello.launcher_name,
                 slave_app_ids=hello.slave_app_ids,
                 ip_address=websocket.client.host if websocket.client else None,
             )
-            worker_id = str(worker.id)
-            await runtime.register_worker(worker_id, websocket)
+            launcher_id = str(launcher.id)
+            await runtime.register_launcher(launcher_id, websocket)
             await websocket.send_json(
                 {
-                    "type": "worker.accepted",
-                    "worker_session_id": worker_id,
+                    "type": "launcher.accepted",
+                    "launcher_session_id": launcher_id,
                     "server_time": utcnow().isoformat(),
                 }
             )
 
             while True:
                 payload = await websocket.receive_json()
-                await handle_worker_message(db, worker_id, websocket, payload)
+                await handle_launcher_message(db, launcher_id, websocket, payload)
         except WebSocketDisconnect:
             pass
         except ValidationError as exc:
             await safe_send_json(websocket, {"type": "error", "detail": str(exc)})
         finally:
-            if worker_id is not None:
-                affected = await runtime.remove_worker(worker_id)
-                await WorkerService.mark_disconnected(db, worker_id)
+            if launcher_id is not None:
+                affected = await runtime.remove_launcher(launcher_id)
+                await LauncherService.mark_disconnected(db, launcher_id)
                 for session in affected:
-                    await SessionService.close_session(db, session.id, "worker disconnected", status="error")
-                    await safe_close_client(session, "worker disconnected")
+                    await SessionService.close_session(db, session.id, "launcher disconnected", status="error")
+                    await safe_close_client(session, "launcher disconnected")
 
 
-async def handle_worker_message(
+async def handle_launcher_message(
     db: AsyncSession,
-    worker_id: str,
+    launcher_id: str,
     websocket: WebSocket,
     payload: dict[str, Any],
 ) -> None:
     message = parse_control_message(payload)
-    if message.type == "worker.heartbeat":
-        await runtime.mark_heartbeat(worker_id, message.active_session_ids)
-        await WorkerService.mark_heartbeat(db, worker_id, message.status, message.active_session_ids)
+    if message.type == "launcher.heartbeat":
+        await runtime.mark_heartbeat(launcher_id, message.active_session_ids)
+        await LauncherService.mark_heartbeat(db, launcher_id, message.status, message.active_session_ids)
         return
     if message.type == "session.ready":
         await runtime.mark_session_ready(message.session_id)

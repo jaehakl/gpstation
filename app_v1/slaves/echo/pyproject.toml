@@ -14,7 +14,7 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-gpstation-v1-sdk = { path = "../../../sdk", develop = true, extras = ["slave"] }
+gpstation-v1-sdk = { path = "../../sdk", develop = true, extras = ["slave"] }
 
 [build-system]
 requires = ["poetry-core"]

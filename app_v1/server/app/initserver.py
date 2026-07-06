@@ -7,10 +7,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import Base, SessionLocal, engine
-from app.service.realtime_service import safe_close_client, stop_worker_session
+from app.service.realtime_service import safe_close_client, stop_launcher_session
 from app.service.session_service import SessionService
 from app.service.user_service import ensure_static_token_users
-from app.service.worker_service import WorkerService
+from app.service.launcher_service import LauncherService
 from app.settings import settings
 from app.state import runtime
 from app.user_auth import db as user_auth_db
@@ -57,7 +57,7 @@ async def start() -> None:
     async with SessionLocal() as db:
         await ensure_static_token_users(db)
         await SessionService.mark_stale_sessions_error(db)
-        await WorkerService.mark_stale_workers_disconnected(db)
+        await LauncherService.mark_stale_launchers_disconnected(db)
 
     print("service is started.")
 
@@ -66,28 +66,29 @@ async def cleanup_legacy_schema(conn) -> None:
     await conn.exec_driver_sql("DROP TABLE IF EXISTS v1_session_events;")
     await conn.exec_driver_sql("ALTER TABLE IF EXISTS v1_sessions DROP COLUMN IF EXISTS master_id;")
     await conn.exec_driver_sql("DROP TABLE IF EXISTS masters;")
+    await migrate_launcher_schema_names(conn)
 
-    await conn.exec_driver_sql("ALTER TABLE IF EXISTS workers ADD COLUMN IF NOT EXISTS ip_address TEXT;")
+    await conn.exec_driver_sql("ALTER TABLE IF EXISTS launchers ADD COLUMN IF NOT EXISTS ip_address TEXT;")
     await conn.exec_driver_sql(
-        "ALTER TABLE IF EXISTS workers ADD COLUMN IF NOT EXISTS slave_app_ids JSONB NOT NULL DEFAULT '[]'::jsonb;"
+        "ALTER TABLE IF EXISTS launchers ADD COLUMN IF NOT EXISTS slave_app_ids JSONB NOT NULL DEFAULT '[]'::jsonb;"
     )
-    await conn.exec_driver_sql("ALTER TABLE IF EXISTS workers ALTER COLUMN slave_app_ids SET DEFAULT '[]'::jsonb;")
+    await conn.exec_driver_sql("ALTER TABLE IF EXISTS launchers ALTER COLUMN slave_app_ids SET DEFAULT '[]'::jsonb;")
     await conn.exec_driver_sql(
         """
         DO $$
         BEGIN
-            IF to_regclass('workers') IS NOT NULL THEN
-                UPDATE workers SET slave_app_ids = '[]'::jsonb WHERE slave_app_ids IS NULL;
+            IF to_regclass('launchers') IS NOT NULL THEN
+                UPDATE launchers SET slave_app_ids = '[]'::jsonb WHERE slave_app_ids IS NULL;
             END IF;
         END $$;
         """
     )
-    await conn.exec_driver_sql("ALTER TABLE IF EXISTS workers ALTER COLUMN slave_app_ids SET NOT NULL;")
+    await conn.exec_driver_sql("ALTER TABLE IF EXISTS launchers ALTER COLUMN slave_app_ids SET NOT NULL;")
 
     await conn.exec_driver_sql("ALTER TABLE IF EXISTS v1_sessions ADD COLUMN IF NOT EXISTS ip_address TEXT;")
     await conn.exec_driver_sql("ALTER TABLE IF EXISTS v1_sessions ADD COLUMN IF NOT EXISTS user_agent TEXT;")
 
-    for table_name in ("access_keys", "workers", "slaves", "v1_sessions", "slave_sessions"):
+    for table_name in ("access_keys", "launchers", "slaves", "v1_sessions", "slave_sessions"):
         await conn.exec_driver_sql(f"ALTER TABLE IF EXISTS {table_name} DROP COLUMN IF EXISTS metadata_json;")
 
     for column_name in (
@@ -105,24 +106,80 @@ async def cleanup_legacy_schema(conn) -> None:
         await conn.exec_driver_sql(f"ALTER TABLE IF EXISTS users DROP COLUMN IF EXISTS {column_name};")
 
 
+async def migrate_launcher_schema_names(conn) -> None:
+    await conn.exec_driver_sql(
+        """
+        DO $$
+        DECLARE
+            old_launcher_table regclass := to_regclass('work' || 'ers');
+        BEGIN
+            IF old_launcher_table IS NOT NULL AND to_regclass('launchers') IS NULL THEN
+                EXECUTE 'ALTER TABLE ' || old_launcher_table || ' RENAME TO launchers';
+            END IF;
+        END $$;
+        """
+    )
+    await conn.exec_driver_sql(
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = 'launchers'
+                  AND column_name = ('work' || 'er_name')
+            ) AND NOT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = 'launchers'
+                  AND column_name = 'launcher_name'
+            ) THEN
+                EXECUTE 'ALTER TABLE launchers RENAME COLUMN ' || 'work' || 'er_name TO launcher_name';
+            END IF;
+        END $$;
+        """
+    )
+    for table_name in ("slave_sessions", "v1_sessions", "slaves"):
+        await conn.exec_driver_sql(
+            f"""
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_name = '{table_name}'
+                      AND column_name = ('work' || 'er_id')
+                ) AND NOT EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_name = '{table_name}'
+                      AND column_name = 'launcher_id'
+                ) THEN
+                    EXECUTE 'ALTER TABLE {table_name} RENAME COLUMN ' || 'work' || 'er_id TO launcher_id';
+                END IF;
+            END $$;
+            """
+        )
+
+
 async def migrate_legacy_schema(conn) -> None:
     await conn.exec_driver_sql(
         """
         DO $$
         BEGIN
             IF to_regclass('slaves') IS NOT NULL THEN
-                UPDATE workers AS w
+                UPDATE launchers AS w
                 SET slave_app_ids = COALESCE(s.slave_app_ids, '[]'::jsonb)
                 FROM (
-                    SELECT worker_id, jsonb_agg(slave_app_id ORDER BY slave_app_id) AS slave_app_ids
+                    SELECT launcher_id, jsonb_agg(slave_app_id ORDER BY slave_app_id) AS slave_app_ids
                     FROM (
-                        SELECT DISTINCT worker_id, slave_app_id
+                        SELECT DISTINCT launcher_id, slave_app_id
                         FROM slaves
                         WHERE slave_app_id IS NOT NULL
                     ) AS distinct_slaves
-                    GROUP BY worker_id
+                    GROUP BY launcher_id
                 ) AS s
-                WHERE w.id = s.worker_id;
+                WHERE w.id = s.launcher_id;
             END IF;
         END $$;
         """
@@ -135,7 +192,7 @@ async def migrate_legacy_schema(conn) -> None:
                 INSERT INTO slave_sessions (
                     id,
                     user_id,
-                    worker_id,
+                    launcher_id,
                     slave_app_id,
                     master_ip_address,
                     master_user_agent,
@@ -152,7 +209,7 @@ async def migrate_legacy_schema(conn) -> None:
                 SELECT
                     id,
                     user_id,
-                    worker_id,
+                    launcher_id,
                     slave_app_id,
                     ip_address,
                     user_agent,
@@ -182,8 +239,8 @@ async def cleanup_expired_sessions() -> None:
             expired_sessions = await SessionService.collect_expired_sessions(db)
         for db_session in expired_sessions:
             session = await runtime.close_session(str(db_session.id))
-            worker_id = session.worker_id if session else str(db_session.worker_id) if db_session.worker_id else None
-            if worker_id is not None:
-                await stop_worker_session(worker_id, str(db_session.id), "expired")
+            launcher_id = session.launcher_id if session else str(db_session.launcher_id) if db_session.launcher_id else None
+            if launcher_id is not None:
+                await stop_launcher_session(launcher_id, str(db_session.id), "expired")
             if session is not None:
                 await safe_close_client(session, "expired")

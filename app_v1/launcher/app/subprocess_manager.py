@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from app.settings import WorkerSettings
+from app.settings import LauncherSettings
 from app.slave_registry import SlaveAppRegistry, load_default_registry
 
 SendControl = Callable[[dict[str, Any]], Awaitable[None]]
@@ -28,7 +28,7 @@ class ManagedSession:
 class SessionManager:
     def __init__(
         self,
-        settings: WorkerSettings,
+        settings: LauncherSettings,
         send_control: SendControl,
         registry: SlaveAppRegistry | None = None,
     ) -> None:

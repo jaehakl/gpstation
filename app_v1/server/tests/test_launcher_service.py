@@ -3,8 +3,8 @@ import uuid
 
 import pytest
 
-from app.db import Worker
-from app.service.worker_service import WorkerService, worker_to_view
+from app.db import Launcher
+from app.service.launcher_service import LauncherService, launcher_to_view
 
 
 class FakeDb:
@@ -24,11 +24,11 @@ class FakeDb:
         return None
 
 
-def make_worker():
-    return Worker(
-        id="worker-1",
+def make_launcher():
+    return Launcher(
+        id="launcher-1",
         user_id="user-1",
-        worker_name="desktop",
+        launcher_name="desktop",
         ip_address="10.0.0.5",
         status="ready",
         slave_app_ids=["echo", "render"],
@@ -39,25 +39,25 @@ def make_worker():
 
 
 @pytest.mark.asyncio
-async def test_create_connected_worker_stores_ip_and_deduped_slave_app_ids():
+async def test_create_connected_launcher_stores_ip_and_deduped_slave_app_ids():
     db = FakeDb()
 
-    worker = await WorkerService.create_connected_worker(
+    launcher = await LauncherService.create_connected_launcher(
         db,
         user_id="user-1",
-        worker_name="desktop",
+        launcher_name="desktop",
         slave_app_ids=["echo", "echo", "render"],
         ip_address="10.0.0.5",
     )
 
-    assert worker.ip_address == "10.0.0.5"
-    assert worker.slave_app_ids == ["echo", "render"]
-    assert db.added == [worker]
+    assert launcher.ip_address == "10.0.0.5"
+    assert launcher.slave_app_ids == ["echo", "render"]
+    assert db.added == [launcher]
     assert db.commits == 1
 
 
-def test_worker_to_view_uses_worker_slave_app_ids():
-    view = worker_to_view(make_worker())
+def test_launcher_to_view_uses_launcher_slave_app_ids():
+    view = launcher_to_view(make_launcher())
 
     assert view.slave_app_ids == ["echo", "render"]
     assert view.active_session_count == 1

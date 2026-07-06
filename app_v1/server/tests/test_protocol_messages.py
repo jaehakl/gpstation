@@ -3,17 +3,17 @@ from pydantic import ValidationError
 from sdk.protocol.messages import DataChannelAttachment, DataChannelMessage, parse_control_message
 
 
-def test_parse_worker_hello_message():
+def test_parse_launcher_hello_message():
     message = parse_control_message(
         {
-            "type": "worker.hello",
-            "worker_name": "desktop-4090",
+            "type": "launcher.hello",
+            "launcher_name": "desktop-4090",
             "slave_app_ids": ["echo"],
         }
     )
 
-    assert message.type == "worker.hello"
-    assert message.worker_name == "desktop-4090"
+    assert message.type == "launcher.hello"
+    assert message.launcher_name == "desktop-4090"
     assert message.slave_app_ids == ["echo"]
 
 

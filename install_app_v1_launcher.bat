@@ -1,8 +1,8 @@
 @echo off
 setlocal
-cd /d "%~dp0app_v1\slave\launcher"
+cd /d "%~dp0app_v1\launcher"
 poetry install
 if errorlevel 1 exit /b %errorlevel%
 
-cd /d "%~dp0app_v1\slave\executables\echo"
+cd /d "%~dp0app_v1\slaves\echo"
 poetry install

@@ -24,14 +24,14 @@ async def safe_close_client(session: SessionRuntime, reason: str) -> None:
         return
 
 
-async def send_to_worker(worker_id: str, message: dict[str, Any]) -> None:
-    worker = await runtime.get_worker(worker_id)
-    if worker is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Worker not available")
-    await worker.websocket.send_json(message)
+async def send_to_launcher(launcher_id: str, message: dict[str, Any]) -> None:
+    launcher = await runtime.get_launcher(launcher_id)
+    if launcher is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Launcher not available")
+    await launcher.websocket.send_json(message)
 
 
-async def stop_worker_session(worker_id: str, session_id: str, reason: str) -> None:
-    worker = await runtime.get_worker(worker_id)
-    if worker is not None:
-        await safe_send_json(worker.websocket, {"type": "session.stop", "session_id": session_id, "reason": reason})
+async def stop_launcher_session(launcher_id: str, session_id: str, reason: str) -> None:
+    launcher = await runtime.get_launcher(launcher_id)
+    if launcher is not None:
+        await safe_send_json(launcher.websocket, {"type": "session.stop", "session_id": session_id, "reason": reason})

@@ -16,8 +16,8 @@ const client = new GpStationClient({
   token: 'demo-client-token',
 });
 
-const workers = await client.listWorkers();
-const session = await client.createSession({ workerSessionId: workers[0].id, slaveAppId: 'echo' });
+const launchers = await client.listLaunchers();
+const session = await client.createSession({ launcherSessionId: launchers[0].id, slaveAppId: 'echo' });
 const peer = await client.connectSession(session);
 const file = new File(['hello file'], 'hello.txt', { type: 'text/plain' });
 const result = await peer.call('echo.request', { text: 'hello' }, { files: [file] });

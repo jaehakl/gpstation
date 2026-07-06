@@ -224,7 +224,7 @@ dt {
 }
 
 .tableHead,
-.workerRow {
+.launcherRow {
   display: grid;
   grid-template-columns: minmax(110px, 1fr) 76px minmax(72px, 0.8fr) 72px;
   text-align: left;
@@ -238,20 +238,20 @@ dt {
   text-transform: uppercase;
 }
 
-.workerRow {
+.launcherRow {
   background: #fbfcfd;
   justify-content: stretch;
   min-height: 42px;
   padding: 0 10px;
 }
 
-.workerRow span {
+.launcherRow span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.workerRow.selected {
+.launcherRow.selected {
   border-color: #7aa7f5;
   box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.12);
 }

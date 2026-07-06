@@ -13,7 +13,7 @@ def utcnow() -> datetime:
 
 
 @dataclass
-class WorkerRuntime:
+class LauncherRuntime:
     id: str
     websocket: WebSocket
     active_session_ids: set[str] = field(default_factory=set)
@@ -22,7 +22,7 @@ class WorkerRuntime:
 @dataclass
 class SessionRuntime:
     id: str
-    worker_id: str
+    launcher_id: str
     ready_event: asyncio.Event = field(default_factory=asyncio.Event)
     client_websocket: WebSocket | None = None
     pending_client_signals: list[dict[str, Any]] = field(default_factory=list)
@@ -33,43 +33,43 @@ class SessionRuntime:
 class RuntimeRegistry:
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
-        self.workers: dict[str, WorkerRuntime] = {}
+        self.launchers: dict[str, LauncherRuntime] = {}
         self.sessions: dict[str, SessionRuntime] = {}
 
-    async def register_worker(self, worker_id: str, websocket: WebSocket) -> WorkerRuntime:
-        worker = WorkerRuntime(id=worker_id, websocket=websocket)
+    async def register_launcher(self, launcher_id: str, websocket: WebSocket) -> LauncherRuntime:
+        launcher = LauncherRuntime(id=launcher_id, websocket=websocket)
         async with self.lock:
-            self.workers[worker_id] = worker
-        return worker
+            self.launchers[launcher_id] = launcher
+        return launcher
 
-    async def remove_worker(self, worker_id: str) -> list[SessionRuntime]:
+    async def remove_launcher(self, launcher_id: str) -> list[SessionRuntime]:
         async with self.lock:
-            self.workers.pop(worker_id, None)
-            affected = [session for session in self.sessions.values() if session.worker_id == worker_id]
+            self.launchers.pop(launcher_id, None)
+            affected = [session for session in self.sessions.values() if session.launcher_id == launcher_id]
             for session in affected:
                 self.sessions.pop(session.id, None)
                 session.status = "error"
-                session.last_error = "worker disconnected"
+                session.last_error = "launcher disconnected"
                 session.ready_event.set()
             return affected
 
-    async def get_worker(self, worker_id: str) -> WorkerRuntime | None:
+    async def get_launcher(self, launcher_id: str) -> LauncherRuntime | None:
         async with self.lock:
-            return self.workers.get(worker_id)
+            return self.launchers.get(launcher_id)
 
-    async def mark_heartbeat(self, worker_id: str, active_session_ids: list[str]) -> None:
+    async def mark_heartbeat(self, launcher_id: str, active_session_ids: list[str]) -> None:
         async with self.lock:
-            worker = self.workers.get(worker_id)
-            if worker is not None:
-                worker.active_session_ids = set(active_session_ids)
+            launcher = self.launchers.get(launcher_id)
+            if launcher is not None:
+                launcher.active_session_ids = set(active_session_ids)
 
-    async def register_session(self, session_id: str, worker_id: str) -> SessionRuntime:
-        session = SessionRuntime(id=session_id, worker_id=worker_id)
+    async def register_session(self, session_id: str, launcher_id: str) -> SessionRuntime:
+        session = SessionRuntime(id=session_id, launcher_id=launcher_id)
         async with self.lock:
             self.sessions[session_id] = session
-            worker = self.workers.get(worker_id)
-            if worker is not None:
-                worker.active_session_ids.add(session_id)
+            launcher = self.launchers.get(launcher_id)
+            if launcher is not None:
+                launcher.active_session_ids.add(session_id)
         return session
 
     async def get_session(self, session_id: str) -> SessionRuntime | None:
@@ -137,9 +137,9 @@ class RuntimeRegistry:
             session = self.sessions.pop(session_id, None)
             if session is None:
                 return None
-            worker = self.workers.get(session.worker_id)
-            if worker is not None:
-                worker.active_session_ids.discard(session_id)
+            launcher = self.launchers.get(session.launcher_id)
+            if launcher is not None:
+                launcher.active_session_ids.discard(session_id)
             session.status = "closed"
             session.ready_event.set()
             return session

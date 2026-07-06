@@ -7,5 +7,5 @@ if errorlevel 1 exit /b %errorlevel%
 npm run build
 if errorlevel 1 exit /b %errorlevel%
 
-cd /d "%~dp0app_v1\master\examples\echo"
+cd /d "%~dp0app_v1\masters\echo"
 npm install

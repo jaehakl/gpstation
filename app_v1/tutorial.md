@@ -4,12 +4,12 @@
 
 GP Station v1 MVP의 목표는 아주 좁고 명확합니다.
 
-사용자가 자기 계정에 연결된 worker와 slave app을 고르고, master에서 세션을 만든 뒤, WebRTC DataChannel로 slave subprocess와 직접 통신하는 것까지 확인합니다. 지금은 실제 LLM이나 이미지 생성 작업 대신 `echo` slave app만 제공합니다. 즉 master가 `echo.request` handler를 JSON payload와 optional file attachments로 호출하면 slave subprocess가 같은 payload와 attachments를 `echo.result`로 돌려줍니다.
+사용자가 자기 계정에 연결된 launcher와 slave app을 고르고, master에서 세션을 만든 뒤, WebRTC DataChannel로 slave subprocess와 직접 통신하는 것까지 확인합니다. 지금은 실제 LLM이나 이미지 생성 작업 대신 `echo` slave app만 제공합니다. 즉 master가 `echo.request` handler를 JSON payload와 optional file attachments로 호출하면 slave subprocess가 같은 payload와 attachments를 `echo.result`로 돌려줍니다.
 
 중요한 범위 제한도 있습니다.
 
 - durable 상태는 Postgres에 저장하고, live WebSocket 객체만 프로세스 메모리에 둡니다.
-- 사용자는 자기 소유 worker만 사용할 수 있습니다.
+- 사용자는 자기 소유 launcher만 사용할 수 있습니다.
 - 과금, marketplace, quota, persistent DB는 없습니다.
 - 첫 master 클라이언트는 JS 브라우저입니다.
 - Python master SDK는 REST scaffold만 있고 WebRTC master 기능은 후속 단계입니다.
@@ -27,7 +27,7 @@ GP Station v1 Server
         ^
         |
   control WebSocket
-Worker Main Process
+Launcher Main Process
         |
         | JSON-lines stdin/stdout
         v
@@ -40,7 +40,7 @@ Master Example <== WebRTC DataChannel ==> Slave Subprocess
 
 여기서 헷갈리기 쉬운 점은 WebSocket과 WebRTC DataChannel이 둘 다 “양방향 통신”이라는 점입니다. 이 MVP에서 둘의 역할은 다릅니다.
 
-- `control WebSocket`: worker main process가 서버에 계속 붙어 있는 관리 채널입니다.
+- `control WebSocket`: launcher main process가 서버에 계속 붙어 있는 관리 채널입니다.
 - `signaling WebSocket`: master와 slave subprocess가 WebRTC 연결을 맺기 전 SDP offer/answer를 교환하는 임시 중계 채널입니다.
 - `DataChannel`: WebRTC 연결이 끝난 뒤 master와 slave subprocess가 직접 메시지를 주고받는 실제 작업 채널입니다.
 
@@ -48,14 +48,15 @@ Master Example <== WebRTC DataChannel ==> Slave Subprocess
 
 `app_v1/`는 기존 `apps/`와 분리된 새 MVP입니다.
 
-- `sdk/protocol/`: 서버, worker, SDK가 공유하는 메시지 이름과 Pydantic 모델
-- `server/`: FastAPI 서버, 인증, worker/session registry, signaling relay
-- `slave/`: worker main process와 built-in slave app plugins
+- `sdk/protocol/`: 서버, launcher, SDK가 공유하는 메시지 이름과 Pydantic 모델
+- `server/`: FastAPI 서버, 인증, launcher/session registry, signaling relay
+- `launcher/`: launcher main process와 slave subprocess launcher
+- `slaves/`: built-in slave app executable projects
 - `sdk/master/js/`: 브라우저 master SDK
 `sdk/` is now an installable local package. Server and slave executables consume it through Poetry path dependencies, while each executable keeps its own `.venv`.
 - `sdk/slave/`: Python slave app authoring SDK/runtime
-- `master/examples/echo/`: Next 기반 master 예제
-- `master/examples/echo` browser check: smoke test와 local demo helper
+- `masters/echo/`: Next 기반 master 예제
+- `masters/echo` browser check: smoke test와 local demo helper
 - `plan.md`: 구현 계획과 현재 완료 상태
 
 처음 코드를 읽는다면 이 순서가 좋습니다.
@@ -63,11 +64,11 @@ Master Example <== WebRTC DataChannel ==> Slave Subprocess
 1. `sdk/protocol/messages.py`
 2. `server/app/state.py`
 3. `server/app/main.py`
-4. `slave/launcher/control.py`
-5. `slave/launcher/subprocess_manager.py`
-6. `slave/launcher/slave_registry.py`
+4. `launcher/app/control.py`
+5. `launcher/app/subprocess_manager.py`
+6. `launcher/app/slave_registry.py`
 7. `sdk/master/js/src/index.ts`
-8. `master/examples/echo/src/app/page.tsx`
+8. `masters/echo/src/app/page.tsx`
 
 ## 4. 로컬 실행 방법
 
@@ -77,10 +78,10 @@ Python dependency:
 cd app_v1/server
 poetry install
 
-cd ../slave/launcher
+cd ../launcher
 poetry install
 
-cd ../executables/echo
+cd ../slaves/echo
 poetry install
 ```
 
@@ -93,7 +94,7 @@ cd app_v1/sdk/master/js
 npm install --no-package-lock
 npm run build
 
-cd ../../../master/examples/echo
+cd ../../../masters/echo
 npm install --no-package-lock
 ```
 
@@ -105,12 +106,12 @@ poetry run gpstation-v1-server
 ```
 
 ```powershell
-cd app_v1/slave/launcher
+cd app_v1/launcher
 poetry run gpstation-v1-slave-launcher
 ```
 
 ```powershell
-cd app_v1/master/examples/echo
+cd app_v1/masters/echo
 .\run.bat
 ```
 
@@ -119,14 +120,14 @@ cd app_v1/master/examples/echo
 - Server: `http://127.0.0.1:8100`
 - Web: `http://localhost:3001`
 - Client token: `demo-client-token`
-- Worker token: `demo-worker-token`
+- Launcher token: `demo-launcher-token`
 
 브라우저에서 `http://localhost:3001`을 열고 다음 순서로 확인합니다.
 
 1. Server에 `http://127.0.0.1:8100` 입력
 2. Token에 `demo-client-token` 입력
 3. `Refresh` 클릭
-4. worker 선택
+4. launcher 선택
 5. `echo` slave app 선택
 6. `Connect` 클릭
 7. Handler key와 JSON payload 입력
@@ -142,7 +143,7 @@ POST /v1/sessions
 Authorization: Bearer demo-client-token
 
 {
-  "worker_session_id": "...",
+  "launcher_session_id": "...",
   "slave_app_id": "echo",
   "ttl_seconds": null
 }
@@ -151,10 +152,10 @@ Authorization: Bearer demo-client-token
 이 요청은 `server/app/routers/v1/sessions.py`의 `create_session()`으로 들어옵니다. 서버는 다음 일을 합니다.
 
 1. token을 확인해서 사용자를 찾습니다.
-2. `worker_session_id`가 같은 사용자 소유인지 확인합니다.
-3. `slave_app_id`가 해당 worker가 광고한 app인지 확인합니다.
+2. `launcher_session_id`가 같은 사용자 소유인지 확인합니다.
+3. `slave_app_id`가 해당 launcher가 광고한 app인지 확인합니다.
 4. DB에 `slave_sessions` row를 만들고, live ready 이벤트만 runtime registry에 둡니다.
-5. worker main process로 `session.start` 메시지를 보냅니다.
+5. launcher main process로 `session.start` 메시지를 보냅니다.
 6. slave subprocess가 준비됐다는 `session.ready`를 기다립니다.
 7. master에 signaling URL과 short-lived session token을 돌려줍니다.
 
@@ -163,7 +164,7 @@ Authorization: Bearer demo-client-token
 ```json
 {
   "session_id": "...",
-  "worker_session_id": "...",
+  "launcher_session_id": "...",
   "slave_app_id": "echo",
   "signaling_url": "ws://127.0.0.1:8100/v1/sessions/.../signal?token=...",
   "token": "...",
@@ -174,13 +175,13 @@ Authorization: Bearer demo-client-token
 그다음 JS SDK는 WebRTC offer를 만들고 signaling WebSocket으로 보냅니다.
 
 ```text
-Master -> Server -> Worker Main -> Slave Subprocess
+Master -> Server -> Launcher Main -> Slave Subprocess
 ```
 
 slave subprocess는 offer를 받고 answer를 만듭니다. answer는 반대 방향으로 돌아옵니다.
 
 ```text
-Slave Subprocess -> Worker Main -> Server -> Master
+Slave Subprocess -> Launcher Main -> Server -> Master
 ```
 
 master가 answer를 적용하면 WebRTC 연결이 열리고, `gpstation.v1` DataChannel이 연결됩니다. 그 뒤부터는 서버가 작업 메시지를 중계하지 않습니다.
@@ -195,12 +196,12 @@ Master <== DataChannel ==> Slave Subprocess
 
 Control message 예:
 
-- `worker.hello`
-- `worker.heartbeat`
-- `worker.accepted`
+- `launcher.hello`
+- `launcher.heartbeat`
+- `launcher.accepted`
 - `session.start`
 - `session.ready`
-- `signal.to_worker`
+- `signal.to_launcher`
 - `signal.to_client`
 - `session.closed`
 - `session.error`
@@ -235,7 +236,7 @@ DataChannel request control frame 예:
 
 파일, 이미지, Blob 같은 binary data는 JSON payload에 base64로 넣지 않습니다. 먼저 request/response control frame의 `attachments` metadata에 `{ id, name, mimeType, size }`를 싣고, 실제 bytes는 별도 binary chunk frame으로 보냅니다. 각 binary frame은 4-byte header length, UTF-8 JSON header, raw bytes 순서입니다.
 
-메시지 모델을 따로 둔 이유는 서버, worker, master SDK, slave SDK가 같은 단어를 쓰게 만들기 위해서입니다. WebRTC와 WebSocket은 디버깅이 어려운 편이라, 메시지 이름이 흐트러지면 원인 찾기가 금방 지저분해집니다.
+메시지 모델을 따로 둔 이유는 서버, launcher, master SDK, slave SDK가 같은 단어를 쓰게 만들기 위해서입니다. WebRTC와 WebSocket은 디버깅이 어려운 편이라, 메시지 이름이 흐트러지면 원인 찾기가 금방 지저분해집니다.
 
 ## 7. Server 코드 읽기
 
@@ -245,16 +246,16 @@ DataChannel request control frame 예:
 
 - `users`, `identities`, `sessions`, `oauth_states`, `auth_audit`: OAuth/JWT용 auth 테이블
 - `access_keys`: 이후 AccessKey 인증 전환을 위한 테이블
-- `workers`, `slave_sessions`: v1 orchestration 현재 상태와 session 보관 데이터
+- `launchers`, `slave_sessions`: v1 orchestration 현재 상태와 session 보관 데이터
 
 `server/app/state.py`는 DB가 아니라 live WebSocket registry입니다. 서버 프로세스가 들고 있어야 하는 `WebSocket` 객체, client pending signal, `asyncio.Event`만 여기에 남습니다.
 
 `server/app/routers/v1/*`는 HTTP/WebSocket endpoint를 담습니다.
 
 - `GET /health`: 서버 상태 확인
-- `GET /v1/workers`: 현재 사용자 소유 worker 목록
+- `GET /v1/launchers`: 현재 사용자 소유 launcher 목록
 - `POST /v1/sessions`: 선택한 slave app subprocess 시작 및 session descriptor 생성
-- `WS /v1/workers/control`: worker main process가 붙는 control channel
+- `WS /v1/launchers/control`: launcher main process가 붙는 control channel
 - `WS /v1/sessions/{session_id}/signal`: 브라우저 signaling channel
 
 인증은 `server/app/auth.py`와 `settings.py`에 있습니다. 지금은 production 인증이 아니라 static bearer token map입니다. 단, 기본 demo principal은 startup 때 `users` table에 deterministic UUID로 seed됩니다.
@@ -263,45 +264,45 @@ DataChannel request control frame 예:
 
 ```text
 demo-client-token -> deterministic demo user UUID, scope client
-demo-worker-token -> deterministic demo user UUID, scope worker
+demo-launcher-token -> deterministic demo user UUID, scope launcher
 ```
 
-서버는 `client` scope로 REST API를 열고, `worker` scope로 worker control WebSocket을 엽니다.
+서버는 `client` scope로 REST API를 열고, `launcher` scope로 launcher control WebSocket을 엽니다.
 
-## 8. Worker 코드 읽기
+## 8. Launcher 코드 읽기
 
-worker는 main process와 slave subprocess로 나뉩니다.
+launcher는 main process와 slave subprocess로 나뉩니다.
 
-### Worker main process
+### Launcher main process
 
-`slave/launcher/control.py`가 서버의 `/v1/workers/control`에 연결합니다.
+`launcher/app/control.py`가 서버의 `/v1/launchers/control`에 연결합니다.
 
-처음 연결되면 worker는 `worker.hello`를 보냅니다.
+처음 연결되면 launcher는 `launcher.hello`를 보냅니다.
 
 ```json
 {
-  "type": "worker.hello",
-  "worker_name": "...",
+  "type": "launcher.hello",
+  "launcher_name": "...",
   "slave_app_ids": ["echo"],
   "metadata": {}
 }
 ```
 
-서버가 `worker.accepted`를 돌려주면 worker는 heartbeat를 보내며 대기합니다. 서버에서 `session.start`가 오면 `SessionManager`가 요청된 `slave_app_id`에 맞는 subprocess를 하나 띄웁니다.
+서버가 `launcher.accepted`를 돌려주면 launcher는 heartbeat를 보내며 대기합니다. 서버에서 `session.start`가 오면 `SessionManager`가 요청된 `slave_app_id`에 맞는 subprocess를 하나 띄웁니다.
 
 ### Subprocess manager
 
-`slave/launcher/subprocess_manager.py`는 세션별 slave subprocess를 관리합니다.
+`launcher/app/subprocess_manager.py`는 세션별 slave subprocess를 관리합니다.
 
 slave subprocess와는 stdin/stdout JSON-lines로 통신합니다. 한 줄에 JSON 객체 하나를 쓰는 방식입니다.
 
-worker main이 slave subprocess에 보내는 메시지:
+launcher main이 slave subprocess에 보내는 메시지:
 
 ```json
 {"type": "signal", "signal": {"type": "offer", "sdp": "..."}}
 ```
 
-slave subprocess가 worker main에 보내는 메시지:
+slave subprocess가 launcher main에 보내는 메시지:
 
 ```json
 {"type": "signal", "signal": {"type": "answer", "sdp": "..."}}
@@ -311,7 +312,7 @@ slave subprocess가 worker main에 보내는 메시지:
 
 ### Slave subprocess
 
-`slave/launcher/slave_registry.py`는 요청된 `slave_app_id`의 manifest를 찾아 plugin module을 subprocess로 직접 실행합니다. plugin program은 `sdk/slave`의 `sdk.slave`를 import해서 `SlaveApp`, memory, initialize hook, handler들을 구성하고 `run_app(app)`을 호출합니다.
+`launcher/app/slave_registry.py`는 요청된 `slave_app_id`의 manifest를 찾아 plugin module을 subprocess로 직접 실행합니다. plugin program은 `sdk/slave`의 `sdk.slave`를 import해서 `SlaveApp`, memory, initialize hook, handler들을 구성하고 `run_app(app)`을 호출합니다.
 
 흐름은 다음과 같습니다.
 
@@ -331,7 +332,7 @@ DataChannel label은 반드시 `gpstation.v1`이어야 합니다.
 
 `GpStationClient`가 하는 일:
 
-- `listWorkers()`: `GET /v1/workers`
+- `listLaunchers()`: `GET /v1/launchers`
 - `createSession()`: `POST /v1/sessions`
 - `connectSession()`: signaling WebSocket 연결, WebRTC offer 생성, answer 적용, DataChannel open 대기
 
@@ -341,12 +342,12 @@ DataChannel label은 반드시 `gpstation.v1`이어야 합니다.
 - 같은 `id`의 `call.response`가 오고 attachment chunks가 모두 도착하면 Promise resolve
 - `close()`: DataChannel, PeerConnection, WebSocket 정리
 
-`master/examples/echo/src/app/page.tsx`는 SDK를 실제 화면에 연결합니다.
+`masters/echo/src/app/page.tsx`는 SDK를 실제 화면에 연결합니다.
 
 화면의 주요 state:
 
-- `workers`: 서버에서 받은 worker 목록
-- `selectedWorkerId`: 사용자가 고른 worker
+- `launchers`: 서버에서 받은 launcher 목록
+- `selectedLauncherId`: 사용자가 고른 launcher
 - `selectedSlaveAppId`: 사용자가 고른 slave app
 - `session`: 생성된 session descriptor
 - `connected`: DataChannel 연결 여부
@@ -365,10 +366,10 @@ python -m pytest
 cd ../server
 poetry run pytest
 
-cd ../slave/launcher
+cd ../launcher
 poetry run pytest
 
-cd ../executables/echo
+cd ../slaves/echo
 poetry run python -m app --help
 ```
 
@@ -379,7 +380,7 @@ cd app_v1/sdk/master/js
 npm run build
 npm run typecheck
 
-cd ../../../master/examples/echo
+cd ../../../masters/echo
 npm run build
 npm run typecheck
 ```
@@ -387,8 +388,8 @@ npm run typecheck
 Browser manual check:
 
 1. Start `app_v1/server` with `poetry run gpstation-v1-server`.
-2. Start `app_v1/slave/launcher` with `poetry run gpstation-v1-slave-launcher`.
-3. Open `app_v1/master/examples/echo`, connect to the `echo` slave app, and call `echo.request` with JSON plus an optional file attachment.
+2. Start `app_v1/launcher` with `poetry run gpstation-v1-slave-launcher`.
+3. Open `app_v1/masters/echo`, connect to the `echo` slave app, and call `echo.request` with JSON plus an optional file attachment.
 ## 11. 구현 중 오래 걸렸던 시행착오
 
 이번 구현에서 시간이 오래 걸린 부분은 “코드가 틀렸다”기보다, 여러 런타임 경계가 동시에 얽힌 부분들이었습니다. 나중에 비슷한 문제를 만났을 때 바로 떠올릴 수 있도록 남깁니다.
@@ -429,7 +430,7 @@ cmd.exe /c set PYTHONPATH=...&& python -m app
 
 ### 11.3 Next/Turbopack이 local scoped package를 못 찾은 문제
 
-`master/examples/echo`은 `@gpstation/v1-master-js-sdk`를 `file:` dependency로 사용합니다. 처음에는 JS SDK가 `src/index.ts`를 직접 export했습니다.
+`masters/echo`은 `@gpstation/v1-master-js-sdk`를 `file:` dependency로 사용합니다. 처음에는 JS SDK가 `src/index.ts`를 직접 export했습니다.
 
 TypeScript typecheck는 통과했지만 `next build`의 Turbopack production build가 scoped local package를 못 찾았습니다.
 
@@ -442,8 +443,8 @@ TypeScript typecheck는 통과했지만 `next build`의 Turbopack production bui
 
 - `sdk/master/js/package.json`
 - `sdk/master/js/tsconfig.build.json`
-- `master/examples/echo/package.json`
-- `master/examples/echo/next.config.mjs`
+- `masters/echo/package.json`
+- `masters/echo/next.config.mjs`
 
 ### 11.4 React 19 lint의 ref render access 규칙
 
@@ -465,7 +466,7 @@ const [connected, setConnected] = useState(false);
 
 ### 11.5 Subprocess ready race
 
-worker main은 subprocess가 `ready`라고 말할 때까지 기다립니다. 그런데 stdout reader가 종료될 때도 `ready_event`를 set하면, subprocess가 준비되기 전에 죽어도 main process가 잘못해서 `session.ready`를 서버에 보낼 수 있습니다.
+launcher main은 subprocess가 `ready`라고 말할 때까지 기다립니다. 그런데 stdout reader가 종료될 때도 `ready_event`를 set하면, subprocess가 준비되기 전에 죽어도 main process가 잘못해서 `session.ready`를 서버에 보낼 수 있습니다.
 
 이를 막기 위해 `ManagedSession`에 `ready` flag를 추가했습니다.
 
@@ -476,7 +477,7 @@ worker main은 subprocess가 `ready`라고 말할 때까지 기다립니다. 그
 
 관련 파일:
 
-- `slave/launcher/subprocess_manager.py`
+- `launcher/app/subprocess_manager.py`
 
 ### 11.6 WebRTC smoke에서 echo 응답을 받았는데 Future가 안 깨어난 문제
 
@@ -510,25 +511,25 @@ loop.call_soon_threadsafe(result.set_result, payload)
 
 관련 파일:
 
-- `master/examples/echo` browser check
+- `masters/echo` browser check
 
 ### 11.7 WebRTC 디버깅은 로그 위치가 중요하다
 
-처음에는 slave subprocess가 DataChannel 메시지를 받는지 알 수 없었습니다. subprocess stderr는 worker main이 읽어서 stdout으로 넘깁니다. 그래서 다음 로그를 추가했습니다.
+처음에는 slave subprocess가 DataChannel 메시지를 받는지 알 수 없었습니다. subprocess stderr는 launcher main이 읽어서 stdout으로 넘깁니다. 그래서 다음 로그를 추가했습니다.
 
 - subprocess가 DataChannel을 받았는지
 - DataChannel message를 받았는지
 - `call.response`를 보냈는지
 - smoke client가 DataChannel message를 받았는지
 
-이 로그 덕분에 “worker가 못 받는 문제”가 아니라 “client Future가 안 깨어나는 문제”라는 걸 좁힐 수 있었습니다.
+이 로그 덕분에 “launcher가 못 받는 문제”가 아니라 “client Future가 안 깨어나는 문제”라는 걸 좁힐 수 있었습니다.
 
 관련 파일:
 
 - `sdk/slave/runtime.py`
-- `slave/executables/echo/app.py`
-- `slave/launcher/subprocess_manager.py`
-- `master/examples/echo` browser check
+- `slaves/echo/app.py`
+- `launcher/app/subprocess_manager.py`
+- `masters/echo` browser check
 
 ## 12. 자주 볼 에러와 확인 위치
 
@@ -538,31 +539,31 @@ loop.call_soon_threadsafe(result.set_result, payload)
 Get-Content -Encoding UTF8 .run\v1-server.err.log -Tail 80
 ```
 
-worker가 서버에 안 붙으면:
+launcher가 서버에 안 붙으면:
 
 ```powershell
-Get-Content -Encoding UTF8 .run\v1-worker.err.log -Tail 80
-Get-Content -Encoding UTF8 .run\v1-worker.out.log -Tail 80
+Get-Content -Encoding UTF8 .run\v1-launcher.err.log -Tail 80
+Get-Content -Encoding UTF8 .run\v1-launcher.out.log -Tail 80
 ```
 
-worker 목록이 비어 있으면:
+launcher 목록이 비어 있으면:
 
-- worker process가 실행 중인지 확인
-- worker token이 `demo-worker-token`인지 확인
+- launcher process가 실행 중인지 확인
+- launcher token이 `demo-launcher-token`인지 확인
 - server URL이 `http://127.0.0.1:8100`인지 확인
 
 session 생성이 실패하면:
 
-- 선택한 `worker_session_id`가 현재 사용자 소유인지 확인
-- worker 상태가 `ready` 또는 `busy`인지 확인
-- worker control WebSocket이 끊기지 않았는지 확인
+- 선택한 `launcher_session_id`가 현재 사용자 소유인지 확인
+- launcher 상태가 `ready` 또는 `busy`인지 확인
+- launcher control WebSocket이 끊기지 않았는지 확인
 
 DataChannel이 안 열리면:
 
 - 브라우저 콘솔 로그 확인
 - server signaling WebSocket 로그 확인
 - slave subprocess stdout/stderr relay 로그 확인
-- `master/examples/echo` browser check로 브라우저 없이 먼저 검증
+- `masters/echo` browser check로 브라우저 없이 먼저 검증
 
 ## 13. 다음 단계로 확장하려면
 
@@ -571,10 +572,10 @@ DataChannel이 안 열리면:
 1. echo 외의 실제 slave app plugin 추가
 2. Python master SDK에 WebRTC client 기능 추가
 3. static token map을 기존 사용자/auth 시스템과 연결
-4. worker capacity와 multi-session 정책 정의
+4. launcher capacity와 multi-session 정책 정의
 5. timeout, cancel, progress, result 메시지를 DataChannel protocol에 추가
 6. master 예제에서 request/response history와 binary payload 테스트 추가
 
 ## 14. 한 줄 요약
 
-`app_v1/` MVP는 “master가 사용자의 worker와 slave app을 명시 선택하고, 서버는 세션과 signaling만 조율하며, 실제 작업 메시지는 WebRTC DataChannel로 master와 slave subprocess가 직접 주고받는다”는 구조를 최소 기능으로 증명합니다.
+`app_v1/` MVP는 “master가 사용자의 launcher와 slave app을 명시 선택하고, 서버는 세션과 signaling만 조율하며, 실제 작업 메시지는 WebRTC DataChannel로 master와 slave subprocess가 직접 주고받는다”는 구조를 최소 기능으로 증명합니다.

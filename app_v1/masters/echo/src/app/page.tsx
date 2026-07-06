@@ -7,7 +7,7 @@ import {
   GpStationPeer,
   ReceivedFile,
   SessionDescriptor,
-  WorkerSessionView,
+  LauncherSessionView,
 } from '@gpstation/v1-master-js-sdk';
 
 const defaultApiBaseUrl = process.env.NEXT_PUBLIC_GPSTATION_V1_API_URL || 'http://127.0.0.1:8100';
@@ -25,8 +25,8 @@ type DisplayFile = ReceivedFile & {
 export default function Home() {
   const [apiBaseUrl, setApiBaseUrl] = useState(defaultApiBaseUrl);
   const [token, setToken] = useState('demo-client-token');
-  const [workers, setWorkers] = useState<WorkerSessionView[]>([]);
-  const [selectedWorkerId, setSelectedWorkerId] = useState('');
+  const [launchers, setLaunchers] = useState<LauncherSessionView[]>([]);
+  const [selectedLauncherId, setSelectedLauncherId] = useState('');
   const [selectedSlaveAppId, setSelectedSlaveAppId] = useState('echo');
   const [session, setSession] = useState<SessionDescriptor | null>(null);
   const [status, setStatus] = useState('idle');
@@ -49,8 +49,8 @@ export default function Home() {
       }),
     [apiBaseUrl, token],
   );
-  const selectedWorker = workers.find((worker) => worker.id === selectedWorkerId);
-  const availableSlaveAppIds = selectedWorker?.slave_app_ids ?? [];
+  const selectedLauncher = launchers.find((launcher) => launcher.id === selectedLauncherId);
+  const availableSlaveAppIds = selectedLauncher?.slave_app_ids ?? [];
 
   function addLog(message: string) {
     const id = logIdRef.current + 1;
@@ -65,20 +65,20 @@ export default function Home() {
     setResultFiles([]);
   }
 
-  async function refreshWorkers() {
+  async function refreshLaunchers() {
     setBusy(true);
     try {
-      const nextWorkers = await client.listWorkers();
-      setWorkers(nextWorkers);
-      const nextSelectedWorker = nextWorkers.find((worker) => worker.id === selectedWorkerId) ?? nextWorkers[0];
-      if (nextSelectedWorker) {
-        setSelectedWorkerId(nextSelectedWorker.id);
-        setSelectedSlaveAppId(pickSlaveAppId(nextSelectedWorker, selectedSlaveAppId));
+      const nextLaunchers = await client.listLaunchers();
+      setLaunchers(nextLaunchers);
+      const nextSelectedLauncher = nextLaunchers.find((launcher) => launcher.id === selectedLauncherId) ?? nextLaunchers[0];
+      if (nextSelectedLauncher) {
+        setSelectedLauncherId(nextSelectedLauncher.id);
+        setSelectedSlaveAppId(pickSlaveAppId(nextSelectedLauncher, selectedSlaveAppId));
       }
-      setStatus('workers refreshed');
-      addLog(`workers: ${nextWorkers.length}`);
+      setStatus('launchers refreshed');
+      addLog(`launchers: ${nextLaunchers.length}`);
     } catch (error) {
-      setStatus('worker refresh failed');
+      setStatus('launcher refresh failed');
       addLog(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
@@ -86,8 +86,8 @@ export default function Home() {
   }
 
   async function connect() {
-    if (!selectedWorkerId) {
-      setStatus('select worker');
+    if (!selectedLauncherId) {
+      setStatus('select launcher');
       return;
     }
     if (!selectedSlaveAppId) {
@@ -102,7 +102,7 @@ export default function Home() {
     setConnected(false);
     try {
       const descriptor = await client.createSession({
-        workerSessionId: selectedWorkerId,
+        launcherSessionId: selectedLauncherId,
         slaveAppId: selectedSlaveAppId,
       });
       setSession(descriptor);
@@ -169,9 +169,9 @@ export default function Home() {
     addLog('connection closed');
   }
 
-  function selectWorker(worker: WorkerSessionView) {
-    setSelectedWorkerId(worker.id);
-    setSelectedSlaveAppId(pickSlaveAppId(worker, selectedSlaveAppId));
+  function selectLauncher(launcher: LauncherSessionView) {
+    setSelectedLauncherId(launcher.id);
+    setSelectedSlaveAppId(pickSlaveAppId(launcher, selectedSlaveAppId));
   }
 
   return (
@@ -179,7 +179,7 @@ export default function Home() {
       <section className="topbar">
         <div>
           <p className="eyebrow">GP Station v1</p>
-          <h1>Worker DataChannel Console</h1>
+          <h1>Launcher DataChannel Console</h1>
         </div>
         <div className="statusPill">
           <Wifi size={16} aria-hidden="true" />
@@ -198,11 +198,11 @@ export default function Home() {
             <input value={token} onChange={(event) => setToken(event.target.value)} />
           </label>
           <div className="buttonRow">
-            <button type="button" onClick={refreshWorkers} disabled={busy} title="Refresh workers">
+            <button type="button" onClick={refreshLaunchers} disabled={busy} title="Refresh launchers">
               <RefreshCw size={17} aria-hidden="true" />
               <span>Refresh</span>
             </button>
-            <button type="button" onClick={connect} disabled={busy || !selectedWorkerId || !selectedSlaveAppId} title="Connect">
+            <button type="button" onClick={connect} disabled={busy || !selectedLauncherId || !selectedSlaveAppId} title="Connect">
               <PlugZap size={17} aria-hidden="true" />
               <span>Connect</span>
             </button>
@@ -212,23 +212,23 @@ export default function Home() {
             </button>
           </div>
           <label>
-            <span>Worker</span>
+            <span>Launcher</span>
             <select
-              value={selectedWorkerId}
+              value={selectedLauncherId}
               onChange={(event) => {
-                const worker = workers.find((item) => item.id === event.target.value);
-                if (worker) {
-                  selectWorker(worker);
+                const launcher = launchers.find((item) => item.id === event.target.value);
+                if (launcher) {
+                  selectLauncher(launcher);
                 } else {
-                  setSelectedWorkerId('');
+                  setSelectedLauncherId('');
                   setSelectedSlaveAppId('');
                 }
               }}
             >
-              <option value="">No worker selected</option>
-              {workers.map((worker) => (
-                <option key={worker.id} value={worker.id}>
-                  {worker.worker_name} | {worker.status} | {worker.id.slice(0, 8)}
+              <option value="">No launcher selected</option>
+              {launchers.map((launcher) => (
+                <option key={launcher.id} value={launcher.id}>
+                  {launcher.launcher_name} | {launcher.status} | {launcher.id.slice(0, 8)}
                 </option>
               ))}
             </select>
@@ -282,7 +282,7 @@ export default function Home() {
 
       <section className="lowerGrid">
         <div className="panel">
-          <h2>Workers</h2>
+          <h2>Launchers</h2>
           <div className="table">
             <div className="tableHead">
               <span>Name</span>
@@ -290,20 +290,20 @@ export default function Home() {
               <span>Apps</span>
               <span>Sessions</span>
             </div>
-            {workers.map((worker) => (
+            {launchers.map((launcher) => (
               <button
                 type="button"
-                key={worker.id}
-                className={worker.id === selectedWorkerId ? 'workerRow selected' : 'workerRow'}
-                onClick={() => selectWorker(worker)}
+                key={launcher.id}
+                className={launcher.id === selectedLauncherId ? 'launcherRow selected' : 'launcherRow'}
+                onClick={() => selectLauncher(launcher)}
               >
-                <span>{worker.worker_name}</span>
-                <span>{worker.status}</span>
-                <span>{worker.slave_app_ids.join(', ') || '-'}</span>
-                <span>{worker.active_session_count}</span>
+                <span>{launcher.launcher_name}</span>
+                <span>{launcher.status}</span>
+                <span>{launcher.slave_app_ids.join(', ') || '-'}</span>
+                <span>{launcher.active_session_count}</span>
               </button>
             ))}
-            {workers.length === 0 && <p className="emptyText">No connected workers.</p>}
+            {launchers.length === 0 && <p className="emptyText">No connected launchers.</p>}
           </div>
         </div>
 
@@ -315,8 +315,8 @@ export default function Home() {
               <dd>{session?.session_id || '-'}</dd>
             </div>
             <div>
-              <dt>Worker ID</dt>
-              <dd>{session?.worker_session_id || selectedWorkerId || '-'}</dd>
+              <dt>Launcher ID</dt>
+              <dd>{session?.launcher_session_id || selectedLauncherId || '-'}</dd>
             </div>
             <div>
               <dt>Slave app</dt>
@@ -343,14 +343,14 @@ export default function Home() {
   );
 }
 
-function pickSlaveAppId(worker: WorkerSessionView, current: string): string {
-  if (worker.slave_app_ids.includes(current)) {
+function pickSlaveAppId(launcher: LauncherSessionView, current: string): string {
+  if (launcher.slave_app_ids.includes(current)) {
     return current;
   }
-  if (worker.slave_app_ids.includes('echo')) {
+  if (launcher.slave_app_ids.includes('echo')) {
     return 'echo';
   }
-  return worker.slave_app_ids[0] ?? '';
+  return launcher.slave_app_ids[0] ?? '';
 }
 
 function formatBytes(size: number): string {

@@ -3,21 +3,21 @@ import uuid
 
 import pytest
 
-from app.db import SlaveSession, Worker
+from app.db import SlaveSession, Launcher
 from app.service.session_service import SessionService
 from app.user_auth.utils.auth_utils import hash_token
 
 
 class FakeDb:
-    def __init__(self, worker=None, session=None):
-        self.worker = worker
+    def __init__(self, launcher=None, session=None):
+        self.launcher = launcher
         self.session = session
         self.added = []
         self.commits = 0
 
     async def get(self, model, object_id):
-        if model is Worker and self.worker is not None and self.worker.id == object_id:
-            return self.worker
+        if model is Launcher and self.launcher is not None and self.launcher.id == object_id:
+            return self.launcher
         if model is SlaveSession and self.session is not None and self.session.id == object_id:
             return self.session
         return None
@@ -39,11 +39,11 @@ class FakeDb:
         return None
 
 
-def make_worker(user_id="user-1", status="ready"):
-    return Worker(
-        id="worker-1",
+def make_launcher(user_id="user-1", status="ready"):
+    return Launcher(
+        id="launcher-1",
         user_id=user_id,
-        worker_name="desktop",
+        launcher_name="desktop",
         ip_address="127.0.0.1",
         status=status,
         slave_app_ids=["echo"],
@@ -54,14 +54,14 @@ def make_worker(user_id="user-1", status="ready"):
 
 
 @pytest.mark.asyncio
-async def test_create_session_requires_owned_worker():
-    db = FakeDb(worker=make_worker(user_id="other-user"))
+async def test_create_session_requires_owned_launcher():
+    db = FakeDb(launcher=make_launcher(user_id="other-user"))
 
     with pytest.raises(KeyError):
         await SessionService.create_session(
             db,
             user_id="user-1",
-            worker_id="worker-1",
+            launcher_id="launcher-1",
             slave_app_id="echo",
             ttl_seconds=60,
             master_ip_address=None,
@@ -71,13 +71,13 @@ async def test_create_session_requires_owned_worker():
 
 @pytest.mark.asyncio
 async def test_create_session_requires_advertised_slave():
-    db = FakeDb(worker=make_worker())
+    db = FakeDb(launcher=make_launcher())
 
     with pytest.raises(ValueError):
         await SessionService.create_session(
             db,
             user_id="user-1",
-            worker_id="worker-1",
+            launcher_id="launcher-1",
             slave_app_id="missing",
             ttl_seconds=60,
             master_ip_address=None,
@@ -86,14 +86,14 @@ async def test_create_session_requires_advertised_slave():
 
 
 @pytest.mark.asyncio
-async def test_create_session_hashes_token_and_marks_worker_busy():
-    worker = make_worker()
-    db = FakeDb(worker=worker)
+async def test_create_session_hashes_token_and_marks_launcher_busy():
+    launcher = make_launcher()
+    db = FakeDb(launcher=launcher)
 
     session, token = await SessionService.create_session(
         db,
         user_id="user-1",
-        worker_id="worker-1",
+        launcher_id="launcher-1",
         slave_app_id="echo",
         ttl_seconds=60,
         master_ip_address="127.0.0.1",
@@ -103,8 +103,8 @@ async def test_create_session_hashes_token_and_marks_worker_busy():
     assert session.session_token_hash == hash_token(token)
     assert session.master_ip_address == "127.0.0.1"
     assert session.master_user_agent == "pytest"
-    assert worker.status == "busy"
-    assert worker.active_session_ids == [session.id]
+    assert launcher.status == "busy"
+    assert launcher.active_session_ids == [session.id]
     assert any(isinstance(item, SlaveSession) for item in db.added)
 
 
@@ -113,7 +113,7 @@ async def test_verify_session_token_checks_hash_and_status():
     session = SlaveSession(
         id="session-1",
         user_id="user-1",
-        worker_id="worker-1",
+        launcher_id="launcher-1",
         slave_app_id="echo",
         session_token_hash=hash_token("secret"),
         status="ready",
@@ -127,23 +127,23 @@ async def test_verify_session_token_checks_hash_and_status():
 
 
 @pytest.mark.asyncio
-async def test_close_session_clears_worker_active_session():
-    worker = make_worker(status="busy")
-    worker.active_session_ids = ["session-1"]
+async def test_close_session_clears_launcher_active_session():
+    launcher = make_launcher(status="busy")
+    launcher.active_session_ids = ["session-1"]
     session = SlaveSession(
         id="session-1",
         user_id="user-1",
-        worker_id="worker-1",
+        launcher_id="launcher-1",
         slave_app_id="echo",
         session_token_hash=hash_token("secret"),
         status="ready",
         ttl_seconds=60,
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=60),
     )
-    db = FakeDb(worker=worker, session=session)
+    db = FakeDb(launcher=launcher, session=session)
 
     await SessionService.close_session(db, "session-1", "done")
 
     assert session.status == "closed"
-    assert worker.active_session_ids == []
-    assert worker.status == "ready"
+    assert launcher.active_session_ids == []
+    assert launcher.status == "ready"
