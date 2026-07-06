@@ -48,26 +48,26 @@ Master Example <== WebRTC DataChannel ==> Slave Subprocess
 
 `app_v1/`는 기존 `apps/`와 분리된 새 MVP입니다.
 
-- `sdk/protocol/python/`: 서버, worker, SDK가 공유하는 메시지 이름과 Pydantic 모델
+- `sdk/protocol/`: 서버, worker, SDK가 공유하는 메시지 이름과 Pydantic 모델
 - `server/`: FastAPI 서버, 인증, worker/session registry, signaling relay
 - `slave/`: worker main process와 built-in slave app plugins
 - `sdk/master/js/`: 브라우저 master SDK
-- `sdk/master/python/`: Python master SDK scaffold
-- `sdk/slave/python/`: Python slave app authoring SDK/runtime
-- `master/web/`: Next 기반 master 예제
-- `master/web` browser check: smoke test와 local demo helper
+`sdk/` is now an installable local package. Server and slave executables consume it through Poetry path dependencies, while each executable keeps its own `.venv`.
+- `sdk/slave/`: Python slave app authoring SDK/runtime
+- `master/examples/echo/`: Next 기반 master 예제
+- `master/examples/echo` browser check: smoke test와 local demo helper
 - `plan.md`: 구현 계획과 현재 완료 상태
 
 처음 코드를 읽는다면 이 순서가 좋습니다.
 
-1. `sdk/protocol/python/gpstation_protocol/messages.py`
-2. `server/gpstation_server/state.py`
-3. `server/gpstation_server/main.py`
-4. `slave/gpstation_slave_launcher_v1/control.py`
-5. `slave/gpstation_slave_launcher_v1/subprocess_manager.py`
-6. `slave/gpstation_slave_launcher_v1/slave_registry.py`
+1. `sdk/protocol/messages.py`
+2. `server/app/state.py`
+3. `server/app/main.py`
+4. `slave/launcher/control.py`
+5. `slave/launcher/subprocess_manager.py`
+6. `slave/launcher/slave_registry.py`
 7. `sdk/master/js/src/index.ts`
-8. `master/web/src/app/page.tsx`
+8. `master/examples/echo/src/app/page.tsx`
 
 ## 4. 로컬 실행 방법
 
@@ -77,11 +77,14 @@ Python dependency:
 cd app_v1/server
 poetry install
 
-cd ../slave
+cd ../slave/launcher
+poetry install
+
+cd ../executables/echo
 poetry install
 ```
 
-`sdk/protocol/python/`은 서버와 worker가 Poetry editable path dependency로 자동 설치합니다. `app_v1/sdk/protocol/python`에서 직접 `poetry install`을 실행하는 경우는 protocol package 자체를 테스트하거나 수정할 때입니다. `sdk/master/python`도 현재 MVP 실행에는 필수가 아니며, Python master SDK를 개발하거나 확인할 때만 설치하면 됩니다.
+`sdk/` is now an installable local package. Server and slave executables consume it through Poetry path dependencies, while each executable keeps its own `.venv`.
 
 Web dependency:
 
@@ -90,7 +93,7 @@ cd app_v1/sdk/master/js
 npm install --no-package-lock
 npm run build
 
-cd ../../../master/web
+cd ../../../master/examples/echo
 npm install --no-package-lock
 ```
 
@@ -102,12 +105,12 @@ poetry run gpstation-v1-server
 ```
 
 ```powershell
-cd app_v1/slave
+cd app_v1/slave/launcher
 poetry run gpstation-v1-slave-launcher
 ```
 
 ```powershell
-cd app_v1/master/web
+cd app_v1/master/examples/echo
 .\run.bat
 ```
 
@@ -145,7 +148,7 @@ Authorization: Bearer demo-client-token
 }
 ```
 
-이 요청은 `server/gpstation_server/main.py`의 `create_session()`으로 들어옵니다. 서버는 다음 일을 합니다.
+이 요청은 `server/app/main.py`의 `create_session()`으로 들어옵니다. 서버는 다음 일을 합니다.
 
 1. token을 확인해서 사용자를 찾습니다.
 2. `worker_session_id`가 같은 사용자 소유인지 확인합니다.
@@ -188,7 +191,7 @@ Master <== DataChannel ==> Slave Subprocess
 
 ## 6. Protocol이 해주는 일
 
-`sdk/protocol/python/gpstation_protocol/messages.py`에는 control message와 data channel message의 계약이 있습니다.
+`sdk/protocol/messages.py`에는 control message와 data channel message의 계약이 있습니다.
 
 Control message 예:
 
@@ -238,7 +241,7 @@ DataChannel request control frame 예:
 
 서버의 핵심은 두 파일입니다.
 
-`server/gpstation_server/state.py`는 메모리 상태 저장소입니다.
+`server/app/state.py`는 메모리 상태 저장소입니다.
 
 - `WorkerConnection`: 현재 서버에 연결된 worker
 - `ClientSession`: 브라우저가 만든 작업 세션
@@ -246,7 +249,7 @@ DataChannel request control frame 예:
 
 `RuntimeState`는 실제 DB가 아닙니다. 서버 프로세스가 종료되면 모든 worker/session 정보는 사라집니다. MVP에서는 E2E 연결을 증명하는 것이 목적이라 의도적으로 단순하게 두었습니다.
 
-`server/gpstation_server/main.py`는 HTTP/WebSocket endpoint를 담습니다.
+`server/app/main.py`는 HTTP/WebSocket endpoint를 담습니다.
 
 - `GET /health`: 서버 상태 확인
 - `GET /v1/workers`: 현재 사용자 소유 worker 목록
@@ -254,7 +257,7 @@ DataChannel request control frame 예:
 - `WS /v1/workers/control`: worker main process가 붙는 control channel
 - `WS /v1/sessions/{session_id}/signal`: 브라우저 signaling channel
 
-인증은 `server/gpstation_server/auth.py`와 `settings.py`에 있습니다. 지금은 production 인증이 아니라 static bearer token map입니다.
+인증은 `server/app/auth.py`와 `settings.py`에 있습니다. 지금은 production 인증이 아니라 static bearer token map입니다.
 
 기본값:
 
@@ -271,7 +274,7 @@ worker는 main process와 slave subprocess로 나뉩니다.
 
 ### Worker main process
 
-`slave/gpstation_slave_launcher_v1/control.py`가 서버의 `/v1/workers/control`에 연결합니다.
+`slave/launcher/control.py`가 서버의 `/v1/workers/control`에 연결합니다.
 
 처음 연결되면 worker는 `worker.hello`를 보냅니다.
 
@@ -288,7 +291,7 @@ worker는 main process와 slave subprocess로 나뉩니다.
 
 ### Subprocess manager
 
-`slave/gpstation_slave_launcher_v1/subprocess_manager.py`는 세션별 slave subprocess를 관리합니다.
+`slave/launcher/subprocess_manager.py`는 세션별 slave subprocess를 관리합니다.
 
 slave subprocess와는 stdin/stdout JSON-lines로 통신합니다. 한 줄에 JSON 객체 하나를 쓰는 방식입니다.
 
@@ -308,7 +311,7 @@ slave subprocess가 worker main에 보내는 메시지:
 
 ### Slave subprocess
 
-`slave/gpstation_slave_launcher_v1/slave_registry.py`는 요청된 `slave_app_id`의 manifest를 찾아 plugin module을 subprocess로 직접 실행합니다. plugin program은 `sdk/slave/python`의 `gpstation_slave_sdk_v1`를 import해서 `SlaveApp`, memory, initialize hook, handler들을 구성하고 `run_app(app)`을 호출합니다.
+`slave/launcher/slave_registry.py`는 요청된 `slave_app_id`의 manifest를 찾아 plugin module을 subprocess로 직접 실행합니다. plugin program은 `sdk/slave`의 `sdk.slave`를 import해서 `SlaveApp`, memory, initialize hook, handler들을 구성하고 `run_app(app)`을 호출합니다.
 
 흐름은 다음과 같습니다.
 
@@ -338,7 +341,7 @@ DataChannel label은 반드시 `gpstation.v1`이어야 합니다.
 - 같은 `id`의 `call.response`가 오고 attachment chunks가 모두 도착하면 Promise resolve
 - `close()`: DataChannel, PeerConnection, WebSocket 정리
 
-`master/web/src/app/page.tsx`는 SDK를 실제 화면에 연결합니다.
+`master/examples/echo/src/app/page.tsx`는 SDK를 실제 화면에 연결합니다.
 
 화면의 주요 state:
 
@@ -355,17 +358,18 @@ DataChannel label은 반드시 `gpstation.v1`이어야 합니다.
 Package tests:
 
 ```powershell
-cd app_v1/sdk/protocol/python
+cd app_v1/sdk
+python -m pip install -e ".[slave]"
+python -m pytest
+
+cd ../server
 poetry run pytest
 
-cd ../../../server
+cd ../slave/launcher
 poetry run pytest
 
-cd ../slave
-poetry run pytest
-
-cd ../sdk/slave/python
-poetry run pytest
+cd ../executables/echo
+poetry run python -m app --help
 ```
 
 Master web checks:
@@ -375,7 +379,7 @@ cd app_v1/sdk/master/js
 npm run build
 npm run typecheck
 
-cd ../../../master/web
+cd ../../../master/examples/echo
 npm run build
 npm run typecheck
 ```
@@ -383,8 +387,8 @@ npm run typecheck
 Browser manual check:
 
 1. Start `app_v1/server` with `poetry run gpstation-v1-server`.
-2. Start `app_v1/slave` with `poetry run gpstation-v1-slave-launcher`.
-3. Open `app_v1/master/web`, connect to the `echo` slave app, and call `echo.request` with JSON plus an optional file attachment.
+2. Start `app_v1/slave/launcher` with `poetry run gpstation-v1-slave-launcher`.
+3. Open `app_v1/master/examples/echo`, connect to the `echo` slave app, and call `echo.request` with JSON plus an optional file attachment.
 ## 11. 구현 중 오래 걸렸던 시행착오
 
 이번 구현에서 시간이 오래 걸린 부분은 “코드가 틀렸다”기보다, 여러 런타임 경계가 동시에 얽힌 부분들이었습니다. 나중에 비슷한 문제를 만났을 때 바로 떠올릴 수 있도록 남깁니다.
@@ -406,8 +410,8 @@ GPSTATION_V1_CORS_ORIGINS=http://127.0.0.1:3001,http://localhost:3001
 
 관련 파일:
 
-- `server/gpstation_server/settings.py`
-- `server/gpstation_server/main.py`
+- `server/app/settings.py`
+- `server/app/main.py`
 
 ### 11.2 PowerShell에서 background process를 띄울 때 PYTHONPATH quoting
 
@@ -418,14 +422,14 @@ GPSTATION_V1_CORS_ORIGINS=http://127.0.0.1:3001,http://localhost:3001
 검증 때는 더 안전한 형태로 임시 우회했습니다.
 
 ```powershell
-cmd.exe /c set PYTHONPATH=...&& python -m gpstation_server
+cmd.exe /c set PYTHONPATH=...&& python -m app
 ```
 
 현재 repo의 정상 실행 경로는 이 문제를 피하기 위해 Poetry를 사용합니다. `server/run.bat`와 `slave/run.bat`도 각각 `poetry run gpstation-v1-server`, `poetry run gpstation-v1-slave-launcher`를 호출합니다.
 
 ### 11.3 Next/Turbopack이 local scoped package를 못 찾은 문제
 
-`master/web`은 `@gpstation/v1-master-js-sdk`를 `file:` dependency로 사용합니다. 처음에는 JS SDK가 `src/index.ts`를 직접 export했습니다.
+`master/examples/echo`은 `@gpstation/v1-master-js-sdk`를 `file:` dependency로 사용합니다. 처음에는 JS SDK가 `src/index.ts`를 직접 export했습니다.
 
 TypeScript typecheck는 통과했지만 `next build`의 Turbopack production build가 scoped local package를 못 찾았습니다.
 
@@ -438,8 +442,8 @@ TypeScript typecheck는 통과했지만 `next build`의 Turbopack production bui
 
 - `sdk/master/js/package.json`
 - `sdk/master/js/tsconfig.build.json`
-- `master/web/package.json`
-- `master/web/next.config.mjs`
+- `master/examples/echo/package.json`
+- `master/examples/echo/next.config.mjs`
 
 ### 11.4 React 19 lint의 ref render access 규칙
 
@@ -472,7 +476,7 @@ worker main은 subprocess가 `ready`라고 말할 때까지 기다립니다. 그
 
 관련 파일:
 
-- `slave/gpstation_slave_launcher_v1/subprocess_manager.py`
+- `slave/launcher/subprocess_manager.py`
 
 ### 11.6 WebRTC smoke에서 echo 응답을 받았는데 Future가 안 깨어난 문제
 
@@ -506,7 +510,7 @@ loop.call_soon_threadsafe(result.set_result, payload)
 
 관련 파일:
 
-- `master/web` browser check
+- `master/examples/echo` browser check
 
 ### 11.7 WebRTC 디버깅은 로그 위치가 중요하다
 
@@ -521,10 +525,10 @@ loop.call_soon_threadsafe(result.set_result, payload)
 
 관련 파일:
 
-- `sdk/slave/python/gpstation_slave_sdk_v1/runtime.py`
-- `slave/slave_plugins/echo/app.py`
-- `slave/gpstation_slave_launcher_v1/subprocess_manager.py`
-- `master/web` browser check
+- `sdk/slave/runtime.py`
+- `slave/executables/echo/app.py`
+- `slave/launcher/subprocess_manager.py`
+- `master/examples/echo` browser check
 
 ## 12. 자주 볼 에러와 확인 위치
 
@@ -558,7 +562,7 @@ DataChannel이 안 열리면:
 - 브라우저 콘솔 로그 확인
 - server signaling WebSocket 로그 확인
 - slave subprocess stdout/stderr relay 로그 확인
-- `master/web` browser check로 브라우저 없이 먼저 검증
+- `master/examples/echo` browser check로 브라우저 없이 먼저 검증
 
 ## 13. 다음 단계로 확장하려면
 

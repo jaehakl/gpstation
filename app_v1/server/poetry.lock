@@ -82,9 +82,9 @@ standard = ["email-validator (>=2.0.0)", "fastapi-cli[standard] (>=0.0.8)", "htt
 standard-no-fastapi-cloud-cli = ["email-validator (>=2.0.0)", "fastapi-cli[standard-no-fastapi-cloud-cli] (>=0.0.8)", "httpx (>=0.23.0)", "jinja2 (>=3.1.5)", "python-multipart (>=0.0.18)", "uvicorn[standard] (>=0.12.0)"]
 
 [[package]]
-name = "gpstation-v1-protocol"
+name = "gpstation-v1-sdk"
 version = "0.1.0"
-description = "Shared GP Station v1 protocol models"
+description = "Shared GP Station v1 Python SDK libraries"
 optional = false
 python-versions = ">=3.11,<3.15"
 groups = ["main"]
@@ -94,9 +94,12 @@ develop = true
 [package.dependencies]
 pydantic = ">=2.10,<3.0"
 
+[package.extras]
+slave = ["aiortc (>=1.9,<2.0)"]
+
 [package.source]
 type = "directory"
-url = "../sdk/protocol/python"
+url = "../sdk"
 
 [[package]]
 name = "h11"
@@ -891,4 +894,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.15"
-content-hash = "ffcba022df74e0cdde485c3fdaa7860218286ec471426d6d69ce2cc52da2f168"
+content-hash = "150dd79ec14282fa787a165fdf7d1c54277dfe6db715cb9d7749712b9fd71850"

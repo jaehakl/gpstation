@@ -37,10 +37,10 @@
 
 ## Verification Notes
 - Python tests cover protocol validation, token auth, worker ownership checks, session creation, and TTL cleanup.
-- Worker tests cover control WebSocket URL derivation.
+- Launcher tests cover control WebSocket URL derivation, executable registry loading, launch command selection, and missing executable environment errors.
 - Package tests cover protocol validation, server state, slave launcher registry, and slave SDK runtime behavior.
-- Browser verification uses `app_v1/master/web` after starting the server and slave launcher.
-- Python dependencies are installed and executed through per-package Poetry projects.
+- Browser verification uses `app_v1/master/examples/echo` after starting the server and slave launcher.
+- Python dependencies are installed and executed through separate Poetry projects for server, slave launcher, and each slave executable.
 
 ## Documentation Notes
 - `tutorial.md` explains the full v1 architecture for readers with shallow background knowledge.

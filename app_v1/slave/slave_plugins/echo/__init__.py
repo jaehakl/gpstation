@@ -1,1 +1,0 @@
-"""Echo slave app plugin."""

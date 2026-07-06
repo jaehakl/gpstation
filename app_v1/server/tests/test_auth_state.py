@@ -3,8 +3,8 @@ import asyncio
 import pytest
 from fastapi import HTTPException
 
-from gpstation_server.auth import authenticate_token
-from gpstation_server.state import RuntimeState
+from app.auth import authenticate_token
+from app.state import RuntimeState
 
 
 class DummyWebSocket:

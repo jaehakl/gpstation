@@ -1,26 +1,22 @@
 [project]
-name = "gpstation-v1-server"
+name = "gpstation-v1-slave-launcher"
 version = "0.1.0"
-description = "GP Station v1 in-memory orchestration server"
+description = "GP Station v1 slave launcher app and subprocess runtime"
 authors = [{ name = "GP Station" }]
 requires-python = ">=3.11,<3.15"
 dependencies = [
-    "fastapi>=0.115,<0.117",
     "pydantic-settings>=2.8,<3.0",
-    "uvicorn[standard]>=0.34,<0.36",
-    "gpstation-v1-sdk",
+    "typer>=0.12,<1.0",
+    "websockets>=12.0,<16.0",
 ]
 
 [project.scripts]
-gpstation-v1-server = "app.__main__:main"
+gpstation-v1-slave-launcher = "app.cli:app"
 
 [tool.poetry]
 packages = [
     { include = "app" },
 ]
-
-[tool.poetry.dependencies]
-gpstation-v1-sdk = { path = "../sdk", develop = true }
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0,<10.0"

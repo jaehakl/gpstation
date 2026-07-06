@@ -1,21 +1,25 @@
-# GP Station v1 Slave Launcher
+# GP Station v1 Slave Projects
 
-Python slave launcher process plus per-session slave app subprocess launch.
+`slave/` contains independent Python projects:
 
-Built-in slave apps live under `slave_plugins/`. Each plugin manifest points at an executable Python module, and that module imports `gpstation_slave_sdk_v1` to build and run its own app.
+- `launcher/`: connects to the server, advertises available slave executables, and launches per-session subprocesses.
+- `executables/echo/`: built-in echo slave executable. It imports `sdk.slave` and is launched with its own `.venv`.
 
 ## Install
 
 ```powershell
-cd app_v1/slave
+cd app_v1/slave/launcher
+poetry install
+
+cd ../executables/echo
 poetry install
 ```
 
 ## Run
 
 ```powershell
-cd app_v1/slave
+cd app_v1/slave/launcher
 poetry run gpstation-v1-slave-launcher
 ```
 
-Default settings point at `http://127.0.0.1:8100` and use `demo-worker-token`.
+The launcher discovers `../executables/*/manifest.json`. Each executable must have its own `.venv`; if it is missing, session startup fails with a clear `executable_venv_missing` error.

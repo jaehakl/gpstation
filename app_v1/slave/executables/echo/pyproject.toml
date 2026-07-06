@@ -1,0 +1,21 @@
+[project]
+name = "gpstation-v1-slave-executable-echo"
+version = "0.1.0"
+description = "GP Station v1 echo slave executable"
+authors = [{ name = "GP Station" }]
+requires-python = ">=3.11,<3.15"
+dependencies = [
+    "gpstation-v1-sdk[slave]",
+]
+
+[tool.poetry]
+packages = [
+    { include = "app" },
+]
+
+[tool.poetry.dependencies]
+gpstation-v1-sdk = { path = "../../../sdk", develop = true, extras = ["slave"] }
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
