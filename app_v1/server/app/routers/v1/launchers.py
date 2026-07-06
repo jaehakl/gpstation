@@ -91,8 +91,8 @@ async def handle_launcher_message(
         await LauncherService.mark_heartbeat(db, launcher_id, message.status, message.active_session_ids)
         return
     if message.type == "session.ready":
-        await runtime.mark_session_ready(message.session_id)
         await SessionService.mark_session_ready(db, message.session_id)
+        await runtime.mark_session_ready(message.session_id)
         return
     if message.type == "signal.to_client":
         await relay_to_client(message.session_id, {"signal": message.signal.model_dump(exclude_none=True)})
