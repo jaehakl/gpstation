@@ -366,7 +366,7 @@ pydantic = ">=2.10,<3.0"
 
 [package.source]
 type = "directory"
-url = "../../../protocol"
+url = "../../protocol/python"
 
 [[package]]
 name = "ifaddr"
@@ -742,4 +742,4 @@ typing-extensions = ">=4.12.0"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.15"
-content-hash = "427c34c76f1d63cbc75ca3b93ea18daa8955b664b6e203a503c13102e3cb4be8"
+content-hash = "8e4d1df96e882b60617d7b6e098ef950d228b58f15408592ec7d3590aacbb9fa"

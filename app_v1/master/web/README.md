@@ -1,4 +1,4 @@
-# GP Station v1 Example Web
+# GP Station v1 Master Web
 
 Browser master demo for the v1 MVP.
 
@@ -9,7 +9,7 @@ cd app_v1/sdk/master/js
 npm install --no-package-lock
 npm run build
 
-cd app_v1/example/web
+cd app_v1/master/web
 npm install
 npm run dev
 ```

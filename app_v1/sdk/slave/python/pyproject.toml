@@ -13,7 +13,7 @@ dependencies = [
 packages = [{ include = "gpstation_slave_sdk_v1" }]
 
 [tool.poetry.dependencies]
-gpstation-v1-protocol = { path = "../../../protocol", develop = true }
+gpstation-v1-protocol = { path = "../../protocol/python", develop = true }
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0,<10.0"

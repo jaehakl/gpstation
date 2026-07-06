@@ -3,11 +3,11 @@
 ## Completed MVP Status
 - [x] Foundation: repository-local `app_v1/` layout, protocol contracts, config examples, and run notes.
 - [x] Server orchestration: FastAPI server, in-memory worker/session registries, auth, TTL cleanup, and signaling relay.
-- [x] Worker runtime: control WebSocket client, slave subprocess lifecycle, JSON-lines IPC, and `aiortc` DataChannel handler calls.
+- [x] Slave launcher runtime: control WebSocket client, slave subprocess lifecycle, JSON-lines IPC, and `aiortc` DataChannel handler calls.
 - [x] Master path: TypeScript SDK and example web client.
-- [x] Hardening and verification: tests, smoke scripts, and build/type checks.
-- [x] Tutorial docs: end-to-end code walkthrough, local run guide, smoke tests, and implementation troubleshooting notes.
-- [x] Poetry migration: Python packages, smoke scripts, lockfiles, and run scripts use Poetry.
+- [x] Hardening and verification: tests and build/type checks.
+- [x] Tutorial docs: end-to-end code walkthrough, local run guide, and implementation troubleshooting notes.
+- [x] Poetry migration: Python packages, lockfiles, and run scripts use Poetry.
 
 ## Next Implementation Targets
 - [ ] Replace demo static bearer tokens with the real user/auth model.
@@ -38,9 +38,8 @@
 ## Verification Notes
 - Python tests cover protocol validation, token auth, worker ownership checks, session creation, and TTL cleanup.
 - Worker tests cover control WebSocket URL derivation.
-- `scripts/smoke_rest.py` checks server health and authenticated worker listing against a running server.
-- `scripts/smoke_aiortc_e2e.py` verifies WebRTC signaling, a generic handler call, and binary attachment roundtrip without opening the browser.
-- The browser E2E smoke requires installing server, worker, and web dependencies, then running `scripts/start_demo.bat`.
+- Package tests cover protocol validation, server state, slave launcher registry, and slave SDK runtime behavior.
+- Browser verification uses `app_v1/master/web` after starting the server and slave launcher.
 - Python dependencies are installed and executed through per-package Poetry projects.
 
 ## Documentation Notes

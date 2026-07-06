@@ -6,8 +6,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from gpstation_worker_v1.settings import WorkerSettings
-from gpstation_worker_v1.slave_registry import SlaveAppRegistry, load_default_registry
+from gpstation_slave_launcher_v1.settings import WorkerSettings
+from gpstation_slave_launcher_v1.slave_registry import SlaveAppRegistry, load_default_registry
 
 SendControl = Callable[[dict[str, Any]], Awaitable[None]]
 

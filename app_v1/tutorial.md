@@ -48,26 +48,26 @@ Master Example <== WebRTC DataChannel ==> Slave Subprocess
 
 `app_v1/`는 기존 `apps/`와 분리된 새 MVP입니다.
 
-- `protocol/`: 서버, worker, SDK가 공유하는 메시지 이름과 Pydantic 모델
+- `sdk/protocol/python/`: 서버, worker, SDK가 공유하는 메시지 이름과 Pydantic 모델
 - `server/`: FastAPI 서버, 인증, worker/session registry, signaling relay
-- `worker/`: worker main process와 built-in slave app plugins
+- `slave/`: worker main process와 built-in slave app plugins
 - `sdk/master/js/`: 브라우저 master SDK
 - `sdk/master/python/`: Python master SDK scaffold
 - `sdk/slave/python/`: Python slave app authoring SDK/runtime
-- `example/web/`: Next 기반 master 예제
-- `scripts/`: smoke test와 local demo helper
+- `master/web/`: Next 기반 master 예제
+- `master/web` browser check: smoke test와 local demo helper
 - `plan.md`: 구현 계획과 현재 완료 상태
 
 처음 코드를 읽는다면 이 순서가 좋습니다.
 
-1. `protocol/gpstation_protocol/messages.py`
+1. `sdk/protocol/python/gpstation_protocol/messages.py`
 2. `server/gpstation_server/state.py`
 3. `server/gpstation_server/main.py`
-4. `worker/gpstation_worker_v1/control.py`
-5. `worker/gpstation_worker_v1/subprocess_manager.py`
-6. `worker/gpstation_worker_v1/slave_registry.py`
+4. `slave/gpstation_slave_launcher_v1/control.py`
+5. `slave/gpstation_slave_launcher_v1/subprocess_manager.py`
+6. `slave/gpstation_slave_launcher_v1/slave_registry.py`
 7. `sdk/master/js/src/index.ts`
-8. `example/web/src/app/page.tsx`
+8. `master/web/src/app/page.tsx`
 
 ## 4. 로컬 실행 방법
 
@@ -77,14 +77,11 @@ Python dependency:
 cd app_v1/server
 poetry install
 
-cd ../worker
-poetry install
-
-cd ../scripts
+cd ../slave
 poetry install
 ```
 
-`protocol/`은 서버와 worker가 Poetry editable path dependency로 자동 설치합니다. `app_v1/protocol`에서 직접 `poetry install`을 실행하는 경우는 protocol package 자체를 테스트하거나 수정할 때입니다. `sdk/master/python`도 현재 MVP 실행에는 필수가 아니며, Python master SDK를 개발하거나 확인할 때만 설치하면 됩니다.
+`sdk/protocol/python/`은 서버와 worker가 Poetry editable path dependency로 자동 설치합니다. `app_v1/sdk/protocol/python`에서 직접 `poetry install`을 실행하는 경우는 protocol package 자체를 테스트하거나 수정할 때입니다. `sdk/master/python`도 현재 MVP 실행에는 필수가 아니며, Python master SDK를 개발하거나 확인할 때만 설치하면 됩니다.
 
 Web dependency:
 
@@ -93,7 +90,7 @@ cd app_v1/sdk/master/js
 npm install --no-package-lock
 npm run build
 
-cd ../../../example/web
+cd ../../../master/web
 npm install --no-package-lock
 ```
 
@@ -105,12 +102,12 @@ poetry run gpstation-v1-server
 ```
 
 ```powershell
-cd app_v1/worker
-poetry run gpstation-v1-worker
+cd app_v1/slave
+poetry run gpstation-v1-slave-launcher
 ```
 
 ```powershell
-cd app_v1/example/web
+cd app_v1/master/web
 .\run.bat
 ```
 
@@ -191,7 +188,7 @@ Master <== DataChannel ==> Slave Subprocess
 
 ## 6. Protocol이 해주는 일
 
-`protocol/gpstation_protocol/messages.py`에는 control message와 data channel message의 계약이 있습니다.
+`sdk/protocol/python/gpstation_protocol/messages.py`에는 control message와 data channel message의 계약이 있습니다.
 
 Control message 예:
 
@@ -274,7 +271,7 @@ worker는 main process와 slave subprocess로 나뉩니다.
 
 ### Worker main process
 
-`worker/gpstation_worker_v1/control.py`가 서버의 `/v1/workers/control`에 연결합니다.
+`slave/gpstation_slave_launcher_v1/control.py`가 서버의 `/v1/workers/control`에 연결합니다.
 
 처음 연결되면 worker는 `worker.hello`를 보냅니다.
 
@@ -291,7 +288,7 @@ worker는 main process와 slave subprocess로 나뉩니다.
 
 ### Subprocess manager
 
-`worker/gpstation_worker_v1/subprocess_manager.py`는 세션별 slave subprocess를 관리합니다.
+`slave/gpstation_slave_launcher_v1/subprocess_manager.py`는 세션별 slave subprocess를 관리합니다.
 
 slave subprocess와는 stdin/stdout JSON-lines로 통신합니다. 한 줄에 JSON 객체 하나를 쓰는 방식입니다.
 
@@ -311,7 +308,7 @@ slave subprocess가 worker main에 보내는 메시지:
 
 ### Slave subprocess
 
-`worker/gpstation_worker_v1/slave_registry.py`는 요청된 `slave_app_id`의 manifest를 찾아 plugin module을 subprocess로 직접 실행합니다. plugin program은 `sdk/slave/python`의 `gpstation_slave_sdk_v1`를 import해서 `SlaveApp`, memory, initialize hook, handler들을 구성하고 `run_app(app)`을 호출합니다.
+`slave/gpstation_slave_launcher_v1/slave_registry.py`는 요청된 `slave_app_id`의 manifest를 찾아 plugin module을 subprocess로 직접 실행합니다. plugin program은 `sdk/slave/python`의 `gpstation_slave_sdk_v1`를 import해서 `SlaveApp`, memory, initialize hook, handler들을 구성하고 `run_app(app)`을 호출합니다.
 
 흐름은 다음과 같습니다.
 
@@ -341,7 +338,7 @@ DataChannel label은 반드시 `gpstation.v1`이어야 합니다.
 - 같은 `id`의 `call.response`가 오고 attachment chunks가 모두 도착하면 Promise resolve
 - `close()`: DataChannel, PeerConnection, WebSocket 정리
 
-`example/web/src/app/page.tsx`는 SDK를 실제 화면에 연결합니다.
+`master/web/src/app/page.tsx`는 SDK를 실제 화면에 연결합니다.
 
 화면의 주요 state:
 
@@ -353,60 +350,41 @@ DataChannel label은 반드시 `gpstation.v1`이어야 합니다.
 - `handlerType`, `requestJson`, `selectedFiles`, `resultJson`, `resultFiles`: handler call 입력/결과
 - `logs`: 화면 하단 로그
 
-## 10. Smoke test
+## 10. Verification
 
-REST smoke:
-
-```powershell
-cd app_v1/scripts
-poetry run python smoke_rest.py http://127.0.0.1:8100 demo-client-token
-```
-
-서버가 살아 있고 worker 목록을 인증된 사용자 기준으로 볼 수 있으면 성공입니다.
-
-WebRTC E2E smoke:
+Package tests:
 
 ```powershell
-cd app_v1/scripts
-poetry run python smoke_aiortc_e2e.py http://127.0.0.1:8100 demo-client-token
+cd app_v1/sdk/protocol/python
+poetry run pytest
+
+cd ../../../server
+poetry run pytest
+
+cd ../slave
+poetry run pytest
+
+cd ../sdk/slave/python
+poetry run pytest
 ```
 
-성공하면 이런 결과가 나옵니다.
+Master web checks:
 
-```json
-{
-  "worker_session_id": "...",
-  "session_id": "...",
-  "call": {
-    "response": {
-      "kind": "call.response",
-      "id": "smoke-1",
-      "type": "echo.result",
-      "payload": {
-        "text": "smoke"
-      },
-      "attachments": [
-        {
-          "id": "file-1",
-          "name": "smoke.txt",
-          "mimeType": "text/plain",
-          "size": 12
-        }
-      ]
-    },
-    "files": {
-      "file-1": {
-        "name": "smoke.txt",
-        "bytes": 12,
-        "text": "smoke-binary"
-      }
-    }
-  }
-}
+```powershell
+cd app_v1/sdk/master/js
+npm run build
+npm run typecheck
+
+cd ../../../master/web
+npm run build
+npm run typecheck
 ```
 
-이 smoke는 브라우저 대신 Python `aiortc` master 클라이언트를 사용합니다. 따라서 브라우저 UI를 열지 않아도 서버, worker main, slave subprocess, signaling, DataChannel handler call과 binary attachment roundtrip까지 한 번에 검증할 수 있습니다.
+Browser manual check:
 
+1. Start `app_v1/server` with `poetry run gpstation-v1-server`.
+2. Start `app_v1/slave` with `poetry run gpstation-v1-slave-launcher`.
+3. Open `app_v1/master/web`, connect to the `echo` slave app, and call `echo.request` with JSON plus an optional file attachment.
 ## 11. 구현 중 오래 걸렸던 시행착오
 
 이번 구현에서 시간이 오래 걸린 부분은 “코드가 틀렸다”기보다, 여러 런타임 경계가 동시에 얽힌 부분들이었습니다. 나중에 비슷한 문제를 만났을 때 바로 떠올릴 수 있도록 남깁니다.
@@ -443,11 +421,11 @@ GPSTATION_V1_CORS_ORIGINS=http://127.0.0.1:3001,http://localhost:3001
 cmd.exe /c set PYTHONPATH=...&& python -m gpstation_server
 ```
 
-현재 repo의 정상 실행 경로는 이 문제를 피하기 위해 Poetry를 사용합니다. `server/run.bat`와 `worker/run.bat`도 각각 `poetry run gpstation-v1-server`, `poetry run gpstation-v1-worker`를 호출합니다.
+현재 repo의 정상 실행 경로는 이 문제를 피하기 위해 Poetry를 사용합니다. `server/run.bat`와 `slave/run.bat`도 각각 `poetry run gpstation-v1-server`, `poetry run gpstation-v1-slave-launcher`를 호출합니다.
 
 ### 11.3 Next/Turbopack이 local scoped package를 못 찾은 문제
 
-`example/web`은 `@gpstation/v1-master-js-sdk`를 `file:` dependency로 사용합니다. 처음에는 JS SDK가 `src/index.ts`를 직접 export했습니다.
+`master/web`은 `@gpstation/v1-master-js-sdk`를 `file:` dependency로 사용합니다. 처음에는 JS SDK가 `src/index.ts`를 직접 export했습니다.
 
 TypeScript typecheck는 통과했지만 `next build`의 Turbopack production build가 scoped local package를 못 찾았습니다.
 
@@ -460,8 +438,8 @@ TypeScript typecheck는 통과했지만 `next build`의 Turbopack production bui
 
 - `sdk/master/js/package.json`
 - `sdk/master/js/tsconfig.build.json`
-- `example/web/package.json`
-- `example/web/next.config.mjs`
+- `master/web/package.json`
+- `master/web/next.config.mjs`
 
 ### 11.4 React 19 lint의 ref render access 규칙
 
@@ -494,7 +472,7 @@ worker main은 subprocess가 `ready`라고 말할 때까지 기다립니다. 그
 
 관련 파일:
 
-- `worker/gpstation_worker_v1/subprocess_manager.py`
+- `slave/gpstation_slave_launcher_v1/subprocess_manager.py`
 
 ### 11.6 WebRTC smoke에서 echo 응답을 받았는데 Future가 안 깨어난 문제
 
@@ -528,7 +506,7 @@ loop.call_soon_threadsafe(result.set_result, payload)
 
 관련 파일:
 
-- `scripts/smoke_aiortc_e2e.py`
+- `master/web` browser check
 
 ### 11.7 WebRTC 디버깅은 로그 위치가 중요하다
 
@@ -544,9 +522,9 @@ loop.call_soon_threadsafe(result.set_result, payload)
 관련 파일:
 
 - `sdk/slave/python/gpstation_slave_sdk_v1/runtime.py`
-- `worker/slave_plugins/echo/app.py`
-- `worker/gpstation_worker_v1/subprocess_manager.py`
-- `scripts/smoke_aiortc_e2e.py`
+- `slave/slave_plugins/echo/app.py`
+- `slave/gpstation_slave_launcher_v1/subprocess_manager.py`
+- `master/web` browser check
 
 ## 12. 자주 볼 에러와 확인 위치
 
@@ -580,7 +558,7 @@ DataChannel이 안 열리면:
 - 브라우저 콘솔 로그 확인
 - server signaling WebSocket 로그 확인
 - slave subprocess stdout/stderr relay 로그 확인
-- `scripts/smoke_aiortc_e2e.py`로 브라우저 없이 먼저 검증
+- `master/web` browser check로 브라우저 없이 먼저 검증
 
 ## 13. 다음 단계로 확장하려면
 

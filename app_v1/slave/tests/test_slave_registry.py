@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from gpstation_worker_v1.slave_registry import SlaveApp, SlaveAppRegistry, load_registry
+from gpstation_slave_launcher_v1.slave_registry import SlaveApp, SlaveAppRegistry, load_registry
 
 
 def write_manifest(root, folder_name: str, slave_app_id: str) -> None:

@@ -5,9 +5,9 @@ import json
 
 import typer
 
-from gpstation_worker_v1 import __version__
-from gpstation_worker_v1.control import run_worker
-from gpstation_worker_v1.settings import load_settings
+from gpstation_slave_launcher_v1 import __version__
+from gpstation_slave_launcher_v1.control import run_slave_launcher
+from gpstation_slave_launcher_v1.settings import load_settings
 
 app = typer.Typer(no_args_is_help=False)
 
@@ -21,7 +21,7 @@ def main(ctx: typer.Context) -> None:
 @app.command()
 def run() -> None:
     try:
-        asyncio.run(run_worker(load_settings()))
+        asyncio.run(run_slave_launcher(load_settings()))
     except KeyboardInterrupt:
         typer.echo("Stopped.")
 

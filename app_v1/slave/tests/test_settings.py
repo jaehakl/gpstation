@@ -1,4 +1,4 @@
-from gpstation_worker_v1.settings import WorkerSettings
+from gpstation_slave_launcher_v1.settings import WorkerSettings
 
 
 def test_control_websocket_url_uses_v1_path():

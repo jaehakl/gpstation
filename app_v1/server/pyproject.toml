@@ -18,7 +18,7 @@ gpstation-v1-server = "gpstation_server.__main__:main"
 packages = [{ include = "gpstation_server" }]
 
 [tool.poetry.dependencies]
-gpstation-v1-protocol = { path = "../protocol", develop = true }
+gpstation-v1-protocol = { path = "../sdk/protocol/python", develop = true }
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0,<10.0"

@@ -1,7 +1,7 @@
 [project]
-name = "gpstation-v1-worker"
+name = "gpstation-v1-slave-launcher"
 version = "0.1.0"
-description = "GP Station v1 worker main app and subprocess runtime"
+description = "GP Station v1 slave launcher app and subprocess runtime"
 authors = [{ name = "GP Station" }]
 requires-python = ">=3.11,<3.15"
 dependencies = [
@@ -14,14 +14,14 @@ dependencies = [
 ]
 
 [project.scripts]
-gpstation-v1-worker = "gpstation_worker_v1.cli:app"
+gpstation-v1-slave-launcher = "gpstation_slave_launcher_v1.cli:app"
 
 [tool.poetry]
-packages = [{ include = "gpstation_worker_v1" }, { include = "slave_plugins" }]
+packages = [{ include = "gpstation_slave_launcher_v1" }, { include = "slave_plugins" }]
 include = ["slave_plugins/**/manifest.json"]
 
 [tool.poetry.dependencies]
-gpstation-v1-protocol = { path = "../protocol", develop = true }
+gpstation-v1-protocol = { path = "../sdk/protocol/python", develop = true }
 gpstation-v1-slave-python-sdk = { path = "../sdk/slave/python", develop = true }
 
 [tool.poetry.group.dev.dependencies]

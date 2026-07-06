@@ -6,14 +6,14 @@ from typing import Any
 
 import websockets
 
-from gpstation_worker_v1.settings import WorkerSettings
-from gpstation_worker_v1.slave_registry import load_default_registry
-from gpstation_worker_v1.subprocess_manager import SessionManager
+from gpstation_slave_launcher_v1.settings import WorkerSettings
+from gpstation_slave_launcher_v1.slave_registry import load_default_registry
+from gpstation_slave_launcher_v1.subprocess_manager import SessionManager
 
 BACKOFF_SECONDS = [1, 2, 5, 10, 30]
 
 
-async def run_worker(settings: WorkerSettings) -> None:
+async def run_slave_launcher(settings: WorkerSettings) -> None:
     attempt = 0
     while True:
         delay = BACKOFF_SECONDS[min(attempt, len(BACKOFF_SECONDS) - 1)]
