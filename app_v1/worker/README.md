@@ -1,6 +1,8 @@
 # GP Station v1 Worker
 
-Python worker main process plus per-session `aiortc` subprocess runtime.
+Python worker main process plus per-session slave app subprocess launch.
+
+Built-in slave apps live under `slave_plugins/`. Each plugin manifest points at an executable Python module, and that module imports `gpstation_slave_sdk_v1` to build and run its own app.
 
 ## Install
 

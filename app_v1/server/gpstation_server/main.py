@@ -64,10 +64,13 @@ async def create_session(
         session = await runtime.create_session(
             user_id=principal.user_id,
             worker_session_id=body.worker_session_id,
+            slave_app_id=body.slave_app_id,
             ttl_seconds=ttl_seconds,
         )
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Worker not available") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Slave app not available") from exc
 
     await send_to_worker(
         session.worker_session_id,
@@ -75,6 +78,7 @@ async def create_session(
             "type": "session.start",
             "session_id": session.id,
             "token": session.token,
+            "slave_app_id": session.slave_app_id,
             "ttl_seconds": session.ttl_seconds,
         },
     )
@@ -96,6 +100,7 @@ async def create_session(
     return SessionCreateResult(
         session_id=session.id,
         worker_session_id=session.worker_session_id,
+        slave_app_id=session.slave_app_id,
         signaling_url=build_signaling_url(session),
         token=session.token,
         expires_at=session.expires_at,
@@ -124,7 +129,7 @@ async def worker_control(websocket: WebSocket) -> None:
         worker = await runtime.register_worker(
             user_id=principal.user_id,
             worker_name=hello.worker_name,
-            capabilities=hello.capabilities,
+            slave_app_ids=hello.slave_app_ids,
             websocket=websocket,
         )
         await websocket.send_json(
@@ -278,7 +283,7 @@ def worker_to_view(worker: WorkerConnection) -> WorkerSessionView:
         user_id=worker.user_id,
         worker_name=worker.worker_name,
         status=worker.status,
-        capabilities=worker.capabilities,
+        slave_app_ids=worker.slave_app_ids,
         active_session_count=len(worker.active_session_ids),
         connected_at=worker.connected_at.astimezone(timezone.utc),
         last_heartbeat_at=worker.last_heartbeat_at.astimezone(timezone.utc),

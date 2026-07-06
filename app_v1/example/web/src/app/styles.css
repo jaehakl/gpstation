@@ -144,7 +144,7 @@ h2 {
 }
 
 .controlsPanel,
-.echoPanel {
+.callPanel {
   display: grid;
   gap: 14px;
 }
@@ -185,6 +185,39 @@ dt {
   white-space: pre-wrap;
 }
 
+.fileResults {
+  display: grid;
+  gap: 10px;
+}
+
+.fileResult {
+  background: #fbfcfd;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  text-decoration: none;
+}
+
+.fileResult span {
+  overflow-wrap: anywhere;
+}
+
+.fileResult span + span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.fileResult img {
+  border-radius: 6px;
+  max-height: 180px;
+  max-width: 100%;
+  object-fit: contain;
+}
+
 .table {
   display: grid;
   gap: 8px;
@@ -193,7 +226,7 @@ dt {
 .tableHead,
 .workerRow {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) 82px 72px;
+  grid-template-columns: minmax(110px, 1fr) 76px minmax(72px, 0.8fr) 72px;
   text-align: left;
 }
 
@@ -210,6 +243,12 @@ dt {
   justify-content: stretch;
   min-height: 42px;
   padding: 0 10px;
+}
+
+.workerRow span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .workerRow.selected {

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Annotated, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 
 class StrictModel(BaseModel):
@@ -20,7 +20,7 @@ class SignalPayload(StrictModel):
 class WorkerHello(StrictModel):
     type: Literal["worker.hello"]
     worker_name: str
-    capabilities: list[str] = Field(default_factory=list)
+    slave_app_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -40,6 +40,7 @@ class SessionStart(StrictModel):
     type: Literal["session.start"]
     session_id: str
     token: str
+    slave_app_id: str
     ttl_seconds: int
 
 
@@ -117,7 +118,22 @@ class ClientSignalMessage(StrictModel):
     signal: SignalPayload
 
 
+class DataChannelAttachment(StrictModel):
+    id: str
+    name: str | None = None
+    mimeType: str | None = None
+    size: int | None = Field(default=None, ge=0)
+    data: bytes = b""
+
+    @model_validator(mode="after")
+    def fill_size(self) -> "DataChannelAttachment":
+        if self.size is None:
+            self.size = len(self.data)
+        return self
+
+
 class DataChannelMessage(StrictModel):
     id: str
-    type: Literal["echo.request", "echo.result", "error"]
+    type: str
     payload: Any = None
+    attachments: list[DataChannelAttachment] = Field(default_factory=list)

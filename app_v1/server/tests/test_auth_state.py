@@ -30,21 +30,32 @@ async def test_session_requires_owned_worker():
     worker = await state.register_worker(
         user_id="user-a",
         worker_name="test",
-        capabilities=["echo"],
+        slave_app_ids=["echo"],
         websocket=DummyWebSocket(),
     )
 
     session = await state.create_session(
         user_id="user-a",
         worker_session_id=worker.id,
+        slave_app_id="echo",
         ttl_seconds=60,
     )
 
     assert session.worker_session_id == worker.id
+    assert session.slave_app_id == "echo"
     with pytest.raises(KeyError):
         await state.create_session(
             user_id="user-b",
             worker_session_id=worker.id,
+            slave_app_id="echo",
+            ttl_seconds=60,
+        )
+
+    with pytest.raises(ValueError):
+        await state.create_session(
+            user_id="user-a",
+            worker_session_id=worker.id,
+            slave_app_id="missing",
             ttl_seconds=60,
         )
 
@@ -55,12 +66,13 @@ async def test_expired_session_cleanup_closes_session():
     worker = await state.register_worker(
         user_id="user-a",
         worker_name="test",
-        capabilities=["echo"],
+        slave_app_ids=["echo"],
         websocket=DummyWebSocket(),
     )
     session = await state.create_session(
         user_id="user-a",
         worker_session_id=worker.id,
+        slave_app_id="echo",
         ttl_seconds=10,
     )
     session.expires_at = session.created_at

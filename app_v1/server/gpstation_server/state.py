@@ -19,7 +19,7 @@ class WorkerConnection:
     id: str
     user_id: str
     worker_name: str
-    capabilities: list[str]
+    slave_app_ids: list[str]
     websocket: WebSocket
     connected_at: datetime
     last_heartbeat_at: datetime
@@ -32,6 +32,7 @@ class ClientSession:
     id: str
     user_id: str
     worker_session_id: str
+    slave_app_id: str
     token: str
     created_at: datetime
     expires_at: datetime
@@ -57,7 +58,7 @@ class RuntimeState:
         *,
         user_id: str,
         worker_name: str,
-        capabilities: list[str],
+        slave_app_ids: list[str],
         websocket: WebSocket,
     ) -> WorkerConnection:
         now = utcnow()
@@ -65,7 +66,7 @@ class RuntimeState:
             id=str(uuid.uuid4()),
             user_id=user_id,
             worker_name=worker_name,
-            capabilities=capabilities,
+            slave_app_ids=slave_app_ids,
             websocket=websocket,
             connected_at=now,
             last_heartbeat_at=now,
@@ -99,18 +100,22 @@ class RuntimeState:
         *,
         user_id: str,
         worker_session_id: str,
+        slave_app_id: str,
         ttl_seconds: int,
     ) -> ClientSession:
         async with self.lock:
             worker = self.workers.get(worker_session_id)
             if worker is None or worker.user_id != user_id or worker.status not in {"ready", "busy"}:
                 raise KeyError("worker not available")
+            if slave_app_id not in worker.slave_app_ids:
+                raise ValueError("slave app not available")
 
             now = utcnow()
             session = ClientSession(
                 id=str(uuid.uuid4()),
                 user_id=user_id,
                 worker_session_id=worker_session_id,
+                slave_app_id=slave_app_id,
                 token=secrets.token_urlsafe(32),
                 created_at=now,
                 expires_at=now + timedelta(seconds=ttl_seconds),

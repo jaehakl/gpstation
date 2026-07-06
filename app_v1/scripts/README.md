@@ -3,7 +3,7 @@
 Local helpers for the MVP.
 
 - `smoke_rest.py`: checks server health and authenticated worker listing.
-- `smoke_aiortc_e2e.py`: creates a session and verifies WebRTC DataChannel echo with `aiortc`.
+- `smoke_aiortc_e2e.py`: creates an `echo` slave app session and verifies a generic WebRTC handler call with JSON plus a tiny binary attachment.
 - `start_demo.bat`: opens server, worker, and web client command windows.
 
 ## Install

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from gpstation_worker_v1.settings import WorkerSettings
+from gpstation_worker_v1.slave_registry import SlaveAppRegistry, load_default_registry
 
 SendControl = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -14,6 +15,7 @@ SendControl = Callable[[dict[str, Any]], Awaitable[None]]
 @dataclass
 class ManagedSession:
     session_id: str
+    slave_app_id: str
     process: asyncio.subprocess.Process
     ready_event: asyncio.Event
     stdout_task: asyncio.Task[None]
@@ -24,15 +26,21 @@ class ManagedSession:
 
 
 class SessionManager:
-    def __init__(self, settings: WorkerSettings, send_control: SendControl) -> None:
+    def __init__(
+        self,
+        settings: WorkerSettings,
+        send_control: SendControl,
+        registry: SlaveAppRegistry | None = None,
+    ) -> None:
         self.settings = settings
         self.send_control = send_control
+        self.registry = registry or load_default_registry()
         self.sessions: dict[str, ManagedSession] = {}
 
     def active_session_ids(self) -> list[str]:
         return sorted(self.sessions.keys())
 
-    async def start_session(self, session_id: str, ttl_seconds: int) -> None:
+    async def start_session(self, session_id: str, slave_app_id: str, ttl_seconds: int) -> None:
         if session_id in self.sessions:
             await self.send_control(
                 {
@@ -43,15 +51,24 @@ class SessionManager:
                 }
             )
             return
+        if self.registry.get(slave_app_id) is None:
+            await self.send_control(
+                {
+                    "type": "session.error",
+                    "session_id": session_id,
+                    "code": "unknown_slave_app",
+                    "detail": f"unknown slave app: {slave_app_id}",
+                }
+            )
+            return
 
         process = await asyncio.create_subprocess_exec(
-            self.settings.subprocess_python,
-            "-m",
-            "gpstation_worker_v1.subprocess_main",
-            "--session-id",
-            session_id,
-            "--ttl-seconds",
-            str(ttl_seconds),
+            *self.registry.subprocess_args(
+                self.settings.subprocess_python,
+                session_id,
+                slave_app_id,
+                ttl_seconds,
+            ),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -60,6 +77,7 @@ class SessionManager:
         ready_event = asyncio.Event()
         session = ManagedSession(
             session_id=session_id,
+            slave_app_id=slave_app_id,
             process=process,
             ready_event=ready_event,
             stdout_task=asyncio.create_task(self.read_stdout(session_id, process, ready_event)),
@@ -76,21 +94,22 @@ class SessionManager:
                     "type": "session.error",
                     "session_id": session_id,
                     "code": "ready_timeout",
-                    "detail": "worker subprocess did not become ready",
+                    "detail": "slave subprocess did not become ready",
                 }
             )
             return
 
         if not session.ready:
             await self.stop_session(session_id, "startup failed")
-            await self.send_control(
-                {
-                    "type": "session.error",
-                    "session_id": session_id,
-                    "code": "startup_failed",
-                    "detail": "worker subprocess exited before ready",
-                }
-            )
+            if not session.startup_failed:
+                await self.send_control(
+                    {
+                        "type": "session.error",
+                        "session_id": session_id,
+                        "code": "startup_failed",
+                        "detail": "slave subprocess exited before ready",
+                    }
+                )
             return
 
         await self.send_control({"type": "session.ready", "session_id": session_id})
@@ -103,7 +122,7 @@ class SessionManager:
                     "type": "session.error",
                     "session_id": session_id,
                     "code": "missing_session",
-                    "detail": "worker subprocess is not running",
+                    "detail": "slave subprocess is not running",
                 }
             )
             return
@@ -156,7 +175,7 @@ class SessionManager:
                         "type": "session.error",
                         "session_id": session_id,
                         "code": "subprocess_exit",
-                        "detail": "worker subprocess exited",
+                        "detail": "slave subprocess exited",
                     }
                 )
 
@@ -186,17 +205,23 @@ class SessionManager:
             )
             return
         if message_type == "closed":
-            self.sessions.pop(session_id, None)
+            session = self.sessions.pop(session_id, None)
+            if session is not None and not session.ready:
+                session.startup_failed = True
+                session.ready_event.set()
             await self.send_control({"type": "session.closed", "session_id": session_id, "reason": "closed"})
             return
         if message_type == "error":
-            self.sessions.pop(session_id, None)
+            session = self.sessions.pop(session_id, None)
+            if session is not None and not session.ready:
+                session.startup_failed = True
+                session.ready_event.set()
             await self.send_control(
                 {
                     "type": "session.error",
                     "session_id": session_id,
                     "code": str(message.get("code") or "subprocess_error"),
-                    "detail": str(message.get("detail") or "worker subprocess error"),
+                    "detail": str(message.get("detail") or "slave subprocess error"),
                 }
             )
 

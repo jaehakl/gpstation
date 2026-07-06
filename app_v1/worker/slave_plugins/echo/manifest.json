@@ -1,0 +1,5 @@
+{
+  "id": "echo",
+  "name": "Echo",
+  "module": "slave_plugins.echo.app"
+}

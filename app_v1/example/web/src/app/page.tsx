@@ -5,9 +5,10 @@ import { useMemo, useRef, useState } from 'react';
 import {
   GpStationClient,
   GpStationPeer,
+  ReceivedFile,
   SessionDescriptor,
   WorkerSessionView,
-} from '@gpstation/v1-js-sdk';
+} from '@gpstation/v1-master-js-sdk';
 
 const defaultApiBaseUrl = process.env.NEXT_PUBLIC_GPSTATION_V1_API_URL || 'http://127.0.0.1:8100';
 
@@ -16,15 +17,24 @@ type LogItem = {
   message: string;
 };
 
+type DisplayFile = ReceivedFile & {
+  url: string;
+  isImage: boolean;
+};
+
 export default function Home() {
   const [apiBaseUrl, setApiBaseUrl] = useState(defaultApiBaseUrl);
   const [token, setToken] = useState('demo-client-token');
   const [workers, setWorkers] = useState<WorkerSessionView[]>([]);
   const [selectedWorkerId, setSelectedWorkerId] = useState('');
+  const [selectedSlaveAppId, setSelectedSlaveAppId] = useState('echo');
   const [session, setSession] = useState<SessionDescriptor | null>(null);
   const [status, setStatus] = useState('idle');
-  const [echoText, setEchoText] = useState('hello gp station');
-  const [echoResult, setEchoResult] = useState('');
+  const [handlerType, setHandlerType] = useState('echo.request');
+  const [requestJson, setRequestJson] = useState('{\n  "text": "hello gp station"\n}');
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [resultJson, setResultJson] = useState('');
+  const [resultFiles, setResultFiles] = useState<DisplayFile[]>([]);
   const [logs, setLogs] = useState<LogItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [connected, setConnected] = useState(false);
@@ -39,6 +49,8 @@ export default function Home() {
       }),
     [apiBaseUrl, token],
   );
+  const selectedWorker = workers.find((worker) => worker.id === selectedWorkerId);
+  const availableSlaveAppIds = selectedWorker?.slave_app_ids ?? [];
 
   function addLog(message: string) {
     const id = logIdRef.current + 1;
@@ -46,13 +58,22 @@ export default function Home() {
     setLogs((items) => [{ id, message }, ...items].slice(0, 12));
   }
 
+  function clearResultFiles() {
+    for (const file of resultFiles) {
+      URL.revokeObjectURL(file.url);
+    }
+    setResultFiles([]);
+  }
+
   async function refreshWorkers() {
     setBusy(true);
     try {
       const nextWorkers = await client.listWorkers();
       setWorkers(nextWorkers);
-      if (!selectedWorkerId && nextWorkers[0]) {
-        setSelectedWorkerId(nextWorkers[0].id);
+      const nextSelectedWorker = nextWorkers.find((worker) => worker.id === selectedWorkerId) ?? nextWorkers[0];
+      if (nextSelectedWorker) {
+        setSelectedWorkerId(nextSelectedWorker.id);
+        setSelectedSlaveAppId(pickSlaveAppId(nextSelectedWorker, selectedSlaveAppId));
       }
       setStatus('workers refreshed');
       addLog(`workers: ${nextWorkers.length}`);
@@ -69,13 +90,21 @@ export default function Home() {
       setStatus('select worker');
       return;
     }
+    if (!selectedSlaveAppId) {
+      setStatus('select slave app');
+      return;
+    }
     setBusy(true);
-    setEchoResult('');
+    setResultJson('');
+    clearResultFiles();
     peerRef.current?.close();
     peerRef.current = null;
     setConnected(false);
     try {
-      const descriptor = await client.createSession({ workerSessionId: selectedWorkerId });
+      const descriptor = await client.createSession({
+        workerSessionId: selectedWorkerId,
+        slaveAppId: selectedSlaveAppId,
+      });
       setSession(descriptor);
       addLog(`session: ${descriptor.session_id}`);
       const peer = await client.connectSession(descriptor, {
@@ -95,19 +124,37 @@ export default function Home() {
     }
   }
 
-  async function sendEcho() {
+  async function sendCall() {
     const peer = peerRef.current;
     if (!peer) {
       setStatus('not connected');
       return;
     }
-    setBusy(true);
+    let payload: unknown;
     try {
-      const result = await peer.echo({ text: echoText, sent_at: new Date().toISOString() });
-      setEchoResult(JSON.stringify(result, null, 2));
-      addLog('echo.result');
+      payload = requestJson.trim() ? JSON.parse(requestJson) : null;
     } catch (error) {
-      setStatus('echo failed');
+      setStatus('invalid JSON');
+      addLog(error instanceof Error ? error.message : String(error));
+      return;
+    }
+
+    setBusy(true);
+    clearResultFiles();
+    try {
+      const result = await peer.call<unknown, unknown>(handlerType.trim(), payload, { files: selectedFiles });
+      setResultJson(JSON.stringify(result.payload, null, 2));
+      setResultFiles(
+        result.files.map((file) => ({
+          ...file,
+          url: URL.createObjectURL(file.blob),
+          isImage: Boolean(file.mimeType?.startsWith('image/')),
+        })),
+      );
+      addLog(`${handlerType} result`);
+      setStatus('call complete');
+    } catch (error) {
+      setStatus('call failed');
       addLog(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
@@ -120,6 +167,11 @@ export default function Home() {
     setConnected(false);
     setStatus('disconnected');
     addLog('connection closed');
+  }
+
+  function selectWorker(worker: WorkerSessionView) {
+    setSelectedWorkerId(worker.id);
+    setSelectedSlaveAppId(pickSlaveAppId(worker, selectedSlaveAppId));
   }
 
   return (
@@ -150,7 +202,7 @@ export default function Home() {
               <RefreshCw size={17} aria-hidden="true" />
               <span>Refresh</span>
             </button>
-            <button type="button" onClick={connect} disabled={busy || !selectedWorkerId} title="Connect">
+            <button type="button" onClick={connect} disabled={busy || !selectedWorkerId || !selectedSlaveAppId} title="Connect">
               <PlugZap size={17} aria-hidden="true" />
               <span>Connect</span>
             </button>
@@ -161,27 +213,70 @@ export default function Home() {
           </div>
           <label>
             <span>Worker</span>
-            <select value={selectedWorkerId} onChange={(event) => setSelectedWorkerId(event.target.value)}>
+            <select
+              value={selectedWorkerId}
+              onChange={(event) => {
+                const worker = workers.find((item) => item.id === event.target.value);
+                if (worker) {
+                  selectWorker(worker);
+                } else {
+                  setSelectedWorkerId('');
+                  setSelectedSlaveAppId('');
+                }
+              }}
+            >
               <option value="">No worker selected</option>
               {workers.map((worker) => (
                 <option key={worker.id} value={worker.id}>
-                  {worker.worker_name} · {worker.status} · {worker.id.slice(0, 8)}
+                  {worker.worker_name} | {worker.status} | {worker.id.slice(0, 8)}
                 </option>
               ))}
             </select>
           </label>
+          <label>
+            <span>Slave app</span>
+            <select value={selectedSlaveAppId} onChange={(event) => setSelectedSlaveAppId(event.target.value)}>
+              {availableSlaveAppIds.map((slaveAppId) => (
+                <option key={slaveAppId} value={slaveAppId}>
+                  {slaveAppId}
+                </option>
+              ))}
+              {availableSlaveAppIds.length === 0 && <option value="">No slave apps</option>}
+            </select>
+          </label>
         </div>
 
-        <div className="panel echoPanel">
+        <div className="panel callPanel">
           <label>
-            <span>Echo payload</span>
-            <textarea value={echoText} onChange={(event) => setEchoText(event.target.value)} rows={6} />
+            <span>Handler</span>
+            <input value={handlerType} onChange={(event) => setHandlerType(event.target.value)} />
           </label>
-          <button type="button" className="primaryButton" onClick={sendEcho} disabled={busy || !connected}>
+          <label>
+            <span>JSON input</span>
+            <textarea value={requestJson} onChange={(event) => setRequestJson(event.target.value)} rows={7} />
+          </label>
+          <label>
+            <span>Files</span>
+            <input
+              type="file"
+              multiple
+              onChange={(event) => setSelectedFiles(Array.from(event.target.files ?? []))}
+            />
+          </label>
+          <button type="button" className="primaryButton" onClick={sendCall} disabled={busy || !connected || !handlerType.trim()}>
             <Send size={17} aria-hidden="true" />
-            <span>Send Echo</span>
+            <span>Call</span>
           </button>
-          <pre className="resultBox">{echoResult || 'No echo result yet.'}</pre>
+          <pre className="resultBox">{resultJson || 'No result yet.'}</pre>
+          <div className="fileResults">
+            {resultFiles.map((file) => (
+              <a key={file.id} className="fileResult" href={file.url} download={file.name || file.id}>
+                <span>{file.name || file.id}</span>
+                <span>{formatBytes(file.size)}</span>
+                {file.isImage && <img src={file.url} alt={file.name || file.id} />}
+              </a>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -192,6 +287,7 @@ export default function Home() {
             <div className="tableHead">
               <span>Name</span>
               <span>Status</span>
+              <span>Apps</span>
               <span>Sessions</span>
             </div>
             {workers.map((worker) => (
@@ -199,10 +295,11 @@ export default function Home() {
                 type="button"
                 key={worker.id}
                 className={worker.id === selectedWorkerId ? 'workerRow selected' : 'workerRow'}
-                onClick={() => setSelectedWorkerId(worker.id)}
+                onClick={() => selectWorker(worker)}
               >
                 <span>{worker.worker_name}</span>
                 <span>{worker.status}</span>
+                <span>{worker.slave_app_ids.join(', ') || '-'}</span>
                 <span>{worker.active_session_count}</span>
               </button>
             ))}
@@ -220,6 +317,10 @@ export default function Home() {
             <div>
               <dt>Worker ID</dt>
               <dd>{session?.worker_session_id || selectedWorkerId || '-'}</dd>
+            </div>
+            <div>
+              <dt>Slave app</dt>
+              <dd>{session?.slave_app_id || selectedSlaveAppId || '-'}</dd>
             </div>
             <div>
               <dt>Expires</dt>
@@ -240,4 +341,24 @@ export default function Home() {
       </section>
     </main>
   );
+}
+
+function pickSlaveAppId(worker: WorkerSessionView, current: string): string {
+  if (worker.slave_app_ids.includes(current)) {
+    return current;
+  }
+  if (worker.slave_app_ids.includes('echo')) {
+    return 'echo';
+  }
+  return worker.slave_app_ids[0] ?? '';
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }

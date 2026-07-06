@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@gpstation/v1-js-sdk": "file:../../sdk/js",
+    "@gpstation/v1-master-js-sdk": "file:../../sdk/master/js",
     "lucide-react": "^1.21.0",
     "next": "16.2.9",
     "react": "^19.2.5",

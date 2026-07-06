@@ -1,7 +1,7 @@
 [project]
-name = "gpstation-v1-python-sdk"
+name = "gpstation-v1-master-python-sdk"
 version = "0.1.0"
-description = "GP Station v1 Python SDK scaffold"
+description = "GP Station v1 Python master SDK scaffold"
 authors = [{ name = "GP Station" }]
 requires-python = ">=3.11,<3.15"
 dependencies = [
@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [tool.poetry]
-packages = [{ include = "gpstation_sdk_v1" }]
+packages = [{ include = "gpstation_master_sdk_v1" }]
 
 [build-system]
 requires = ["poetry-core"]

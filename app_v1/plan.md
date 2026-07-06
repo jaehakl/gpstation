@@ -3,8 +3,8 @@
 ## Completed MVP Status
 - [x] Foundation: repository-local `app_v1/` layout, protocol contracts, config examples, and run notes.
 - [x] Server orchestration: FastAPI server, in-memory worker/session registries, auth, TTL cleanup, and signaling relay.
-- [x] Worker runtime: control WebSocket client, subprocess lifecycle, JSON-lines IPC, and `aiortc` DataChannel echo.
-- [x] Browser path: TypeScript SDK and example web client.
+- [x] Worker runtime: control WebSocket client, slave subprocess lifecycle, JSON-lines IPC, and `aiortc` DataChannel handler calls.
+- [x] Master path: TypeScript SDK and example web client.
 - [x] Hardening and verification: tests, smoke scripts, and build/type checks.
 - [x] Tutorial docs: end-to-end code walkthrough, local run guide, smoke tests, and implementation troubleshooting notes.
 - [x] Poetry migration: Python packages, smoke scripts, lockfiles, and run scripts use Poetry.
@@ -12,16 +12,16 @@
 ## Next Implementation Targets
 - [ ] Replace demo static bearer tokens with the real user/auth model.
 - [ ] Move worker/session state from in-memory storage to a persistent or shared backend.
-- [ ] Extend the DataChannel protocol from `echo` to real job messages: start, cancel, progress, result, and error.
-- [ ] Add Python SDK WebRTC support, not only REST session creation.
+- [ ] Extend slave app DataChannel protocols from `echo` to real job messages: start, cancel, progress, result, and error.
+- [ ] Add Python master SDK WebRTC support, not only REST session creation.
 - [ ] Define worker capacity policy for multiple concurrent sessions.
 - [ ] Add deployment docs and production runtime configuration.
 
 ## MVP Scope
 - A user connects only to worker sessions owned by that same user.
-- The browser client explicitly selects `worker_session_id`.
+- The master client explicitly selects `worker_session_id` and `slave_app_id`.
 - The v1 server stores workers and sessions in memory only.
-- The first successful end-to-end scenario is a WebRTC DataChannel echo response.
+- The first successful end-to-end scenario is the `echo` slave app WebRTC DataChannel handler call.
 - Billing, marketplace matching, persistent session storage, and quota enforcement are out of scope.
 
 ## Local Demo Defaults
@@ -39,7 +39,7 @@
 - Python tests cover protocol validation, token auth, worker ownership checks, session creation, and TTL cleanup.
 - Worker tests cover control WebSocket URL derivation.
 - `scripts/smoke_rest.py` checks server health and authenticated worker listing against a running server.
-- `scripts/smoke_aiortc_e2e.py` verifies WebRTC signaling and DataChannel echo without opening the browser.
+- `scripts/smoke_aiortc_e2e.py` verifies WebRTC signaling, a generic handler call, and binary attachment roundtrip without opening the browser.
 - The browser E2E smoke requires installing server, worker, and web dependencies, then running `scripts/start_demo.bat`.
 - Python dependencies are installed and executed through per-package Poetry projects.
 

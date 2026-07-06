@@ -11,7 +11,7 @@ class WorkerSession(BaseModel):
     user_id: str
     worker_name: str
     status: str
-    capabilities: list[str]
+    slave_app_ids: list[str]
     active_session_count: int
     connected_at: str
     last_heartbeat_at: str
@@ -20,6 +20,7 @@ class WorkerSession(BaseModel):
 class SessionDescriptor(BaseModel):
     session_id: str
     worker_session_id: str
+    slave_app_id: str
     signaling_url: str
     token: str
     expires_at: str
@@ -35,11 +36,20 @@ class GpStationClient:
         payload = self._request("GET", "/v1/workers")
         return [WorkerSession.model_validate(item) for item in payload]
 
-    def create_session(self, worker_session_id: str, ttl_seconds: int | None = None) -> SessionDescriptor:
+    def create_session(
+        self,
+        worker_session_id: str,
+        slave_app_id: str = "echo",
+        ttl_seconds: int | None = None,
+    ) -> SessionDescriptor:
         payload = self._request(
             "POST",
             "/v1/sessions",
-            json={"worker_session_id": worker_session_id, "ttl_seconds": ttl_seconds},
+            json={
+                "worker_session_id": worker_session_id,
+                "slave_app_id": slave_app_id,
+                "ttl_seconds": ttl_seconds,
+            },
         )
         return SessionDescriptor.model_validate(payload)
 

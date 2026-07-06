@@ -7,6 +7,7 @@ from typing import Any
 import websockets
 
 from gpstation_worker_v1.settings import WorkerSettings
+from gpstation_worker_v1.slave_registry import load_default_registry
 from gpstation_worker_v1.subprocess_manager import SessionManager
 
 BACKOFF_SECONDS = [1, 2, 5, 10, 30]
@@ -34,7 +35,8 @@ async def run_connection(settings: WorkerSettings) -> None:
     headers = {"Authorization": f"Bearer {settings.access_token}"}
     async with await open_websocket(settings.control_websocket_url, headers) as websocket:
         send_lock = asyncio.Lock()
-        manager = SessionManager(settings, lambda message: send_json(websocket, send_lock, message))
+        registry = load_default_registry()
+        manager = SessionManager(settings, lambda message: send_json(websocket, send_lock, message), registry)
         heartbeat_task = asyncio.create_task(send_heartbeats(websocket, send_lock, manager, settings))
         try:
             await send_json(
@@ -43,7 +45,7 @@ async def run_connection(settings: WorkerSettings) -> None:
                 {
                     "type": "worker.hello",
                     "worker_name": settings.worker_name,
-                    "capabilities": ["echo"],
+                    "slave_app_ids": registry.ids(),
                     "metadata": {},
                 },
             )
@@ -97,7 +99,11 @@ async def send_heartbeats(
 async def handle_server_message(manager: SessionManager, message: dict[str, Any]) -> None:
     message_type = message.get("type")
     if message_type == "session.start":
-        await manager.start_session(str(message["session_id"]), int(message["ttl_seconds"]))
+        await manager.start_session(
+            str(message["session_id"]),
+            str(message.get("slave_app_id") or "echo"),
+            int(message["ttl_seconds"]),
+        )
         return
     if message_type == "signal.to_worker":
         await manager.forward_signal(str(message["session_id"]), message["signal"])
