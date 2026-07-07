@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -5,7 +6,7 @@ import pytest
 from app.control import handle_server_message, launcher_hello_payload
 from app.settings import LauncherSettings
 from app.slave_registry import SlaveApp, SlaveAppRegistry, load_registry
-from app.subprocess_manager import SESSION_LOG_LINE_LIMIT, SessionManager, subprocess_env
+from app.subprocess_manager import SESSION_LOG_LINE_LIMIT, ManagedWorker, SessionManager, subprocess_env
 
 
 def write_manifest(root, folder_name: str, slave_app_id: str, **extra) -> None:
@@ -95,6 +96,18 @@ def test_registry_builds_subprocess_args(tmp_path):
     ]
 
 
+def test_registry_builds_worker_subprocess_args(tmp_path):
+    slave_app = SlaveApp(id="echo", name="Echo", module="app", project_dir=tmp_path / "echo")
+    registry = SlaveAppRegistry([slave_app])
+
+    assert registry.worker_subprocess_args("echo") == [
+        str(slave_app.python_executable),
+        "-m",
+        "app",
+        "--worker",
+    ]
+
+
 def test_session_manager_uses_slave_startup_timeout_when_larger(tmp_path):
     registry = SlaveAppRegistry(
         [
@@ -163,6 +176,132 @@ async def test_start_session_missing_executable_venv_sends_error(tmp_path):
     assert str(project_dir) in messages[0]["detail"]
     assert "poetry install" in messages[0]["detail"]
     assert manager.sessions == {}
+
+
+@pytest.mark.asyncio
+async def test_start_job_rejects_second_job_while_busy(tmp_path):
+    messages = []
+
+    async def send_control(message):
+        messages.append(message)
+
+    project_dir = tmp_path / "echo"
+    project_dir.mkdir()
+    registry = SlaveAppRegistry([SlaveApp(id="echo", name="Echo", module="app", project_dir=project_dir)])
+    manager = SessionManager(LauncherSettings(access_token="test-token"), send_control, registry)
+    manager.current_job_id = "job-1"
+
+    await manager.start_job(
+        job_id="job-2",
+        handler_type="echo.request",
+        slave_app_id="echo",
+        input={"text": "hello"},
+        offer={"type": "offer", "sdp": "v=0\r\n"},
+    )
+
+    assert messages == [
+        {
+            "type": "job.error",
+            "job_id": "job-2",
+            "code": "launcher_busy",
+            "detail": "launcher is busy with job job-1",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_start_job_rejects_unknown_slave_app():
+    messages = []
+
+    async def send_control(message):
+        messages.append(message)
+
+    manager = SessionManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
+
+    await manager.start_job(
+        job_id="job-1",
+        handler_type="echo.request",
+        slave_app_id="missing",
+        input={},
+        offer={"type": "offer", "sdp": "v=0\r\n"},
+    )
+
+    assert messages[0]["type"] == "job.error"
+    assert messages[0]["code"] == "unknown_slave_app"
+
+
+@pytest.mark.asyncio
+async def test_cancel_job_forwards_cancel_to_worker_without_reset():
+    messages = []
+
+    async def send_control(message):
+        messages.append(message)
+
+    stdout_task = asyncio.create_task(asyncio.sleep(60))
+    stderr_task = asyncio.create_task(asyncio.sleep(60))
+    process = FakeWorkerProcess()
+    manager = SessionManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
+    manager.worker = ManagedWorker(
+        slave_app_id="echo",
+        process=process,
+        ready_event=asyncio.Event(),
+        stdout_task=stdout_task,
+        stderr_task=stderr_task,
+        ready=True,
+    )
+    manager.current_job_id = "job-1"
+
+    try:
+        await manager.cancel_job("job-1", "user cancel")
+    finally:
+        stdout_task.cancel()
+        stderr_task.cancel()
+
+    assert process.stdin.messages == [
+        {
+            "type": "job.cancel",
+            "job_id": "job-1",
+            "reason": "user cancel",
+        }
+    ]
+    assert manager.worker is not None
+    assert manager.current_job_id == "job-1"
+    assert manager.worker_status == "cancelling"
+    assert messages == []
+
+
+@pytest.mark.asyncio
+async def test_handle_server_message_dispatches_job_controls():
+    manager = FakeManager()
+
+    await handle_server_message(
+        manager,
+        {
+            "type": "job.start",
+            "job_id": "job-1",
+            "handler_type": "echo.request",
+            "slave_app_id": "echo",
+            "input": {"text": "hello"},
+            "offer": {"type": "offer", "sdp": "v=0\r\n"},
+        },
+    )
+    await handle_server_message(manager, {"type": "job.cancel", "job_id": "job-1", "reason": "user"})
+    await handle_server_message(manager, {"type": "worker.reset", "reason": "reset"})
+
+    assert manager.calls == [
+        (
+            "start_job",
+            {
+                "job_id": "job-1",
+                "handler_type": "echo.request",
+                "slave_app_id": "echo",
+                "input": {"text": "hello"},
+                "offer": {"type": "offer", "sdp": "v=0\r\n"},
+            },
+        ),
+        ("cancel_job", "job-1", "user"),
+        ("reset_worker", "reset"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -244,3 +383,34 @@ async def test_server_error_message_prints_detail(capsys):
 
 async def async_noop(message):
     return None
+
+
+class FakeManager:
+    def __init__(self):
+        self.calls = []
+
+    async def start_job(self, **kwargs):
+        self.calls.append(("start_job", kwargs))
+
+    async def cancel_job(self, job_id, reason):
+        self.calls.append(("cancel_job", job_id, reason))
+
+    async def reset_worker(self, reason):
+        self.calls.append(("reset_worker", reason))
+
+
+class FakeWorkerStdin:
+    def __init__(self):
+        self.messages = []
+
+    def write(self, data):
+        self.messages.append(json.loads(data.decode("utf-8")))
+
+    async def drain(self):
+        return None
+
+
+class FakeWorkerProcess:
+    def __init__(self):
+        self.stdin = FakeWorkerStdin()
+        self.returncode = None

@@ -12,6 +12,8 @@ import type {
   CrudUpsertResponse,
   CrudUserRow,
   DashboardSummary,
+  JobData,
+  LauncherRuntimeData,
   LauncherReconcileResponse,
   UserData,
 } from './types';
@@ -129,8 +131,16 @@ export const dbTables = {
       request<CrudListResponse<CrudLauncherRow>>('post', '/web/crud/launchers/list', crudListRequest(listRequest)),
     getRow: (rowId: string) => request<CrudLauncherRow>('get', `/web/crud/launchers/${encodeURIComponent(rowId)}`),
     reconcileDisconnected: () => request<LauncherReconcileResponse>('post', '/web/launchers/reconcile-disconnected'),
+    runtime: () => request<LauncherRuntimeData[]>('get', '/web/launchers/runtime'),
+    cancelCurrentJob: (launcherId: string) =>
+      request<{ ok: true }>('post', `/web/launchers/${encodeURIComponent(launcherId)}/cancel-current-job`),
+    resetWorker: (launcherId: string) =>
+      request<{ ok: true }>('post', `/web/launchers/${encodeURIComponent(launcherId)}/reset-worker`),
   } satisfies DbTable<CrudLauncherRow> & {
     reconcileDisconnected: () => Promise<LauncherReconcileResponse>;
+    runtime: () => Promise<LauncherRuntimeData[]>;
+    cancelCurrentJob: (launcherId: string) => Promise<{ ok: true }>;
+    resetWorker: (launcherId: string) => Promise<{ ok: true }>;
   },
   slaveSessions: {
     label: 'Slave Session',
@@ -158,6 +168,20 @@ export const dbTables = {
     close: (sessionId: string) => request<{ ok: true }>('post', `/web/slave-sessions/${encodeURIComponent(sessionId)}/close`),
   } satisfies DbTable<CrudSlaveSessionRow> & {
     close: (sessionId: string) => Promise<{ ok: true }>;
+  },
+  jobs: {
+    list: (options?: { activeOnly?: boolean; limit?: number }) => {
+      const params = new URLSearchParams();
+      if (options?.activeOnly !== undefined) {
+        params.set('active_only', String(options.activeOnly));
+      }
+      if (options?.limit !== undefined) {
+        params.set('limit', String(options.limit));
+      }
+      const query = params.toString();
+      return request<JobData[]>('get', `/web/jobs${query ? `?${query}` : ''}`);
+    },
+    kill: (jobId: string) => request<{ ok: true }>('post', `/web/jobs/${encodeURIComponent(jobId)}/kill`),
   },
   dashboard: {
     summary: async (): Promise<DashboardSummary> => {

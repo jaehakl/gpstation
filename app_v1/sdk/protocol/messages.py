@@ -28,6 +28,10 @@ class LauncherHeartbeat(StrictModel):
     type: Literal["launcher.heartbeat"]
     status: Literal["ready", "busy"] = "ready"
     active_session_ids: list[str] = Field(default_factory=list)
+    current_job_id: str | None = None
+    loaded_slave_app_id: str | None = None
+    worker_status: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class LauncherAccepted(StrictModel):
@@ -89,6 +93,71 @@ class SignalToClient(StrictModel):
     signal: SignalPayload
 
 
+class JobStart(StrictModel):
+    type: Literal["job.start"]
+    job_id: str
+    handler_type: str
+    slave_app_id: str
+    input: Any = None
+    offer: SignalPayload
+
+
+class JobCancel(StrictModel):
+    type: Literal["job.cancel"]
+    job_id: str
+    reason: str = "cancelled"
+
+
+class WorkerReset(StrictModel):
+    type: Literal["worker.reset"]
+    reason: str = "reset requested"
+
+
+class JobAnswer(StrictModel):
+    type: Literal["job.answer"]
+    job_id: str
+    answer: SignalPayload
+
+
+class JobRunning(StrictModel):
+    type: Literal["job.running"]
+    job_id: str
+
+
+class JobProgress(StrictModel):
+    type: Literal["job.progress"]
+    job_id: str
+    progress: Any = None
+
+
+class JobResult(StrictModel):
+    type: Literal["job.result"]
+    job_id: str
+    result: Any = None
+
+
+class JobError(StrictModel):
+    type: Literal["job.error"]
+    job_id: str
+    code: str = "job_error"
+    detail: str
+
+
+class JobCancelled(StrictModel):
+    type: Literal["job.cancelled"]
+    job_id: str
+    reason: str = "cancelled"
+
+
+class WorkerResetDone(StrictModel):
+    type: Literal["worker.reset.done"]
+
+
+class WorkerResetFailed(StrictModel):
+    type: Literal["worker.reset.failed"]
+    detail: str
+
+
 class Ping(StrictModel):
     type: Literal["ping"]
 
@@ -111,6 +180,17 @@ ControlMessage = Annotated[
         SessionLog,
         SignalToLauncher,
         SignalToClient,
+        JobStart,
+        JobCancel,
+        WorkerReset,
+        JobAnswer,
+        JobRunning,
+        JobProgress,
+        JobResult,
+        JobError,
+        JobCancelled,
+        WorkerResetDone,
+        WorkerResetFailed,
         Ping,
         Pong,
     ],

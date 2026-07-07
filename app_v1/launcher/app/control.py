@@ -99,8 +99,12 @@ async def send_heartbeats(
             send_lock,
             {
                 "type": "launcher.heartbeat",
-                "status": "busy" if manager.active_session_ids() else "ready",
+                "status": "busy" if manager.active_session_ids() or manager.current_job_id else "ready",
                 "active_session_ids": manager.active_session_ids(),
+                "current_job_id": manager.current_job_id,
+                "loaded_slave_app_id": manager.current_worker_slave_app_id(),
+                "worker_status": manager.worker_status,
+                "metadata": {},
             },
         )
 
@@ -119,6 +123,21 @@ async def handle_server_message(manager: SessionManager, message: dict[str, Any]
         return
     if message_type == "session.stop":
         await manager.stop_session(str(message["session_id"]), str(message.get("reason") or "closed"))
+        return
+    if message_type == "job.start":
+        await manager.start_job(
+            job_id=str(message["job_id"]),
+            handler_type=str(message["handler_type"]),
+            slave_app_id=str(message["slave_app_id"]),
+            input=message.get("input"),
+            offer=message["offer"],
+        )
+        return
+    if message_type == "job.cancel":
+        await manager.cancel_job(str(message["job_id"]), str(message.get("reason") or "cancelled"))
+        return
+    if message_type == "worker.reset":
+        await manager.reset_worker(str(message.get("reason") or "reset requested"))
         return
     if message_type == "pong":
         return

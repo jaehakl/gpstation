@@ -18,6 +18,7 @@ def test_db_mappers_configure():
         "access_keys",
         "launchers",
         "slave_sessions",
+        "jobs",
     ]:
         assert table_name in Base.metadata.tables
 
@@ -35,3 +36,9 @@ def test_db_mappers_configure():
     assert legacy_launcher_id not in Base.metadata.tables["slave_sessions"].columns
     assert "master_ip_address" in Base.metadata.tables["slave_sessions"].columns
     assert "master_user_agent" in Base.metadata.tables["slave_sessions"].columns
+    assert "handler_type" in Base.metadata.tables["jobs"].columns
+    assert "slave_app_id" in Base.metadata.tables["jobs"].columns
+    assert "offer" in Base.metadata.tables["jobs"].columns
+    assert "answer" in Base.metadata.tables["jobs"].columns
+    assert "state" in Base.metadata.tables["jobs"].columns
+    assert "launcher_id" in Base.metadata.tables["jobs"].columns

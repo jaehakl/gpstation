@@ -59,6 +59,7 @@ class User(TimestampMixin, Base):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+    jobs: Mapped[list["Job"]] = relationship("Job", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
 
 
 class Identity(TimestampMixin, Base):

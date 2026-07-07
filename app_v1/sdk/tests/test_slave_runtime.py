@@ -12,6 +12,7 @@ from sdk.slave.runtime import (
     encode_binary_frame,
     handle_datachannel_message,
     load_rtc_ice_servers,
+    send_job_result,
     summarize_sdp_candidates,
 )
 
@@ -89,6 +90,24 @@ def test_summarize_sdp_candidates_counts_candidate_types():
     )
 
     assert summary == {"host": 1, "srflx": 1, "relay": 1, "prflx": 1, "unknown": 1, "total": 5}
+
+
+def test_send_job_result_uses_job_result_envelope():
+    channel = DummyChannel()
+
+    send_job_result(
+        channel,
+        "job-1",
+        DataChannelMessage(id="job-1", type="echo.result", payload={"text": "hello"}),
+    )
+
+    assert json.loads(channel.sent[0]) == {
+        "kind": "job.result",
+        "id": "job-1",
+        "type": "echo.result",
+        "payload": {"text": "hello"},
+        "attachments": [],
+    }
 
 
 @pytest.mark.asyncio

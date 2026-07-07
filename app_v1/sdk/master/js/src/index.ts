@@ -18,6 +18,33 @@ export type SessionDescriptor = {
   expires_at: string;
 };
 
+export type JobDescriptor = {
+  id: string;
+  user_id: string;
+  handler_type: string;
+  slave_app_id: string;
+  input?: unknown;
+  offer: SignalPayload;
+  answer?: SignalPayload | null;
+  result?: unknown;
+  progress: unknown[];
+  state: string;
+  launcher_id?: string | null;
+};
+
+export type JobCreateResult = {
+  job: JobDescriptor;
+  answer_wait_url: string;
+};
+
+export type JobAnswerWaitResult = {
+  job_id: string;
+  state: string;
+  answer?: SignalPayload | null;
+  result?: unknown;
+  last_error?: string | null;
+};
+
 export type SignalPayload =
   | { type: 'offer'; sdp: string }
   | { type: 'answer'; sdp: string }
@@ -124,6 +151,12 @@ export type ConnectOptions = {
   timeoutMs?: number;
   onStatus?: (status: string) => void;
   onDiagnostic?: (event: ConnectDiagnosticEvent) => void;
+};
+
+export type RunJobOptions = ConnectOptions & {
+  slaveAppId?: string;
+  rtcConfig?: RTCConfiguration;
+  onJobCreated?: (job: JobDescriptor) => void;
 };
 
 type NormalizedFile = AttachmentMetadata & {
@@ -240,6 +273,76 @@ export class GpStationClient {
     return peer;
   }
 
+  async runJob<TInput = unknown, TResult = unknown>(
+    handlerType: string,
+    input?: TInput,
+    options: RunJobOptions = {},
+  ): Promise<CallResult<TResult>> {
+    const status = options.onStatus ?? (() => undefined);
+    const diagnostic = options.onDiagnostic ?? (() => undefined);
+    const timeoutMs = options.timeoutMs ?? 60000;
+    const peerConnection = new RTCPeerConnection(options.rtcConfig ?? this.rtcConfig ?? { iceServers: DEFAULT_RTC_ICE_SERVERS });
+    const dataChannel = peerConnection.createDataChannel('gpstation.v1', { ordered: true });
+    const jobPeer = new GpStationJobPeer(peerConnection, dataChannel);
+    let jobId: string | undefined;
+    registerConnectionDiagnostics(peerConnection, dataChannel, diagnostic);
+
+    try {
+      status('creating offer');
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      await waitForIceGatheringComplete(peerConnection, timeoutMs);
+      if (!peerConnection.localDescription) {
+        throw new Error('localDescription was not created');
+      }
+      emitDiagnostic(peerConnection, dataChannel, diagnostic, {
+        stage: 'local-offer',
+        message: 'created local job offer',
+        localCandidateSummary: summarizeSdpCandidates(peerConnection.localDescription.sdp),
+        localSdp: peerConnection.localDescription.sdp,
+      });
+
+      status('creating job');
+      const created = await this.request<JobCreateResult>('/v1/jobs', {
+        method: 'POST',
+        body: JSON.stringify({
+          handler_type: handlerType,
+          slave_app_id: options.slaveAppId ?? 'echo',
+          input,
+          offer: {
+            type: 'offer',
+            sdp: peerConnection.localDescription.sdp,
+          },
+        }),
+      });
+      jobId = created.job.id;
+      options.onJobCreated?.(created.job);
+
+      status('waiting for answer');
+      const answer = await this.waitJobAnswer(created.job.id, timeoutMs);
+      if (!answer.answer || answer.answer.type !== 'answer' || !answer.answer.sdp) {
+        throw new Error(answer.last_error || `job ${created.job.id} did not produce an answer (state=${answer.state})`);
+      }
+      await peerConnection.setRemoteDescription({ type: 'answer', sdp: answer.answer.sdp });
+      emitDiagnostic(peerConnection, dataChannel, diagnostic, {
+        stage: 'remote-answer',
+        message: 'received remote job answer',
+        remoteCandidateSummary: summarizeSdpCandidates(answer.answer.sdp),
+        remoteSdp: answer.answer.sdp,
+      });
+
+      status('waiting for data channel');
+      await jobPeer.waitUntilOpen(timeoutMs);
+      dataChannel.send(JSON.stringify({ kind: 'job.ready', id: created.job.id }));
+      status('waiting for result');
+      return await jobPeer.waitForResult<TResult>(created.job.id, timeoutMs);
+    } catch (error) {
+      peerConnection.close();
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(jobId ? `job ${jobId} failed: ${detail}` : detail);
+    }
+  }
+
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const response = await fetch(`${this.apiBaseUrl}${path}`, {
       ...init,
@@ -253,6 +356,23 @@ export class GpStationClient {
       throw new Error(`${response.status} ${await response.text()}`);
     }
     return (await response.json()) as T;
+  }
+
+  private async waitJobAnswer(jobId: string, timeoutMs: number): Promise<JobAnswerWaitResult> {
+    const startedAt = Date.now();
+    while (true) {
+      const elapsed = Date.now() - startedAt;
+      if (elapsed > timeoutMs) {
+        throw new Error(`job answer timeout: ${jobId}`);
+      }
+      const waitSeconds = Math.max(0, Math.min(30, Math.floor((timeoutMs - elapsed) / 1000)));
+      const result = await this.request<JobAnswerWaitResult>(
+        `/v1/jobs/${encodeURIComponent(jobId)}/wait-answer?wait_seconds=${waitSeconds}`,
+      );
+      if (result.answer || ['failed', 'cancelled', 'killed', 'succeeded'].includes(result.state)) {
+        return result;
+      }
+    }
   }
 }
 
@@ -698,6 +818,163 @@ async function handleSignalMessage(
       stage: 'remote-ice',
       message: payload.signal.candidate ? 'received remote ICE candidate' : 'received end-of-candidates',
     });
+  }
+}
+
+class GpStationJobPeer {
+  private response?: PendingResponse;
+  private resolveResult?: (value: CallResult<unknown>) => void;
+  private rejectResult?: (reason: Error) => void;
+  private resultTimer?: ReturnType<typeof setTimeout>;
+
+  constructor(
+    private readonly peerConnection: RTCPeerConnection,
+    private readonly dataChannel: RTCDataChannel,
+  ) {
+    this.dataChannel.binaryType = 'arraybuffer';
+    this.dataChannel.addEventListener('message', (event) => {
+      void this.handleDataMessage(event.data);
+    });
+    this.dataChannel.addEventListener('close', () => this.rejectPending(new Error('data channel closed')));
+    this.dataChannel.addEventListener('error', () => this.rejectPending(new Error('data channel error')));
+  }
+
+  waitUntilOpen(timeoutMs: number): Promise<void> {
+    if (this.dataChannel.readyState === 'open') {
+      return Promise.resolve();
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`data channel open timeout (${this.connectionStateSummary()})`)),
+        timeoutMs,
+      );
+      this.dataChannel.addEventListener(
+        'open',
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true },
+      );
+    });
+  }
+
+  waitForResult<TResult>(jobId: string, timeoutMs: number): Promise<CallResult<TResult>> {
+    return new Promise((resolve, reject) => {
+      this.resultTimer = setTimeout(() => {
+        this.rejectPending(new Error(`job result timeout: ${jobId}`));
+      }, timeoutMs);
+      this.resolveResult = resolve as (value: CallResult<unknown>) => void;
+      this.rejectResult = reject;
+    });
+  }
+
+  private async handleDataMessage(rawData: unknown): Promise<void> {
+    try {
+      if (typeof rawData === 'string') {
+        this.handleControlMessage(JSON.parse(rawData) as CallResponseFrame | CallErrorFrame | { kind: string; id: string; type?: string; payload?: unknown; attachments?: AttachmentMetadata[] });
+        return;
+      }
+      this.handleBinaryMessage(await rawToUint8Array(rawData));
+    } catch (error) {
+      this.rejectPending(asError(error));
+    }
+  }
+
+  private handleControlMessage(message: CallResponseFrame | CallErrorFrame | { kind: string; id: string; type?: string; payload?: unknown; attachments?: AttachmentMetadata[] }): void {
+    if (message.kind === 'call.error' || message.kind === 'job.error') {
+      this.rejectPending(new Error((message as CallErrorFrame).detail || 'job error'));
+      return;
+    }
+    if (message.kind !== 'job.result') {
+      return;
+    }
+    const files = new Map<string, IncomingFile>();
+    for (const attachment of message.attachments ?? []) {
+      files.set(attachment.id, {
+        ...attachment,
+        chunks: [],
+        receivedSize: 0,
+        nextIndex: 0,
+        complete: false,
+      });
+    }
+    this.response = {
+      payload: message.payload,
+      attachments: message.attachments ?? [],
+      files,
+    };
+    if (files.size === 0) {
+      this.resolvePending();
+    }
+  }
+
+  private handleBinaryMessage(frame: Uint8Array): void {
+    const { header, body } = decodeBinaryFrame(frame);
+    if (header.kind !== 'attachment.chunk' || !this.response) {
+      return;
+    }
+    const file = this.response.files.get(header.attachmentId);
+    if (!file) {
+      throw new Error(`unknown attachment chunk: ${header.attachmentId}`);
+    }
+    if (header.index !== file.nextIndex) {
+      throw new Error(`out-of-order attachment chunk: ${header.attachmentId}`);
+    }
+    file.chunks.push(body);
+    file.receivedSize += body.byteLength;
+    file.nextIndex += 1;
+    file.complete = header.final;
+    if (file.complete && file.receivedSize !== file.size) {
+      throw new Error(`attachment size mismatch: ${header.attachmentId}`);
+    }
+    if ([...this.response.files.values()].every((item) => item.complete)) {
+      this.resolvePending();
+    }
+  }
+
+  private resolvePending(): void {
+    if (!this.response || !this.resolveResult) {
+      return;
+    }
+    if (this.resultTimer) {
+      clearTimeout(this.resultTimer);
+    }
+    const files = this.response.attachments.map((metadata) => {
+      const file = this.response?.files.get(metadata.id);
+      const chunks = file?.chunks ?? [];
+      return {
+        ...metadata,
+        blob: new Blob(chunks.map(toArrayBuffer), { type: metadata.mimeType }),
+      };
+    });
+    this.resolveResult({ payload: this.response.payload, files });
+    this.cleanup();
+  }
+
+  private rejectPending(error: Error): void {
+    if (this.resultTimer) {
+      clearTimeout(this.resultTimer);
+    }
+    this.rejectResult?.(error);
+    this.cleanup();
+  }
+
+  private cleanup(): void {
+    this.resolveResult = undefined;
+    this.rejectResult = undefined;
+    this.resultTimer = undefined;
+    this.peerConnection.close();
+  }
+
+  private connectionStateSummary(): string {
+    return [
+      `signaling=${this.peerConnection.signalingState}`,
+      `iceGathering=${this.peerConnection.iceGatheringState}`,
+      `iceConnection=${this.peerConnection.iceConnectionState}`,
+      `connection=${this.peerConnection.connectionState}`,
+      `dataChannel=${this.dataChannel.readyState}`,
+    ].join(', ');
   }
 }
 

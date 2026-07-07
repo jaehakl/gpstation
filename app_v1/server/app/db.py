@@ -116,6 +116,7 @@ class Launcher(TimestampMixin, Base):
 
     user: Mapped["User"] = relationship("User", back_populates="launchers")
     slave_sessions: Mapped[list["SlaveSession"]] = relationship(back_populates="launcher", lazy="selectin")
+    jobs: Mapped[list["Job"]] = relationship(back_populates="launcher", lazy="selectin")
 
 
 class SlaveSession(TimestampMixin, Base):
@@ -137,3 +138,29 @@ class SlaveSession(TimestampMixin, Base):
 
     user: Mapped["User"] = relationship("User", back_populates="slave_sessions")
     launcher: Mapped[Optional["Launcher"]] = relationship(back_populates="slave_sessions")
+
+
+class Job(TimestampMixin, Base):
+    __tablename__ = "jobs"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=uuid_text)
+    user_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    launcher_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("launchers.id", ondelete="SET NULL"))
+    handler_type: Mapped[str] = mapped_column(Text, nullable=False)
+    slave_app_id: Mapped[str] = mapped_column(Text, nullable=False)
+    input: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    offer: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    answer: Mapped[Optional[dict]] = mapped_column(JSONB)
+    result: Mapped[Optional[dict]] = mapped_column(JSONB)
+    progress: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'queued'"))
+    assigned_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    answer_ready_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    cancel_requested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[Optional[str]] = mapped_column(Text)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+
+    user: Mapped["User"] = relationship("User", back_populates="jobs")
+    launcher: Mapped[Optional["Launcher"]] = relationship(back_populates="jobs")

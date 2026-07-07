@@ -63,6 +63,40 @@ export type LauncherReconcileResponse = {
   slave_sessions: number;
 };
 
+export type LauncherRuntimeData = {
+  launcher_id: string;
+  current_job_id?: string | null;
+  loaded_slave_app_id?: string | null;
+  worker_status?: string | null;
+  active_session_ids: string[];
+  metadata: Record<string, unknown>;
+};
+
+export type JobState = 'queued' | 'assigned' | 'answer_ready' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'killed';
+
+export type JobData = {
+  id: string;
+  user_id: string;
+  handler_type: string;
+  slave_app_id: string;
+  input?: unknown;
+  offer: Record<string, unknown>;
+  answer?: Record<string, unknown> | null;
+  result?: unknown;
+  progress: unknown[];
+  state: JobState;
+  launcher_id?: string | null;
+  assigned_at?: string | null;
+  answer_ready_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  cancel_requested_at?: string | null;
+  last_error?: string | null;
+  attempt_count: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
 export type CrudColumnType = 'text' | 'number' | 'datetime' | 'json';
 
 export type CrudColumn = {

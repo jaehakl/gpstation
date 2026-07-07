@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 
 import { AppShell } from './app/AppShell';
+import JobsPage from './app/jobs/page';
 import DashboardPage from './app/page';
 import LaunchersPage from './app/launchers/page';
 import LoginPage from './app/login/page';
@@ -16,6 +17,7 @@ export function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/users" element={<UsersPage />} />
         <Route path="/users/:userId" element={<UserDetailPage />} />
+        <Route path="/jobs" element={<JobsPage />} />
         <Route path="/launchers" element={<LaunchersPage />} />
         <Route path="/slave-sessions" element={<SlaveSessionsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />

@@ -21,6 +21,10 @@ class LauncherRuntime:
     websocket: WebSocket
     active_session_ids: set[str] = field(default_factory=set)
     slave_app_startup_timeouts: dict[str, float] = field(default_factory=dict)
+    current_job_id: str | None = None
+    loaded_slave_app_id: str | None = None
+    worker_status: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -40,6 +44,7 @@ class RuntimeRegistry:
         self.launchers: dict[str, LauncherRuntime] = {}
         self.sessions: dict[str, SessionRuntime] = {}
         self.session_logs: dict[str, deque[dict[str, str]]] = {}
+        self.job_events: dict[str, asyncio.Event] = {}
 
     async def register_launcher(
         self,
@@ -75,11 +80,85 @@ class RuntimeRegistry:
         async with self.lock:
             return set(self.launchers.keys())
 
-    async def mark_heartbeat(self, launcher_id: str, active_session_ids: list[str]) -> None:
+    async def mark_heartbeat(
+        self,
+        launcher_id: str,
+        active_session_ids: list[str],
+        *,
+        current_job_id: str | None = None,
+        loaded_slave_app_id: str | None = None,
+        worker_status: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         async with self.lock:
             launcher = self.launchers.get(launcher_id)
             if launcher is not None:
                 launcher.active_session_ids = set(active_session_ids)
+                launcher.current_job_id = current_job_id
+                launcher.loaded_slave_app_id = loaded_slave_app_id
+                launcher.worker_status = worker_status
+                launcher.metadata = metadata or {}
+
+    async def mark_launcher_job(
+        self,
+        launcher_id: str,
+        job_id: str | None,
+        *,
+        loaded_slave_app_id: str | None = None,
+        worker_status: str | None = None,
+    ) -> None:
+        async with self.lock:
+            launcher = self.launchers.get(launcher_id)
+            if launcher is not None:
+                launcher.current_job_id = job_id
+                if loaded_slave_app_id is not None:
+                    launcher.loaded_slave_app_id = loaded_slave_app_id
+                if worker_status is not None:
+                    launcher.worker_status = worker_status
+
+    async def clear_launcher_worker(self, launcher_id: str) -> None:
+        async with self.lock:
+            launcher = self.launchers.get(launcher_id)
+            if launcher is not None:
+                launcher.current_job_id = None
+                launcher.loaded_slave_app_id = None
+                launcher.worker_status = "idle"
+                launcher.metadata = {}
+
+    async def launcher_snapshots(self) -> dict[str, dict[str, Any]]:
+        async with self.lock:
+            return {
+                launcher_id: {
+                    "current_job_id": launcher.current_job_id,
+                    "loaded_slave_app_id": launcher.loaded_slave_app_id,
+                    "worker_status": launcher.worker_status,
+                    "metadata": dict(launcher.metadata),
+                    "active_session_ids": sorted(launcher.active_session_ids),
+                }
+                for launcher_id, launcher in self.launchers.items()
+            }
+
+    async def idle_launcher_ids(self) -> set[str]:
+        async with self.lock:
+            return {
+                launcher_id
+                for launcher_id, launcher in self.launchers.items()
+                if launcher.current_job_id is None and not launcher.active_session_ids
+            }
+
+    async def set_job_event(self, job_id: str) -> None:
+        async with self.lock:
+            current = self.job_events.get(job_id)
+            if current is not None:
+                current.set()
+
+    async def wait_job_event(self, job_id: str, timeout: float) -> None:
+        async with self.lock:
+            event = self.job_events.setdefault(job_id, asyncio.Event())
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+        except TimeoutError:
+            return
 
     async def get_slave_startup_timeout(self, launcher_id: str, slave_app_id: str) -> float | None:
         async with self.lock:

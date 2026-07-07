@@ -126,7 +126,211 @@ class SlaveApp:
 
 def run_app(app: SlaveApp) -> None:
     args = parse_args()
+    if args.worker:
+        asyncio.run(_run_worker_stdio(app=app))
+        return
+    if not args.session_id or args.ttl_seconds is None:
+        raise SystemExit("--session-id and --ttl-seconds are required unless --worker is set")
     asyncio.run(_run_app_stdio(app=app, session_id=args.session_id, ttl_seconds=args.ttl_seconds))
+
+
+async def _run_worker_stdio(*, app: SlaveApp) -> None:
+    try:
+        from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
+        from aiortc.sdp import candidate_from_sdp
+    except Exception as exc:
+        emit({"type": "error", "code": "aiortc_import_failed", "detail": str(exc)})
+        return
+
+    try:
+        rtc_configuration = build_rtc_configuration(RTCConfiguration, RTCIceServer)
+    except Exception as exc:
+        emit({"type": "error", "code": "rtc_configuration_failed", "detail": str(exc)})
+        return
+
+    try:
+        await app.run_initialize(SlaveContext(session_id="worker", ttl_seconds=0))
+    except Exception as exc:
+        emit({"type": "error", "code": "initialize_failed", "detail": str(exc)})
+        return
+
+    emit({"type": "worker.ready"})
+    current_job_task: asyncio.Task[None] | None = None
+    current_job_id: str | None = None
+    try:
+        while True:
+            if current_job_task is not None and current_job_task.done():
+                await drain_worker_job_task(current_job_task)
+                current_job_task = None
+                current_job_id = None
+
+            line = await asyncio.to_thread(sys.stdin.readline)
+            if not line:
+                break
+            try:
+                message = json.loads(line)
+                message_type = message.get("type")
+                if message_type == "stop":
+                    break
+                if message_type == "job.cancel":
+                    if current_job_task is not None and current_job_id == str(message.get("job_id")):
+                        current_job_task.cancel()
+                        await drain_worker_job_task(current_job_task)
+                        current_job_task = None
+                        current_job_id = None
+                    continue
+                if message_type == "job.start":
+                    if current_job_task is not None and not current_job_task.done():
+                        emit(
+                            {
+                                "type": "job.error",
+                                "job_id": str(message.get("job_id") or "unknown"),
+                                "code": "worker_busy",
+                                "detail": f"worker is busy with job {current_job_id}",
+                            }
+                        )
+                        continue
+                    current_job_id = str(message["job_id"])
+                    current_job_task = asyncio.create_task(
+                        run_worker_job(
+                            app=app,
+                            message=message,
+                            rtc_configuration=rtc_configuration,
+                            rtc_session_description=RTCSessionDescription,
+                            candidate_from_sdp=candidate_from_sdp,
+                        )
+                    )
+            except Exception as exc:
+                emit({"type": "error", "code": "worker_runtime_error", "detail": str(exc)})
+    finally:
+        if current_job_task is not None and not current_job_task.done():
+            current_job_task.cancel()
+            await drain_worker_job_task(current_job_task)
+
+
+async def drain_worker_job_task(task: asyncio.Task[None]) -> None:
+    try:
+        await task
+    except asyncio.CancelledError:
+        return
+    except Exception as exc:
+        emit({"type": "error", "code": "worker_runtime_error", "detail": str(exc)})
+
+
+async def run_worker_job(
+    *,
+    app: SlaveApp,
+    message: dict[str, Any],
+    rtc_configuration: Any,
+    rtc_session_description: Any,
+    candidate_from_sdp: Any,
+) -> None:
+    job_id = str(message["job_id"])
+    handler_type = str(message["handler_type"])
+    context = SlaveContext(session_id=job_id, ttl_seconds=0)
+    pc = None
+    try:
+        from aiortc import RTCPeerConnection
+
+        pc = RTCPeerConnection(rtc_configuration)
+        ready_event = asyncio.Event()
+        closed_event = asyncio.Event()
+        channel_holder: dict[str, Any] = {}
+
+        @pc.on("datachannel")
+        def on_datachannel(channel: Any) -> None:
+            log(f"job datachannel: {channel.label}")
+            channel_holder["channel"] = channel
+
+            @channel.on("message")
+            def on_message(raw_message: Any) -> None:
+                try:
+                    if isinstance(raw_message, str):
+                        payload = json.loads(raw_message)
+                        if payload.get("kind") == "job.ready":
+                            ready_event.set()
+                            return
+                    log(f"unsupported worker job datachannel message: {raw_message}")
+                except Exception as exc:
+                    log(f"job datachannel message error: {exc}")
+
+        @pc.on("connectionstatechange")
+        async def on_connectionstatechange() -> None:
+            log(f"job peer connection state: {pc.connectionState}")
+            if pc.connectionState in {"closed", "failed", "disconnected"}:
+                closed_event.set()
+
+        offer = message["offer"]
+        log(f"job offer candidates: {format_candidate_summary(summarize_sdp_candidates(offer['sdp']))}")
+        await pc.setRemoteDescription(rtc_session_description(sdp=offer["sdp"], type="offer"))
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+        await wait_for_ice_gathering(pc)
+        log(f"job answer candidates: {format_candidate_summary(summarize_sdp_candidates(pc.localDescription.sdp))}")
+        emit(
+            {
+                "type": "job.answer",
+                "job_id": job_id,
+                "answer": {"type": "answer", "sdp": pc.localDescription.sdp},
+            }
+        )
+
+        ready_task = asyncio.create_task(ready_event.wait())
+        closed_task = asyncio.create_task(closed_event.wait())
+        done, pending = await asyncio.wait({ready_task, closed_task}, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        if closed_task in done and not ready_event.is_set():
+            raise RuntimeError("peer connection closed before job ready")
+
+        channel = channel_holder.get("channel")
+        if channel is None:
+            raise RuntimeError("datachannel was not opened")
+        emit({"type": "job.running", "job_id": job_id})
+        response = await app.dispatch(
+            DataChannelMessage(id=job_id, type=handler_type, payload=message.get("input"), attachments=[]),
+            context,
+        )
+        if response is None:
+            response = DataChannelMessage(id=job_id, type=f"{handler_type}.result", payload=None)
+        send_job_result(channel, job_id, response)
+        emit(
+            {
+                "type": "job.result",
+                "job_id": job_id,
+                "result": {
+                    "type": response.type,
+                    "payload": response.payload,
+                    "attachments": [attachment_metadata(attachment) for attachment in response.attachments],
+                },
+            }
+        )
+    except asyncio.CancelledError:
+        log(f"job cancelled: id={job_id}")
+        channel = locals().get("channel_holder", {}).get("channel")
+        if channel is not None:
+            try:
+                channel.send(
+                    json.dumps(
+                        {"kind": "job.error", "id": job_id, "code": "cancelled", "detail": "job cancelled"},
+                        ensure_ascii=False,
+                    )
+                )
+            except Exception:
+                pass
+        emit({"type": "job.cancelled", "job_id": job_id, "reason": "cancelled"})
+    except Exception as exc:
+        log(f"job failed: id={job_id} error={exc}")
+        channel = locals().get("channel_holder", {}).get("channel")
+        if channel is not None:
+            try:
+                channel.send(json.dumps({"kind": "job.error", "id": job_id, "detail": str(exc)}, ensure_ascii=False))
+            except Exception:
+                pass
+        emit({"type": "job.error", "job_id": job_id, "code": "job_error", "detail": str(exc)})
+    finally:
+        if pc is not None:
+            await pc.close()
 
 
 async def _run_app_stdio(
@@ -452,6 +656,24 @@ def send_response(channel: Any, message: DataChannelMessage) -> None:
         send_attachment(channel, message.id, attachment)
 
 
+def send_job_result(channel: Any, job_id: str, message: DataChannelMessage) -> None:
+    attachments = [attachment_metadata(attachment) for attachment in message.attachments]
+    channel.send(
+        json.dumps(
+            {
+                "kind": "job.result",
+                "id": job_id,
+                "type": message.type,
+                "payload": message.payload,
+                "attachments": attachments,
+            },
+            ensure_ascii=False,
+        )
+    )
+    for attachment in message.attachments:
+        send_attachment(channel, job_id, attachment)
+
+
 def send_error(channel: Any, call_id: str, detail: str, code: str = "call_error") -> None:
     channel.send(json.dumps({"kind": "call.error", "id": call_id, "code": code, "detail": detail}, ensure_ascii=False))
 
@@ -525,6 +747,7 @@ def log(message: str) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--session-id", required=True)
-    parser.add_argument("--ttl-seconds", type=int, required=True)
+    parser.add_argument("--worker", action="store_true")
+    parser.add_argument("--session-id")
+    parser.add_argument("--ttl-seconds", type=int)
     return parser.parse_args()

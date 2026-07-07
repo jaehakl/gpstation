@@ -1,30 +1,27 @@
 import {
-  Activity,
   Brain,
   Cable,
   FileImage,
   Hash,
   ImageIcon,
   ListChecks,
-  PlugZap,
   RefreshCw,
   Send,
-  Square,
   Terminal,
   Wifi,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   GpStationClient,
-  GpStationPeer,
   parseRtcIceServersJson,
 } from '@gpstation/v1-master-js-sdk';
 import type {
   CandidateSummary,
+  CallResult,
   ConnectDiagnosticEvent,
+  JobDescriptor,
   LauncherSessionView,
   ReceivedFile,
-  SessionDescriptor,
 } from '@gpstation/v1-master-js-sdk';
 
 const defaultApiBaseUrl = import.meta.env.VITE_GPSTATION_V1_API_URL || '';
@@ -70,7 +67,7 @@ type DisplayFile = ReceivedFile & {
   meta?: SdxlImageMeta;
 };
 
-type SessionLogItem = {
+type JobLogItem = {
   time: string;
   stream: string;
   line: string;
@@ -94,19 +91,17 @@ export function App() {
   const [rtcIceServersJson, setRtcIceServersJson] = useState(defaultRtcIceServersJson);
   const [launchers, setLaunchers] = useState<LauncherSessionView[]>([]);
   const [selectedLauncherId, setSelectedLauncherId] = useState('');
-  const [selectedSlaveAppId, setSelectedSlaveAppId] = useState('ai');
-  const [session, setSession] = useState<SessionDescriptor | null>(null);
+  const [currentJob, setCurrentJob] = useState<JobDescriptor | null>(null);
   const [status, setStatus] = useState('idle');
   const [activeTab, setActiveTab] = useState<TabId>('connection');
   const [busy, setBusy] = useState(false);
-  const [connected, setConnected] = useState(false);
   const [logs, setLogs] = useState<LogItem[]>([]);
   const [diagnostics, setDiagnostics] = useState<DiagnosticLogItem[]>([]);
   const [localSdp, setLocalSdp] = useState('');
   const [remoteSdp, setRemoteSdp] = useState('');
-  const [subprocessLogs, setSubprocessLogs] = useState<SessionLogItem[]>([]);
+  const [subprocessLogs, setSubprocessLogs] = useState<JobLogItem[]>([]);
   const [subprocessLogsBusy, setSubprocessLogsBusy] = useState(false);
-  const [subprocessLogStatus, setSubprocessLogStatus] = useState('No session');
+  const [subprocessLogStatus, setSubprocessLogStatus] = useState('No job');
 
   const [llmSystemPrompt, setLlmSystemPrompt] = useState('You are a concise assistant.');
   const [llmPrompt, setLlmPrompt] = useState('Say hello from the AI slave.');
@@ -131,7 +126,6 @@ export function App() {
   const [sdxlRawJson, setSdxlRawJson] = useState('');
   const [sdxlFiles, setSdxlFiles] = useState<DisplayFile[]>([]);
 
-  const peerRef = useRef<GpStationPeer | null>(null);
   const logIdRef = useRef(0);
   const diagnosticIdRef = useRef(0);
   const sdxlFilesRef = useRef<DisplayFile[]>([]);
@@ -146,7 +140,7 @@ export function App() {
   );
 
   const selectedLauncher = launchers.find((launcher) => launcher.id === selectedLauncherId);
-  const availableSlaveAppIds = selectedLauncher?.slave_app_ids ?? [];
+  const aiLaunchers = launchers.filter((launcher) => launcher.slave_app_ids.includes('ai'));
 
   const addLog = useCallback((message: string) => {
     const id = logIdRef.current + 1;
@@ -168,30 +162,29 @@ export function App() {
 
   useEffect(() => {
     return () => {
-      peerRef.current?.close();
       revokeFiles(sdxlFilesRef.current);
     };
   }, []);
 
-  const refreshSessionLogs = useCallback(
+  const refreshJobLogs = useCallback(
     async (showBusy = true) => {
-      if (!session?.session_id) {
+      if (!currentJob?.id) {
         setSubprocessLogs([]);
-        setSubprocessLogStatus('No session');
+        setSubprocessLogStatus('No job');
         return;
       }
       if (showBusy) {
         setSubprocessLogsBusy(true);
       }
       try {
-        const items = await fetchSessionLogs(apiBaseUrl, token, session.session_id);
+        const items = await fetchJobLogs(apiBaseUrl, token, currentJob.id);
         setSubprocessLogs(items);
         setSubprocessLogStatus(`${items.length} line(s)`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setSubprocessLogStatus(message);
         if (showBusy) {
-          addLog(`session log refresh failed: ${message}`);
+          addLog(`job log refresh failed: ${message}`);
         }
       } finally {
         if (showBusy) {
@@ -199,24 +192,24 @@ export function App() {
         }
       }
     },
-    [addLog, apiBaseUrl, session, token],
+    [addLog, apiBaseUrl, currentJob, token],
   );
 
   useEffect(() => {
-    if (!session?.session_id) {
+    if (!currentJob?.id) {
       return undefined;
     }
     const firstRefresh = window.setTimeout(() => {
-      void refreshSessionLogs(false);
+      void refreshJobLogs(false);
     }, 0);
     const timer = window.setInterval(() => {
-      void refreshSessionLogs(false);
+      void refreshJobLogs(false);
     }, 3000);
     return () => {
       window.clearTimeout(firstRefresh);
       window.clearInterval(timer);
     };
-  }, [refreshSessionLogs, session?.session_id]);
+  }, [currentJob?.id, refreshJobLogs]);
 
   function setNextSdxlFiles(files: DisplayFile[]) {
     revokeFiles(sdxlFilesRef.current);
@@ -235,10 +228,9 @@ export function App() {
         nextLaunchers[0];
       if (nextSelectedLauncher) {
         setSelectedLauncherId(nextSelectedLauncher.id);
-        setSelectedSlaveAppId(pickSlaveAppId(nextSelectedLauncher, selectedSlaveAppId));
       }
       setStatus('launchers refreshed');
-      addLog(`launchers: ${nextLaunchers.length}`);
+      addLog(`launchers: ${nextLaunchers.length} / ai-capable: ${nextLaunchers.filter((launcher) => launcher.slave_app_ids.includes('ai')).length}`);
     } catch (error) {
       handleError(error, 'launcher refresh failed');
     } finally {
@@ -246,72 +238,52 @@ export function App() {
     }
   }
 
-  async function connect() {
-    if (!selectedLauncherId) {
-      setStatus('select launcher');
-      return;
-    }
-    if (!selectedSlaveAppId) {
-      setStatus('select slave app');
-      return;
-    }
-    setBusy(true);
-    peerRef.current?.close();
-    peerRef.current = null;
-    setConnected(false);
-    setNextSdxlFiles([]);
+  function selectLauncher(launcher: LauncherSessionView) {
+    setSelectedLauncherId(launcher.id);
+  }
+
+  function setCurrentJobState(state: string) {
+    setCurrentJob((job) => (job ? { ...job, state } : job));
+  }
+
+  async function runAiJob<TPayload, TResult>(
+    handlerType: string,
+    payload: TPayload,
+    timeoutMs: number,
+  ): Promise<CallResult<TResult>> {
     setDiagnostics([]);
     setLocalSdp('');
     setRemoteSdp('');
+    setCurrentJob(null);
     setSubprocessLogs([]);
-    setSubprocessLogStatus('Starting session');
-    try {
-      const connectClient = new GpStationClient({
-        apiBaseUrl,
-        token,
-        rtcConfig: parseRtcConfigInput(rtcIceServersJson),
-      });
-      const descriptor = await client.createSession({
-        launcherSessionId: selectedLauncherId,
-        slaveAppId: selectedSlaveAppId,
-      });
-      setSession(descriptor);
-      setSubprocessLogStatus('Waiting for logs');
-      addLog(`session: ${descriptor.session_id}`);
-      const peer = await connectClient.connectSession(descriptor, {
-        timeoutMs: 30_000,
-        onStatus: (nextStatus) => {
-          setStatus(nextStatus);
-          addLog(nextStatus);
-        },
-        onDiagnostic: addDiagnostic,
-      });
-      peerRef.current = peer;
-      setConnected(true);
-      setStatus('connected');
-    } catch (error) {
-      handleError(error, 'connection failed');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function disconnect() {
-    peerRef.current?.close();
-    peerRef.current = null;
-    setConnected(false);
-    setStatus('disconnected');
-    setSubprocessLogStatus(session?.session_id ? 'Disconnected' : 'No session');
-    addLog('connection closed');
-  }
-
-  function selectLauncher(launcher: LauncherSessionView) {
-    setSelectedLauncherId(launcher.id);
-    setSelectedSlaveAppId(pickSlaveAppId(launcher, selectedSlaveAppId));
+    setSubprocessLogStatus('Creating job');
+    return client.runJob<TPayload, TResult>(handlerType, payload, {
+      slaveAppId: 'ai',
+      timeoutMs,
+      rtcConfig: parseRtcConfigInput(rtcIceServersJson),
+      onJobCreated: (job) => {
+        setCurrentJob(job);
+        setSubprocessLogStatus('Waiting for logs');
+        addLog(`job: ${job.id}`);
+      },
+      onStatus: (nextStatus) => {
+        setStatus(nextStatus);
+        if (nextStatus === 'waiting for answer') {
+          setCurrentJobState('assigned');
+        }
+        if (nextStatus === 'waiting for data channel') {
+          setCurrentJobState('answer_ready');
+        }
+        if (nextStatus === 'waiting for result') {
+          setCurrentJobState('running');
+        }
+        addLog(nextStatus);
+      },
+      onDiagnostic: addDiagnostic,
+    });
   }
 
   async function callLlm() {
-    const peer = requirePeer(peerRef.current);
     const payload = {
       system_prompt: llmSystemPrompt,
       prompt: llmPrompt,
@@ -322,12 +294,14 @@ export function App() {
     setBusy(true);
     addLog(`${formatClock(new Date())} ai.llm start`);
     try {
-      const result = await peer.call<typeof payload, LlmResponse>('ai.llm', payload, { timeoutMs: LLM_TIMEOUT_MS });
+      const result = await runAiJob<typeof payload, LlmResponse>('ai.llm', payload, LLM_TIMEOUT_MS);
       setLlmResult(result.payload);
       setLlmRawJson(formatJson(result.payload));
+      setCurrentJobState('succeeded');
       setStatus('ai.llm complete');
       addLog(`${formatClock(new Date())} ai.llm complete (${formatDurationSince(startedAt)})`);
     } catch (error) {
+      setCurrentJobState('failed');
       addLog(`${formatClock(new Date())} ai.llm failed (${formatDurationSince(startedAt)})`);
       handleError(error, 'ai.llm failed');
     } finally {
@@ -336,7 +310,6 @@ export function App() {
   }
 
   async function callEmbeddings() {
-    const peer = requirePeer(peerRef.current);
     const payload = {
       text: embeddingText,
     };
@@ -344,14 +317,14 @@ export function App() {
     setBusy(true);
     addLog(`${formatClock(new Date())} ai.embeddings start`);
     try {
-      const result = await peer.call<typeof payload, EmbeddingResponse>('ai.embeddings', payload, {
-        timeoutMs: EMBEDDING_TIMEOUT_MS,
-      });
+      const result = await runAiJob<typeof payload, EmbeddingResponse>('ai.embeddings', payload, EMBEDDING_TIMEOUT_MS);
       setEmbeddingResult(result.payload);
       setEmbeddingRawJson(formatJson(result.payload));
+      setCurrentJobState('succeeded');
       setStatus('ai.embeddings complete');
       addLog(`${formatClock(new Date())} ai.embeddings complete (${formatDurationSince(startedAt)})`);
     } catch (error) {
+      setCurrentJobState('failed');
       addLog(`${formatClock(new Date())} ai.embeddings failed (${formatDurationSince(startedAt)})`);
       handleError(error, 'ai.embeddings failed');
     } finally {
@@ -360,7 +333,6 @@ export function App() {
   }
 
   async function callSdxl() {
-    const peer = requirePeer(peerRef.current);
     const payload = buildSdxlPayload({
       prompts: sdxlPrompts,
       negativePrompts: sdxlNegativePrompts,
@@ -376,7 +348,7 @@ export function App() {
     setNextSdxlFiles([]);
     addLog(`${formatClock(new Date())} ai.sdxl.t2i start`);
     try {
-      const result = await peer.call<typeof payload, SdxlResponse>('ai.sdxl.t2i', payload, { timeoutMs: SDXL_TIMEOUT_MS });
+      const result = await runAiJob<typeof payload, SdxlResponse>('ai.sdxl.t2i', payload, SDXL_TIMEOUT_MS);
       const payloadImages = result.payload.images ?? [];
       const metaByAttachmentId = new Map(payloadImages.map((image) => [image.attachment_id, image]));
       const nextFiles = result.files.map((file) => ({
@@ -388,11 +360,13 @@ export function App() {
       setSdxlResult(result.payload);
       setSdxlRawJson(formatJson(result.payload));
       setNextSdxlFiles(nextFiles);
+      setCurrentJobState('succeeded');
       setStatus('ai.sdxl.t2i complete');
       addLog(
         `${formatClock(new Date())} ai.sdxl.t2i complete (${formatDurationSince(startedAt)}): ${nextFiles.length} file(s)`,
       );
     } catch (error) {
+      setCurrentJobState('failed');
       addLog(`${formatClock(new Date())} ai.sdxl.t2i failed (${formatDurationSince(startedAt)})`);
       handleError(error, 'ai.sdxl.t2i failed');
     } finally {
@@ -413,7 +387,7 @@ export function App() {
           <p className="eyebrow">GP Station v1</p>
           <h1>AI Master Console</h1>
         </div>
-        <div className={connected ? 'statusPill connected' : 'statusPill'}>
+        <div className={busy ? 'statusPill connected' : 'statusPill'}>
           <Wifi size={16} aria-hidden="true" />
           <span>{status}</span>
         </div>
@@ -439,7 +413,7 @@ export function App() {
           />
         </label>
         <label>
-          <span>Launcher</span>
+          <span>AI Launcher Reference</span>
           <select
             value={selectedLauncherId}
             onChange={(event) => {
@@ -448,41 +422,21 @@ export function App() {
                 selectLauncher(launcher);
               } else {
                 setSelectedLauncherId('');
-                setSelectedSlaveAppId('');
               }
             }}
           >
             <option value="">No launcher selected</option>
-            {launchers.map((launcher) => (
+            {aiLaunchers.map((launcher) => (
               <option key={launcher.id} value={launcher.id}>
                 {launcher.launcher_name} | {launcher.status} | {launcher.id.slice(0, 8)}
               </option>
             ))}
           </select>
         </label>
-        <label>
-          <span>Slave App</span>
-          <select value={selectedSlaveAppId} onChange={(event) => setSelectedSlaveAppId(event.target.value)}>
-            {availableSlaveAppIds.map((slaveAppId) => (
-              <option key={slaveAppId} value={slaveAppId}>
-                {slaveAppId}
-              </option>
-            ))}
-            {availableSlaveAppIds.length === 0 && <option value="">No slave apps</option>}
-          </select>
-        </label>
         <div className="buttonCluster">
           <button type="button" onClick={refreshLaunchers} disabled={busy} title="Refresh launchers">
             <RefreshCw size={17} aria-hidden="true" />
             <span>Refresh</span>
-          </button>
-          <button type="button" onClick={connect} disabled={busy || !selectedLauncherId || !selectedSlaveAppId} title="Connect">
-            <PlugZap size={17} aria-hidden="true" />
-            <span>Connect</span>
-          </button>
-          <button type="button" onClick={disconnect} title="Close connection">
-            <Square size={17} aria-hidden="true" />
-            <span>Close</span>
           </button>
         </div>
       </section>
@@ -538,25 +492,29 @@ export function App() {
           <div className="sideStack">
             <div className="panel">
               <div className="panelHeader">
-                <h2>Session</h2>
-                <Activity size={17} aria-hidden="true" />
+                <h2>Job</h2>
+                <ListChecks size={17} aria-hidden="true" />
               </div>
               <dl className="details">
                 <div>
-                  <dt>Session ID</dt>
-                  <dd>{session?.session_id || '-'}</dd>
+                  <dt>Job ID</dt>
+                  <dd>{currentJob?.id || '-'}</dd>
                 </div>
                 <div>
-                  <dt>Launcher ID</dt>
-                  <dd>{session?.launcher_session_id || selectedLauncherId || '-'}</dd>
+                  <dt>Assigned Launcher</dt>
+                  <dd>{currentJob?.launcher_id || '-'}</dd>
                 </div>
                 <div>
                   <dt>Slave App</dt>
-                  <dd>{session?.slave_app_id || selectedSlaveAppId || '-'}</dd>
+                  <dd>{currentJob?.slave_app_id || 'ai'}</dd>
                 </div>
                 <div>
-                  <dt>Expires</dt>
-                  <dd>{session?.expires_at || '-'}</dd>
+                  <dt>State</dt>
+                  <dd>{currentJob?.state || 'idle'}</dd>
+                </div>
+                <div>
+                  <dt>Reference Launcher</dt>
+                  <dd>{selectedLauncher?.launcher_name || '-'}</dd>
                 </div>
               </dl>
             </div>
@@ -602,17 +560,17 @@ export function App() {
 
             <div className="panel subprocessPanel">
               <div className="panelHeader">
-                <h2>Subprocess Logs</h2>
+                <h2>Job Logs</h2>
                 <div className="panelActions">
                   <Terminal size={17} aria-hidden="true" />
                   <span>{subprocessLogStatus}</span>
                   <button
                     type="button"
                     onClick={() => {
-                      void refreshSessionLogs(true);
+                      void refreshJobLogs(true);
                     }}
-                    disabled={subprocessLogsBusy || !session?.session_id}
-                    title="Refresh subprocess logs"
+                    disabled={subprocessLogsBusy || !currentJob?.id}
+                    title="Refresh job logs"
                   >
                     <RefreshCw size={16} aria-hidden="true" />
                     <span>Refresh</span>
@@ -628,7 +586,7 @@ export function App() {
                     <code>{item.line}</code>
                   </div>
                 ))}
-                {subprocessLogs.length === 0 && <p className="emptyText">No subprocess logs yet.</p>}
+                {subprocessLogs.length === 0 && <p className="emptyText">No job logs yet.</p>}
               </div>
             </div>
           </div>
@@ -660,7 +618,7 @@ export function App() {
                 <input value={llmTemperature} inputMode="decimal" onChange={(event) => setLlmTemperature(event.target.value)} />
               </label>
             </div>
-            <button type="button" className="primaryButton" onClick={callLlm} disabled={busy || !connected}>
+            <button type="button" className="primaryButton" onClick={callLlm} disabled={busy}>
               <Send size={17} aria-hidden="true" />
               <span>Send</span>
             </button>
@@ -688,7 +646,7 @@ export function App() {
               <span>Text</span>
               <textarea value={embeddingText} onChange={(event) => setEmbeddingText(event.target.value)} rows={10} />
             </label>
-            <button type="button" className="primaryButton" onClick={callEmbeddings} disabled={busy || !connected}>
+            <button type="button" className="primaryButton" onClick={callEmbeddings} disabled={busy}>
               <Send size={17} aria-hidden="true" />
               <span>Send</span>
             </button>
@@ -758,7 +716,7 @@ export function App() {
                 <input value={sdxlHeight} inputMode="numeric" onChange={(event) => setSdxlHeight(event.target.value)} />
               </label>
             </div>
-            <button type="button" className="primaryButton" onClick={callSdxl} disabled={busy || !connected}>
+            <button type="button" className="primaryButton" onClick={callSdxl} disabled={busy}>
               <Send size={17} aria-hidden="true" />
               <span>Send</span>
             </button>
@@ -790,30 +748,13 @@ export function App() {
   );
 }
 
-function pickSlaveAppId(launcher: LauncherSessionView, current: string): string {
-  if (launcher.slave_app_ids.includes(current)) {
-    return current;
-  }
-  if (launcher.slave_app_ids.includes('ai')) {
-    return 'ai';
-  }
-  return launcher.slave_app_ids[0] ?? '';
-}
-
 function parseRtcConfigInput(value: string): RTCConfiguration | undefined {
   const trimmed = value.trim();
   return trimmed ? { iceServers: parseRtcIceServersJson(trimmed) } : undefined;
 }
 
-function requirePeer(peer: GpStationPeer | null): GpStationPeer {
-  if (!peer) {
-    throw new Error('not connected');
-  }
-  return peer;
-}
-
-async function fetchSessionLogs(apiBaseUrl: string, token: string, sessionId: string): Promise<SessionLogItem[]> {
-  const response = await fetch(`${trimApiBaseUrl(apiBaseUrl)}/v1/sessions/${encodeURIComponent(sessionId)}/logs?limit=200`, {
+async function fetchJobLogs(apiBaseUrl: string, token: string, jobId: string): Promise<JobLogItem[]> {
+  const response = await fetch(`${trimApiBaseUrl(apiBaseUrl)}/v1/jobs/${encodeURIComponent(jobId)}/logs?limit=200`, {
     headers: {
       Authorization: `Bearer ${token}`,
     },
@@ -821,7 +762,7 @@ async function fetchSessionLogs(apiBaseUrl: string, token: string, sessionId: st
   if (!response.ok) {
     throw new Error(await readErrorResponse(response));
   }
-  const payload = (await response.json()) as { items?: SessionLogItem[] };
+  const payload = (await response.json()) as { items?: JobLogItem[] };
   return payload.items ?? [];
 }
 

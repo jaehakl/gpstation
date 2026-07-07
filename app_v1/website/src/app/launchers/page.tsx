@@ -1,8 +1,8 @@
-import { RefreshCw, Wrench } from 'lucide-react';
+import { RefreshCw, RotateCcw, Square, Wrench } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 import { dbTables } from '../../api/api';
-import type { CrudLauncherRow, CrudUserRow } from '../../api/types';
+import type { CrudLauncherRow, CrudUserRow, LauncherRuntimeData } from '../../api/types';
 import { useAuthStore } from '../../stores/authStore';
 import { displayUserName, errorMessage, formatDate } from '../format';
 
@@ -14,11 +14,13 @@ export default function LaunchersPage() {
   const isAdmin = user?.role === 'admin';
   const canUseConsole = user?.role === 'admin' || user?.role === 'user';
   const [launchers, setLaunchers] = useState<CrudLauncherRow[]>([]);
+  const [launcherRuntime, setLauncherRuntime] = useState<Record<string, LauncherRuntimeData>>({});
   const [userLabels, setUserLabels] = useState<Record<string, string>>({});
   const [userFilter, setUserFilter] = useState('');
   const [activeOnly, setActiveOnly] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [isReconciling, setIsReconciling] = useState(false);
+  const [actionLauncherId, setActionLauncherId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -59,10 +61,14 @@ export default function LaunchersPage() {
       const missingUserIds = Array.from(new Set(items.map((item) => item.user_id))).filter(
         (userId) => !matchedUsers.some((item) => item.id === userId),
       );
-      const extraUsers = missingUserIds.length > 0
-        ? (await dbTables.users.listRows({ selected_ids: missingUserIds, limit: missingUserIds.length })).items
-        : [];
-      setUserLabels(Object.fromEntries([...matchedUsers, ...extraUsers].map((item) => [item.id, displayUserName(item)])));
+      const [extraUsers, runtimeRows] = await Promise.all([
+        missingUserIds.length > 0
+          ? dbTables.users.listRows({ selected_ids: missingUserIds, limit: missingUserIds.length })
+          : Promise.resolve({ items: [] as CrudUserRow[], total: 0 }),
+        dbTables.launchers.runtime(),
+      ]);
+      setUserLabels(Object.fromEntries([...matchedUsers, ...extraUsers.items].map((item) => [item.id, displayUserName(item)])));
+      setLauncherRuntime(Object.fromEntries(runtimeRows.map((item) => [item.launcher_id, item])));
       setLaunchers(items);
     } catch (loadError) {
       setError(errorMessage(loadError, 'Launcher 목록을 불러오지 못했습니다.'));
@@ -90,6 +96,42 @@ export default function LaunchersPage() {
       setError(errorMessage(reconcileError, 'Launcher 상태를 보정하지 못했습니다.'));
     } finally {
       setIsReconciling(false);
+    }
+  }
+
+  async function cancelCurrentJob(launcherId: string) {
+    if (!window.confirm('이 Launcher의 현재 Job을 취소할까요?')) {
+      return;
+    }
+    setActionLauncherId(launcherId);
+    setError(null);
+    setMessage(null);
+    try {
+      await dbTables.launchers.cancelCurrentJob(launcherId);
+      setMessage('현재 Job 취소를 요청했습니다.');
+      await loadLaunchers();
+    } catch (cancelError) {
+      setError(errorMessage(cancelError, '현재 Job을 취소하지 못했습니다.'));
+    } finally {
+      setActionLauncherId(null);
+    }
+  }
+
+  async function resetWorker(launcherId: string) {
+    if (!window.confirm('이 Launcher의 worker subprocess를 재시작할까요? 현재 Job이 있으면 취소됩니다.')) {
+      return;
+    }
+    setActionLauncherId(launcherId);
+    setError(null);
+    setMessage(null);
+    try {
+      await dbTables.launchers.resetWorker(launcherId);
+      setMessage('Worker reset을 요청했습니다.');
+      await loadLaunchers();
+    } catch (resetError) {
+      setError(errorMessage(resetError, 'Worker reset을 요청하지 못했습니다.'));
+    } finally {
+      setActionLauncherId(null);
     }
   }
 
@@ -175,8 +217,11 @@ export default function LaunchersPage() {
                 <th>상태</th>
                 <th>Slave App</th>
                 <th>활성 세션</th>
+                <th>Worker</th>
+                <th>현재 Job</th>
                 <th>IP</th>
                 <th>Heartbeat</th>
+                <th style={{ textAlign: 'right' }}>작업</th>
               </tr>
             </thead>
             <tbody>
@@ -185,21 +230,55 @@ export default function LaunchersPage() {
               ) : launchers.length === 0 ? (
                 <EmptyRow text="표시할 Launcher가 없습니다." />
               ) : (
-                launchers.map((launcher) => (
-                  <tr key={launcher.id}>
-                    <td>
-                      <strong>{launcher.launcher_name}</strong>
-                    </td>
-                    <td>{userLabels[launcher.user_id] ?? '사용자'}</td>
-                    <td>
-                      <span className="statusPill">{launcher.status}</span>
-                    </td>
-                    <td>{launcher.slave_app_ids.join(', ') || '-'}</td>
-                    <td>{launcher.active_session_ids.length}</td>
-                    <td>{launcher.ip_address ?? '-'}</td>
-                    <td>{formatDate(launcher.last_heartbeat_at)}</td>
-                  </tr>
-                ))
+                launchers.map((launcher) => {
+                  const runtime = launcherRuntime[launcher.id];
+                  return (
+                    <tr key={launcher.id}>
+                      <td>
+                        <strong>{launcher.launcher_name}</strong>
+                      </td>
+                      <td>{userLabels[launcher.user_id] ?? '사용자'}</td>
+                      <td>
+                        <span className="statusPill">{launcher.status}</span>
+                      </td>
+                      <td>{launcher.slave_app_ids.join(', ') || '-'}</td>
+                      <td>{runtime?.active_session_ids.length ?? launcher.active_session_ids.length}</td>
+                      <td>
+                        <span className="statusPill">{runtime?.worker_status ?? 'offline'}</span>
+                        <div className="mutedText">{runtime?.loaded_slave_app_id ?? '-'}</div>
+                      </td>
+                      <td className="mono">{runtime?.current_job_id ?? '-'}</td>
+                      <td>{launcher.ip_address ?? '-'}</td>
+                      <td>{formatDate(launcher.last_heartbeat_at)}</td>
+                      <td>
+                        <div className="rowActions">
+                          <button
+                            type="button"
+                            className="button smallButton dangerButton"
+                            disabled={!runtime?.current_job_id || actionLauncherId === launcher.id}
+                            onClick={() => {
+                              void cancelCurrentJob(launcher.id);
+                            }}
+                          >
+                            <Square size={15} aria-hidden="true" />
+                            Job 취소
+                          </button>
+                          <button
+                            type="button"
+                            className="button smallButton"
+                            disabled={!runtime || actionLauncherId === launcher.id}
+                            onClick={() => {
+                              void resetWorker(launcher.id);
+                            }}
+                          >
+                            <RotateCcw size={15} aria-hidden="true" />
+                            Reset
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -212,7 +291,7 @@ export default function LaunchersPage() {
 function EmptyRow({ text }: { text: string }) {
   return (
     <tr>
-      <td colSpan={7} className="emptyText">
+      <td colSpan={10} className="emptyText">
         {text}
       </td>
     </tr>

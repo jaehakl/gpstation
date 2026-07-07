@@ -49,7 +49,14 @@ class SessionLogResponse(BaseModel):
     items: list[SessionLogItem]
 
 
-from app.routers.v1.models import SessionCreateRequest, SessionCreateResult  # noqa: E402
+from app.routers.v1.models import (  # noqa: E402
+    JobAnswerWaitResult,
+    JobCreateRequest,
+    JobCreateResult,
+    JobData,
+    SessionCreateRequest,
+    SessionCreateResult,
+)
 from app.routers.web.models import (  # noqa: E402
     AccessKeyCreate,
     AccessKeyCreateResult,
@@ -75,6 +82,10 @@ __all__ = [
     "CrudUpsertResponse",
     "LauncherSessionView",
     "OkResponse",
+    "JobAnswerWaitResult",
+    "JobCreateRequest",
+    "JobCreateResult",
+    "JobData",
     "SessionCreateRequest",
     "SessionCreateResult",
     "SessionLogItem",

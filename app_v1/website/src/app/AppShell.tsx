@@ -10,6 +10,7 @@ type AppShellProps = {
 
 const navItems = [
   { href: '/', label: '대시보드', icon: LayoutDashboard, roles: ['admin', 'user'] },
+  { href: '/jobs', label: 'Job Queue', icon: ListChecks, roles: ['admin', 'user'] },
   { href: '/launchers', label: 'Launcher', icon: Monitor, roles: ['admin', 'user'] },
   { href: '/slave-sessions', label: 'SlaveSession', icon: ListChecks, roles: ['admin', 'user'] },
   { href: '/users', label: '회원 관리', icon: Users, roles: ['admin'] },

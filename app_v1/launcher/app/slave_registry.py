@@ -56,6 +56,15 @@ class SlaveAppRegistry:
             str(ttl_seconds),
         ]
 
+    def worker_subprocess_args(self, slave_app_id: str) -> list[str]:
+        app = self.require(slave_app_id)
+        return [
+            str(app.python_executable),
+            "-m",
+            app.module,
+            "--worker",
+        ]
+
     def metadata(self) -> dict[str, Any]:
         slave_apps: dict[str, dict[str, float]] = {}
         for app_id in self.ids():

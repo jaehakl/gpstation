@@ -4,7 +4,7 @@ from fastapi import HTTPException
 from app.auth import Principal
 from app.main import app
 from app.models import UserData
-from app.routers.v1 import launchers, sessions
+from app.routers.v1 import jobs, launchers, sessions
 from app.routers.web import launchers as web_launchers, slave_sessions
 from app.state import RuntimeRegistry
 
@@ -36,6 +36,11 @@ def test_launcher_routes_replace_legacy_routes():
         "/web/crud/slave_sessions/{row_id}",
         "/web/crud/slave_sessions/delete",
         "/web/launchers/reconcile-disconnected",
+        "/web/launchers/runtime",
+        "/web/launchers/{launcher_id}/cancel-current-job",
+        "/web/launchers/{launcher_id}/reset-worker",
+        "/web/jobs",
+        "/web/jobs/{job_id}/kill",
         "/web/auth/google/start",
         "/web/auth/google/callback",
         "/web/auth/me",
@@ -51,6 +56,11 @@ def test_launcher_routes_replace_legacy_routes():
     assert "/v1/launchers/control" in paths
     assert "/v1/sessions" in paths
     assert "/v1/sessions/{session_id}/logs" in paths
+    assert "/v1/jobs" in paths
+    assert "/v1/jobs/{job_id}" in paths
+    assert "/v1/jobs/{job_id}/logs" in paths
+    assert "/v1/jobs/{job_id}/wait-answer" in paths
+    assert "/v1/jobs/{job_id}/kill" in paths
     assert "/crud/users/list" not in paths
     assert "/crud/access_keys/list" not in paths
     assert "/crud/launchers/list" not in paths
@@ -213,6 +223,32 @@ async def test_v1_session_logs_requires_session_owner(monkeypatch):
     with pytest.raises(HTTPException) as error:
         await sessions.get_session_logs(
             "session-1",
+            limit=10,
+            principal=Principal(token="token", user_id="other-user", scopes=frozenset({"client"})),
+            db=FakeDb(None),
+        )
+
+    assert error.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_v1_job_logs_requires_job_owner(monkeypatch):
+    registry = RuntimeRegistry()
+    await registry.append_session_log("job-1", "stderr", "job log", "2026-07-07T00:00:00+00:00")
+    monkeypatch.setattr(jobs, "runtime", registry)
+
+    response = await jobs.get_job_logs(
+        "job-1",
+        limit=10,
+        principal=Principal(token="token", user_id="user-1", scopes=frozenset({"client"})),
+        db=FakeDb(object()),
+    )
+
+    assert response.items[0].line == "job log"
+
+    with pytest.raises(HTTPException) as error:
+        await jobs.get_job_logs(
+            "job-1",
             limit=10,
             principal=Principal(token="token", user_id="other-user", scopes=frozenset({"client"})),
             db=FakeDb(None),

@@ -64,6 +64,42 @@ def test_parse_session_log_message():
     assert message.line == "model loading"
 
 
+def test_parse_launcher_heartbeat_with_worker_state():
+    message = parse_control_message(
+        {
+            "type": "launcher.heartbeat",
+            "status": "busy",
+            "active_session_ids": [],
+            "current_job_id": "job-1",
+            "loaded_slave_app_id": "ai",
+            "worker_status": "busy",
+            "metadata": {"gpu": "RTX"},
+        }
+    )
+
+    assert message.type == "launcher.heartbeat"
+    assert message.current_job_id == "job-1"
+    assert message.loaded_slave_app_id == "ai"
+    assert message.worker_status == "busy"
+
+
+def test_parse_job_start_message():
+    message = parse_control_message(
+        {
+            "type": "job.start",
+            "job_id": "job-1",
+            "handler_type": "echo.request",
+            "slave_app_id": "echo",
+            "input": {"text": "hello"},
+            "offer": {"type": "offer", "sdp": "v=0\r\n"},
+        }
+    )
+
+    assert message.type == "job.start"
+    assert message.offer.type == "offer"
+    assert message.input == {"text": "hello"}
+
+
 def test_data_channel_echo_result_envelope():
     message = DataChannelMessage(
         id="msg-1",
