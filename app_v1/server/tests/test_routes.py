@@ -5,7 +5,7 @@ from app.auth import Principal
 from app.main import app
 from app.models import UserData
 from app.routers.v1 import launchers, sessions
-from app.routers.web import slave_sessions
+from app.routers.web import launchers as web_launchers, slave_sessions
 from app.state import RuntimeRegistry
 
 
@@ -35,6 +35,7 @@ def test_launcher_routes_replace_legacy_routes():
         "/web/crud/slave_sessions/list",
         "/web/crud/slave_sessions/{row_id}",
         "/web/crud/slave_sessions/delete",
+        "/web/launchers/reconcile-disconnected",
         "/web/auth/google/start",
         "/web/auth/google/callback",
         "/web/auth/me",
@@ -253,6 +254,40 @@ async def test_web_session_logs_allows_admin_or_owner(monkeypatch):
         )
 
     assert error.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_web_reconcile_disconnected_launchers_uses_runtime_and_user_scope(monkeypatch):
+    registry = RuntimeRegistry()
+    await registry.register_launcher("connected-launcher", object())
+    monkeypatch.setattr(web_launchers, "runtime", registry)
+
+    calls = []
+
+    async def reconcile(db, *, connected_launcher_ids, user_id):
+        calls.append((db, connected_launcher_ids, user_id))
+        return 2, 3
+
+    monkeypatch.setattr(web_launchers.LauncherService, "reconcile_disconnected_launchers", reconcile)
+    db = object()
+
+    user_response = await web_launchers.api_reconcile_disconnected_launchers(
+        db=db,
+        current_user=UserData(id="user-1", role="user", roles=["user"]),
+    )
+    admin_response = await web_launchers.api_reconcile_disconnected_launchers(
+        db=db,
+        current_user=UserData(id="admin-1", role="admin", roles=["admin"]),
+    )
+
+    assert user_response.launchers == 2
+    assert user_response.slave_sessions == 3
+    assert admin_response.launchers == 2
+    assert admin_response.slave_sessions == 3
+    assert calls == [
+        (db, {"connected-launcher"}, "user-1"),
+        (db, {"connected-launcher"}, None),
+    ]
 
 
 async def call_asgi(method: str, path: str, headers: dict[str, str]) -> tuple[int, dict[str, str]]:

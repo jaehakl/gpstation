@@ -6,6 +6,8 @@ import type { CrudLauncherRow, CrudSlaveSessionRow, CrudUserRow } from '../../ap
 import { useAuthStore } from '../../stores/authStore';
 import { displayLauncherName, displaySlaveSessionName, displayUserName, errorMessage, formatDate } from '../format';
 
+const ACTIVE_SESSION_STATUSES = ['starting', 'ready'];
+
 export default function SlaveSessionsPage() {
   const user = useAuthStore((state) => state.user);
   const authReady = useAuthStore((state) => state.authReady);
@@ -15,6 +17,7 @@ export default function SlaveSessionsPage() {
   const [userLabels, setUserLabels] = useState<Record<string, string>>({});
   const [launcherLabels, setLauncherLabels] = useState<Record<string, string>>({});
   const [userFilter, setUserFilter] = useState('');
+  const [activeOnly, setActiveOnly] = useState(true);
   const [closingSessionId, setClosingSessionId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,9 +46,16 @@ export default function SlaveSessionsPage() {
         }
       }
 
+      const textFilter: Record<string, string[]> = {};
+      if (userIds.length > 0) {
+        textFilter.user_id = userIds;
+      }
+      if (activeOnly) {
+        textFilter.status = ACTIVE_SESSION_STATUSES;
+      }
       const result = await dbTables.slaveSessions.listRows({
         sort: ['created_at', 'desc'],
-        text_filter: userIds.length > 0 ? { user_id: userIds } : {},
+        text_filter: textFilter,
       });
       const missingUserIds = Array.from(new Set(result.items.map((item) => item.user_id))).filter(
         (userId) => !matchedUsers.some((item) => item.id === userId),
@@ -63,7 +73,7 @@ export default function SlaveSessionsPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [canUseConsole, isAdmin, userFilter]);
+  }, [activeOnly, canUseConsole, isAdmin, userFilter]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -118,12 +128,20 @@ export default function SlaveSessionsPage() {
         </button>
       </div>
 
-      {isAdmin ? (
-        <section className="panel">
-          <div className="filterGrid">
+      <section className="panel">
+        <div className="toolbar">
+          {isAdmin ? (
             <label className="field">
               사용자 이름/이메일 필터
               <input value={userFilter} onChange={(event) => setUserFilter(event.target.value)} placeholder="비워두면 전체" />
+            </label>
+          ) : (
+            <span className="mutedText">내 SlaveSession</span>
+          )}
+          <div className="checkRow">
+            <label className="checkField">
+              <input type="checkbox" checked={activeOnly} onChange={(event) => setActiveOnly(event.target.checked)} />
+              활성만
             </label>
             <button
               type="button"
@@ -135,8 +153,8 @@ export default function SlaveSessionsPage() {
               적용
             </button>
           </div>
-        </section>
-      ) : null}
+        </div>
+      </section>
 
       {error ? <p className="message danger">{error}</p> : null}
       {message ? <p className="message success">{message}</p> : null}

@@ -1,10 +1,12 @@
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, Wrench } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 import { dbTables } from '../../api/api';
 import type { CrudLauncherRow, CrudUserRow } from '../../api/types';
 import { useAuthStore } from '../../stores/authStore';
 import { displayUserName, errorMessage, formatDate } from '../format';
+
+const ACTIVE_LAUNCHER_STATUSES = ['ready', 'busy'];
 
 export default function LaunchersPage() {
   const user = useAuthStore((state) => state.user);
@@ -14,8 +16,11 @@ export default function LaunchersPage() {
   const [launchers, setLaunchers] = useState<CrudLauncherRow[]>([]);
   const [userLabels, setUserLabels] = useState<Record<string, string>>({});
   const [userFilter, setUserFilter] = useState('');
+  const [activeOnly, setActiveOnly] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
+  const [isReconciling, setIsReconciling] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
 
   const loadLaunchers = useCallback(async () => {
     if (!canUseConsole) {
@@ -39,24 +44,32 @@ export default function LaunchersPage() {
         }
       }
 
+      const textFilter: Record<string, string[]> = {};
+      if (userIds.length > 0) {
+        textFilter.user_id = userIds;
+      }
+      if (activeOnly) {
+        textFilter.status = ACTIVE_LAUNCHER_STATUSES;
+      }
       const result = await dbTables.launchers.listRows({
         sort: ['last_heartbeat_at', 'desc'],
-        text_filter: userIds.length > 0 ? { user_id: userIds } : {},
+        text_filter: textFilter,
       });
-      const missingUserIds = Array.from(new Set(result.items.map((item) => item.user_id))).filter(
+      const items = activeOnly ? result.items.filter((item) => !item.disconnected_at) : result.items;
+      const missingUserIds = Array.from(new Set(items.map((item) => item.user_id))).filter(
         (userId) => !matchedUsers.some((item) => item.id === userId),
       );
       const extraUsers = missingUserIds.length > 0
         ? (await dbTables.users.listRows({ selected_ids: missingUserIds, limit: missingUserIds.length })).items
         : [];
       setUserLabels(Object.fromEntries([...matchedUsers, ...extraUsers].map((item) => [item.id, displayUserName(item)])));
-      setLaunchers(result.items);
+      setLaunchers(items);
     } catch (loadError) {
       setError(errorMessage(loadError, 'Launcher 목록을 불러오지 못했습니다.'));
     } finally {
       setIsLoading(false);
     }
-  }, [canUseConsole, isAdmin, userFilter]);
+  }, [activeOnly, canUseConsole, isAdmin, userFilter]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -64,6 +77,21 @@ export default function LaunchersPage() {
     }, 0);
     return () => window.clearTimeout(timeoutId);
   }, [loadLaunchers]);
+
+  async function reconcileDisconnectedLaunchers() {
+    setIsReconciling(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await dbTables.launchers.reconcileDisconnected();
+      setMessage(`Launcher ${result.launchers}개, SlaveSession ${result.slave_sessions}개를 보정했습니다.`);
+      await loadLaunchers();
+    } catch (reconcileError) {
+      setError(errorMessage(reconcileError, 'Launcher 상태를 보정하지 못했습니다.'));
+    } finally {
+      setIsReconciling(false);
+    }
+  }
 
   if (!authReady) {
     return <div className="centerState">사용자 정보를 확인 중입니다.</div>;
@@ -80,25 +108,46 @@ export default function LaunchersPage() {
           <p className="eyebrow">Runtime</p>
           <h1>Launcher 관리</h1>
         </div>
-        <button
-          type="button"
-          className="button"
-          disabled={isLoading}
-          onClick={() => {
-            void loadLaunchers();
-          }}
-        >
-          <RefreshCw size={16} aria-hidden="true" />
-          {isLoading ? '새로고침 중' : '새로고침'}
-        </button>
+        <div className="rowActions">
+          <button
+            type="button"
+            className="button"
+            disabled={isReconciling}
+            onClick={() => {
+              void reconcileDisconnectedLaunchers();
+            }}
+          >
+            <Wrench size={16} aria-hidden="true" />
+            {isReconciling ? '보정 중' : '상태 보정'}
+          </button>
+          <button
+            type="button"
+            className="button"
+            disabled={isLoading}
+            onClick={() => {
+              void loadLaunchers();
+            }}
+          >
+            <RefreshCw size={16} aria-hidden="true" />
+            {isLoading ? '새로고침 중' : '새로고침'}
+          </button>
+        </div>
       </div>
 
-      {isAdmin ? (
-        <section className="panel">
-          <div className="filterGrid">
+      <section className="panel">
+        <div className="toolbar">
+          {isAdmin ? (
             <label className="field">
               사용자 이름/이메일 필터
               <input value={userFilter} onChange={(event) => setUserFilter(event.target.value)} placeholder="비워두면 전체" />
+            </label>
+          ) : (
+            <span className="mutedText">내 Launcher</span>
+          )}
+          <div className="checkRow">
+            <label className="checkField">
+              <input type="checkbox" checked={activeOnly} onChange={(event) => setActiveOnly(event.target.checked)} />
+              활성만
             </label>
             <button
               type="button"
@@ -110,10 +159,11 @@ export default function LaunchersPage() {
               적용
             </button>
           </div>
-        </section>
-      ) : null}
+        </div>
+      </section>
 
       {error ? <p className="message danger">{error}</p> : null}
+      {message ? <p className="message success">{message}</p> : null}
 
       <section className="tableWrap">
         <div className="scrollTable">

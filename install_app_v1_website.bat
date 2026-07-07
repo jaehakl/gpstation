@@ -1,4 +1,4 @@
 @echo off
 setlocal
-cd /d "%~dp0app_v1\masters\website"
+cd /d "%~dp0app_v1\website"
 npm install

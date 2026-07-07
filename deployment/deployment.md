@@ -1,6 +1,6 @@
 # GPStation app_v1 deployment
 
-This guide deploys `app_v1/server` and the Vite static website at `app_v1/masters/website` to:
+This guide deploys `app_v1/server` and the Vite static website at `app_v1/website` to:
 
 - Public URL: `https://gps.qutat.com`
 - FastAPI server: `127.0.0.1:8000`
@@ -40,7 +40,7 @@ git clone <YOUR_REPO_SSH_URL> /home/ubuntu/gpstation
 cd /home/ubuntu/gpstation
 
 cp app_v1/server/env.example app_v1/server/.env
-cp app_v1/masters/website/env.example app_v1/masters/website/.env
+cp app_v1/website/env.example app_v1/website/.env
 ```
 
 Fill secret values in the two `.env` files. Do not commit real `.env` files.
@@ -58,16 +58,16 @@ Google Cloud Console must include:
 cd /home/ubuntu/gpstation/app_v1/server
 poetry install --only main
 
-cd /home/ubuntu/gpstation/app_v1/masters/website
+cd /home/ubuntu/gpstation/app_v1/website
 npm ci
 npm run build
 ```
 
-`npm run build` creates `app_v1/masters/website/dist`. Publish it to the Nginx web root:
+`npm run build` creates `app_v1/website/dist`. Publish it to the Nginx web root:
 
 ```bash
 sudo mkdir -p /var/www/gpstation-v1
-sudo rsync -a --delete /home/ubuntu/gpstation/app_v1/masters/website/dist/ /var/www/gpstation-v1/
+sudo rsync -a --delete /home/ubuntu/gpstation/app_v1/website/dist/ /var/www/gpstation-v1/
 sudo chown -R root:www-data /var/www/gpstation-v1
 sudo find /var/www/gpstation-v1 -type d -exec chmod 755 {} \;
 sudo find /var/www/gpstation-v1 -type f -exec chmod 644 {} \;

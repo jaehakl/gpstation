@@ -12,6 +12,7 @@ import type {
   CrudUpsertResponse,
   CrudUserRow,
   DashboardSummary,
+  LauncherReconcileResponse,
   UserData,
 } from './types';
 
@@ -127,7 +128,10 @@ export const dbTables = {
     listRows: (listRequest?: CrudListOptions) =>
       request<CrudListResponse<CrudLauncherRow>>('post', '/web/crud/launchers/list', crudListRequest(listRequest)),
     getRow: (rowId: string) => request<CrudLauncherRow>('get', `/web/crud/launchers/${encodeURIComponent(rowId)}`),
-  } satisfies DbTable<CrudLauncherRow>,
+    reconcileDisconnected: () => request<LauncherReconcileResponse>('post', '/web/launchers/reconcile-disconnected'),
+  } satisfies DbTable<CrudLauncherRow> & {
+    reconcileDisconnected: () => Promise<LauncherReconcileResponse>;
+  },
   slaveSessions: {
     label: 'Slave Session',
     readOnly: true,

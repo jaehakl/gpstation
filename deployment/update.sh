@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_DIR=${APP_DIR:-/home/ubuntu/gpstation}
 SERVER_DIR="$APP_DIR/app_v1/server"
-WEBSITE_DIR="$APP_DIR/app_v1/masters/website"
+WEBSITE_DIR="$APP_DIR/app_v1/website"
 WEB_ROOT=${WEB_ROOT:-/var/www/gpstation-v1}
 SERVER_SERVICE=${SERVER_SERVICE:-gpstation-v1-server}
 

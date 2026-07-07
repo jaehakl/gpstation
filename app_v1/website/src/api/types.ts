@@ -57,6 +57,12 @@ export type CrudDeleteResponse = {
   deleted: number;
 };
 
+export type LauncherReconcileResponse = {
+  ok: true;
+  launchers: number;
+  slave_sessions: number;
+};
+
 export type CrudColumnType = 'text' | 'number' | 'datetime' | 'json';
 
 export type CrudColumn = {

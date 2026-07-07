@@ -1,11 +1,11 @@
 # Website deployment notes for GPStation app_v1
 
-`app_v1/masters/website` is a Vite React SPA. Production does not run a website Node service.
+`app_v1/website` is a Vite React SPA. Production does not run a website Node service.
 
 ## Build
 
 ```bash
-cd /home/ubuntu/gpstation/app_v1/masters/website
+cd /home/ubuntu/gpstation/app_v1/website
 npm ci
 npm run build
 ```
@@ -13,14 +13,14 @@ npm run build
 The Vite build output is:
 
 ```text
-/home/ubuntu/gpstation/app_v1/masters/website/dist
+/home/ubuntu/gpstation/app_v1/website/dist
 ```
 
 Publish that output to the Nginx web root:
 
 ```bash
 sudo mkdir -p /var/www/gpstation-v1
-sudo rsync -a --delete /home/ubuntu/gpstation/app_v1/masters/website/dist/ /var/www/gpstation-v1/
+sudo rsync -a --delete /home/ubuntu/gpstation/app_v1/website/dist/ /var/www/gpstation-v1/
 sudo chown -R root:www-data /var/www/gpstation-v1
 sudo find /var/www/gpstation-v1 -type d -exec chmod 755 {} \;
 sudo find /var/www/gpstation-v1 -type f -exec chmod 644 {} \;

@@ -71,6 +71,10 @@ class RuntimeRegistry:
         async with self.lock:
             return self.launchers.get(launcher_id)
 
+    async def get_launcher_ids(self) -> set[str]:
+        async with self.lock:
+            return set(self.launchers.keys())
+
     async def mark_heartbeat(self, launcher_id: str, active_session_ids: list[str]) -> None:
         async with self.lock:
             launcher = self.launchers.get(launcher_id)

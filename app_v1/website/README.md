@@ -5,14 +5,14 @@ Google OAuth 로그인, JWT 쿠키 세션, Access Token 발급, 사용자 관리
 ## Install
 
 ```powershell
-cd app_v1/masters/website
+cd app_v1/website
 npm install
 ```
 
 ## Run
 
 ```powershell
-cd app_v1/masters/website
+cd app_v1/website
 npm run dev
 ```
 
