@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import AccessKey
@@ -44,20 +43,6 @@ def normalize_optional_datetime(value: datetime | None) -> datetime | None:
 
 class AccessKeyService:
     @staticmethod
-    async def list_user_access_keys(db: AsyncSession, user_id: str) -> list[AccessKeyData]:
-        stmt = (
-            select(AccessKey)
-            .where(AccessKey.user_id == user_id)
-            .order_by(AccessKey.created_at.desc(), AccessKey.id.asc())
-        )
-        access_keys = (await db.execute(stmt)).scalars().all()
-        return [access_key_to_data(access_key) for access_key in access_keys]
-
-    @staticmethod
-    async def count_access_keys(db: AsyncSession) -> int:
-        return len((await db.execute(select(AccessKey.id))).all())
-
-    @staticmethod
     async def create_user_access_key(
         db: AsyncSession,
         user_id: str,
@@ -93,17 +78,3 @@ class AccessKeyService:
         await db.commit()
         await db.refresh(access_key)
         return AccessKeyCreateResult(access_key=access_key_to_data(access_key), secret=secret)
-
-    @staticmethod
-    async def revoke_user_access_key(db: AsyncSession, access_key_id: str, user_id: str | None = None) -> bool:
-        stmt = select(AccessKey).where(AccessKey.id == access_key_id)
-        if user_id is not None:
-            stmt = stmt.where(AccessKey.user_id == user_id)
-        access_key = await db.scalar(stmt)
-        if access_key is None:
-            return False
-
-        access_key.status = "revoked"
-        access_key.revoked_at = datetime.now(timezone.utc)
-        await db.commit()
-        return True

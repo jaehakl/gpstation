@@ -34,4 +34,4 @@ Nginx serves `/var/www/gpstation-v1` directly and falls back to `/index.html` fo
 VITE_GPSTATION_V1_API_URL=https://gps.qutat.com
 ```
 
-The FastAPI server remains on `127.0.0.1:8000`, with `/web/`, `/crud/`, `/v1/`, and `/health` proxied by Nginx.
+The FastAPI server remains on `127.0.0.1:8000`, with `/web/`, `/v1/`, and `/health` proxied by Nginx. Generic CRUD routes live under the cookie-backed `/web/crud/*` path.

@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SlaveSession, get_db
 from app.models import UserData
-from app.routers.crud.auth import require_crud_user
-from app.routers.crud.models import CrudDeleteRequest, CrudDeleteResponse, CrudListRequest, CrudListResponse
+from app.routers.web.crud_auth import require_crud_user
+from app.routers.web.models import CrudDeleteRequest, CrudDeleteResponse, CrudListRequest, CrudListResponse
 from app.service.session_service import SessionService
 from app.utils.crud import CrudSpec, delete_rows, get_row, list_rows
 

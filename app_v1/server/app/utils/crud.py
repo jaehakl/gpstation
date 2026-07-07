@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import UserData
-from app.routers.crud.models import (
+from app.routers.web.models import (
     CrudDeleteRequest,
     CrudDeleteResponse,
     CrudListRequest,

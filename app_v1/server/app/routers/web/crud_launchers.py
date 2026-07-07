@@ -7,8 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import Launcher, get_db
 from app.models import UserData
-from app.routers.crud.auth import require_crud_user
-from app.routers.crud.models import CrudListRequest, CrudListResponse
+from app.routers.web.crud_auth import require_crud_user
+from app.routers.web.models import CrudListRequest, CrudListResponse
 from app.utils.crud import CrudSpec, get_row, list_rows
 
 CRUD_SPEC = CrudSpec(

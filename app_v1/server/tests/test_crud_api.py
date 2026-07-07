@@ -1,28 +1,20 @@
+import inspect
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
-from app.auth import Principal
 from app.db import AccessKey
 from app.models import UserData
-from app.routers.crud import access_keys, launchers, slave_sessions, users
-from app.routers.crud.auth import require_crud_user
-from app.routers.crud.models import CrudDeleteRequest, CrudUpsertRequest
-from app.user_auth.db import User
+from app.routers.web import crud_access_keys as access_keys
+from app.routers.web import crud_launchers as launchers
+from app.routers.web import crud_slave_sessions as slave_sessions
+from app.routers.web import crud_users as users
+from app.routers.web.crud_auth import require_crud_user
+from app.routers.web.models import CrudDeleteRequest, CrudUpsertRequest
 from app.user_auth.utils.auth_utils import hash_token
 from app.utils import crud
-
-
-class FakeCrudAuthDb:
-    def __init__(self, user):
-        self.user = user
-
-    async def get(self, model, object_id):
-        if model is User and self.user is not None and self.user.id == object_id:
-            return self.user
-        return None
 
 
 class FakeScalarRows:
@@ -169,27 +161,31 @@ async def test_crud_user_upsert_rejects_invalid_role_before_db_write():
 
 
 @pytest.mark.asyncio
-async def test_crud_bearer_auth_requires_client_scope(monkeypatch):
-    user = User(id="user-1", email="user@example.test", role="user", status="active")
+async def test_crud_auth_uses_cookie_user(monkeypatch):
+    async def check_cookie_user(_request, _db):
+        return make_user_data("user", "user-1")
 
-    async def authenticate_launcher_only(_db, _authorization):
-        return Principal(token="token", user_id="user-1", scopes=frozenset({"launcher"}))
+    monkeypatch.setattr("app.routers.web.crud_auth.check_user", check_cookie_user)
 
-    monkeypatch.setattr("app.routers.crud.auth.authenticate_db_authorization", authenticate_launcher_only)
-
-    with pytest.raises(HTTPException) as exc:
-        await require_crud_user(object(), "Bearer token", FakeCrudAuthDb(user))
-    assert exc.value.status_code == 403
-
-    async def authenticate_client(_db, _authorization):
-        return Principal(token="token", user_id="user-1", scopes=frozenset({"client"}))
-
-    monkeypatch.setattr("app.routers.crud.auth.authenticate_db_authorization", authenticate_client)
-
-    current_user = await require_crud_user(object(), "Bearer token", FakeCrudAuthDb(user))
+    current_user = await require_crud_user(object(), object())
 
     assert current_user.id == "user-1"
     assert current_user.role == "user"
+
+
+@pytest.mark.asyncio
+async def test_crud_auth_has_no_bearer_authorization_dependency(monkeypatch):
+    assert "authorization" not in inspect.signature(require_crud_user).parameters
+
+    async def check_missing_cookie(_request, _db):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    monkeypatch.setattr("app.routers.web.crud_auth.check_user", check_missing_cookie)
+
+    with pytest.raises(HTTPException) as exc:
+        await require_crud_user(object(), object())
+
+    assert exc.value.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -197,10 +193,10 @@ async def test_crud_cookie_auth_rejects_unauthorized_role(monkeypatch):
     async def check_unauthorized(_request, _db):
         return make_user_data("unauthorized")
 
-    monkeypatch.setattr("app.routers.crud.auth.check_user", check_unauthorized)
+    monkeypatch.setattr("app.routers.web.crud_auth.check_user", check_unauthorized)
 
     with pytest.raises(HTTPException) as exc:
-        await require_crud_user(object(), "", object())
+        await require_crud_user(object(), object())
 
     assert exc.value.status_code == 401
 

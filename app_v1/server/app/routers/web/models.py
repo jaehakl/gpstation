@@ -1,21 +1,48 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models import AccessKeyScope, UserRole
+from app.models import AccessKeyScope
 
 
-class UserAdminUpdate(BaseModel):
+class CrudListRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    email: Optional[str] = None
-    username: Optional[str] = None
-    display_name: Optional[str] = None
-    role: Optional[UserRole] = None
-    status: Optional[str] = None
+    offset: int = Field(default=0, ge=0)
+    limit: int | None = Field(default=100, ge=1, le=1000)
+    selected_ids: list[str] = Field(default_factory=list)
+    search_text: str | None = None
+    text_filter: dict[str, list[str]] = Field(default_factory=dict)
+    filter: dict[str, list[Any]] = Field(default_factory=dict)
+    sort: list[str] | None = None
+
+
+class CrudListResponse(BaseModel):
+    total: int
+    items: list[dict[str, Any]]
+
+
+class CrudUpsertRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[dict[str, Any]]
+
+
+class CrudUpsertResponse(BaseModel):
+    id: str
+
+
+class CrudDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[str]
+
+
+class CrudDeleteResponse(BaseModel):
+    deleted: int
 
 
 class AccessKeyData(BaseModel):
@@ -43,40 +70,3 @@ class AccessKeyCreate(BaseModel):
 class AccessKeyCreateResult(BaseModel):
     access_key: AccessKeyData
     secret: str
-
-
-class LauncherSessionView(BaseModel):
-    id: str
-    user_id: str
-    launcher_name: str
-    status: str
-    slave_app_ids: list[str]
-    active_session_count: int
-    connected_at: datetime
-    last_heartbeat_at: datetime
-    ip_address: Optional[str] = None
-    disconnected_at: Optional[datetime] = None
-
-
-class SlaveSessionData(BaseModel):
-    id: str
-    user_id: str
-    launcher_id: Optional[str] = None
-    slave_app_id: str
-    master_ip_address: Optional[str] = None
-    master_user_agent: Optional[str] = None
-    status: str
-    ttl_seconds: int
-    expires_at: datetime
-    ready_at: Optional[datetime] = None
-    closed_at: Optional[datetime] = None
-    last_error: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-
-
-class DashboardSummary(BaseModel):
-    launchers: int
-    active_sessions: int
-    users: int
-    access_keys: int

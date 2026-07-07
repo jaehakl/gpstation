@@ -26,23 +26,30 @@ class OkResponse(BaseModel):
     ok: bool = True
 
 
-from app.routers.crud.models import (  # noqa: E402
+class LauncherSessionView(BaseModel):
+    id: str
+    user_id: str
+    launcher_name: str
+    status: str
+    slave_app_ids: list[str]
+    active_session_count: int
+    connected_at: datetime
+    last_heartbeat_at: datetime
+    ip_address: Optional[str] = None
+    disconnected_at: Optional[datetime] = None
+
+
+from app.routers.v1.models import SessionCreateRequest, SessionCreateResult  # noqa: E402
+from app.routers.web.models import (  # noqa: E402
+    AccessKeyCreate,
+    AccessKeyCreateResult,
+    AccessKeyData,
     CrudDeleteRequest,
     CrudDeleteResponse,
     CrudListRequest,
     CrudListResponse,
     CrudUpsertRequest,
     CrudUpsertResponse,
-)
-from app.routers.v1.models import SessionCreateRequest, SessionCreateResult  # noqa: E402
-from app.routers.web.models import (  # noqa: E402
-    AccessKeyCreate,
-    AccessKeyCreateResult,
-    AccessKeyData,
-    DashboardSummary,
-    LauncherSessionView,
-    SlaveSessionData,
-    UserAdminUpdate,
 )
 
 __all__ = [
@@ -56,13 +63,10 @@ __all__ = [
     "CrudListResponse",
     "CrudUpsertRequest",
     "CrudUpsertResponse",
-    "DashboardSummary",
     "LauncherSessionView",
     "OkResponse",
     "SessionCreateRequest",
     "SessionCreateResult",
-    "SlaveSessionData",
-    "UserAdminUpdate",
     "UserData",
     "UserRole",
 ]

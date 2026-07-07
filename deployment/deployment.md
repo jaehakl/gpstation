@@ -45,6 +45,8 @@ cp app_v1/masters/website/env.example app_v1/masters/website/.env
 
 Fill secret values in the two `.env` files. Do not commit real `.env` files.
 
+`GPSTATION_V1_CORS_ORIGINS` is the allowlist for cookie-backed `/web/*` routes, including `/web/crud/*`. Keep it as `https://gps.qutat.com` in production. Bearer-token `/v1/*` routes allow browser CORS from any origin so local or third-party master apps can use the public API with an Access Token.
+
 Google Cloud Console must include:
 
 - Authorized JavaScript origin: `https://gps.qutat.com`
@@ -150,7 +152,7 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-The final Nginx config serves the website from `/var/www/gpstation-v1`, proxies `/web/`, `/crud/`, `/v1/`, and `/health` to FastAPI, and logs `/v1/sessions/<id>/signal` without query strings.
+The final Nginx config serves the website from `/var/www/gpstation-v1`, proxies `/web/`, `/v1/`, and `/health` to FastAPI, and logs `/v1/sessions/<id>/signal` without query strings. Generic CRUD routes are available only below `/web/crud/*`.
 
 Check renewal:
 

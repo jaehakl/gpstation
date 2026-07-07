@@ -72,10 +72,10 @@ export const dbTables = {
       updated_at: { label: '수정일', type: 'datetime', readOnly: true },
     },
     listRows: (listRequest?: CrudListOptions) =>
-      request<CrudListResponse<CrudUserRow>>('post', '/crud/users/list', crudListRequest(listRequest)),
-    getRow: (rowId: string) => request<CrudUserRow>('get', `/crud/users/${encodeURIComponent(rowId)}`),
-    upsertRow: (items: Partial<CrudUserRow>[]) => request<CrudUpsertResponse[]>('post', '/crud/users/upsert', { items }),
-    deleteRows: (ids: string[]) => request<CrudDeleteResponse>('post', '/crud/users/delete', { ids }),
+      request<CrudListResponse<CrudUserRow>>('post', '/web/crud/users/list', crudListRequest(listRequest)),
+    getRow: (rowId: string) => request<CrudUserRow>('get', `/web/crud/users/${encodeURIComponent(rowId)}`),
+    upsertRow: (items: Partial<CrudUserRow>[]) => request<CrudUpsertResponse[]>('post', '/web/crud/users/upsert', { items }),
+    deleteRows: (ids: string[]) => request<CrudDeleteResponse>('post', '/web/crud/users/delete', { ids }),
   } satisfies DbTable<CrudUserRow>,
   accessKeys: {
     label: 'Access Token',
@@ -97,9 +97,9 @@ export const dbTables = {
       revoked_at: { label: '폐기일', type: 'datetime', readOnly: true },
     },
     listRows: (listRequest?: CrudListOptions) =>
-      request<CrudListResponse<CrudAccessKeyRow>>('post', '/crud/access_keys/list', crudListRequest(listRequest)),
-    getRow: (rowId: string) => request<CrudAccessKeyRow>('get', `/crud/access_keys/${encodeURIComponent(rowId)}`),
-    deleteRows: (ids: string[]) => request<CrudDeleteResponse>('post', '/crud/access_keys/delete', { ids }),
+      request<CrudListResponse<CrudAccessKeyRow>>('post', '/web/crud/access_keys/list', crudListRequest(listRequest)),
+    getRow: (rowId: string) => request<CrudAccessKeyRow>('get', `/web/crud/access_keys/${encodeURIComponent(rowId)}`),
+    deleteRows: (ids: string[]) => request<CrudDeleteResponse>('post', '/web/crud/access_keys/delete', { ids }),
     createMine: (payload: AccessKeyCreate) => request<AccessKeyCreateResult>('post', '/web/users/me/access-tokens', payload),
     createForUser: (userId: string, payload: AccessKeyCreate) =>
       request<AccessKeyCreateResult>('post', `/web/users/${encodeURIComponent(userId)}/access-tokens`, payload),
@@ -125,8 +125,8 @@ export const dbTables = {
       updated_at: { label: '수정일', type: 'datetime', readOnly: true },
     },
     listRows: (listRequest?: CrudListOptions) =>
-      request<CrudListResponse<CrudLauncherRow>>('post', '/crud/launchers/list', crudListRequest(listRequest)),
-    getRow: (rowId: string) => request<CrudLauncherRow>('get', `/crud/launchers/${encodeURIComponent(rowId)}`),
+      request<CrudListResponse<CrudLauncherRow>>('post', '/web/crud/launchers/list', crudListRequest(listRequest)),
+    getRow: (rowId: string) => request<CrudLauncherRow>('get', `/web/crud/launchers/${encodeURIComponent(rowId)}`),
   } satisfies DbTable<CrudLauncherRow>,
   slaveSessions: {
     label: 'Slave Session',
@@ -148,9 +148,9 @@ export const dbTables = {
       updated_at: { label: '수정일', type: 'datetime', readOnly: true },
     },
     listRows: (listRequest?: CrudListOptions) =>
-      request<CrudListResponse<CrudSlaveSessionRow>>('post', '/crud/slave_sessions/list', crudListRequest(listRequest)),
-    getRow: (rowId: string) => request<CrudSlaveSessionRow>('get', `/crud/slave_sessions/${encodeURIComponent(rowId)}`),
-    deleteRows: (ids: string[]) => request<CrudDeleteResponse>('post', '/crud/slave_sessions/delete', { ids }),
+      request<CrudListResponse<CrudSlaveSessionRow>>('post', '/web/crud/slave_sessions/list', crudListRequest(listRequest)),
+    getRow: (rowId: string) => request<CrudSlaveSessionRow>('get', `/web/crud/slave_sessions/${encodeURIComponent(rowId)}`),
+    deleteRows: (ids: string[]) => request<CrudDeleteResponse>('post', '/web/crud/slave_sessions/delete', { ids }),
     close: (sessionId: string) => request<{ ok: true }>('post', `/web/slave-sessions/${encodeURIComponent(sessionId)}/close`),
   } satisfies DbTable<CrudSlaveSessionRow> & {
     close: (sessionId: string) => Promise<{ ok: true }>;
