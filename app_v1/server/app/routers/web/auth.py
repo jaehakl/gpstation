@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from urllib.parse import urlencode
+import secrets
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode, urlparse
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -13,10 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models import OkResponse, UserData
-from app.service.user_service import ALLOWED_USER_ROLES, user_to_data
-from app.settings import settings
+from app.service.user_service import user_to_data
+from app.settings import google_redirect_uri_for, settings
 from app.user_auth.db import Identity, OAuthProvider, OAuthState, Session as AuthSession, User
-from app.user_auth.utils.auth_utils import hash_token, pkce_challenge, pop_return_to_cookie, random_urlsafe, set_return_to_cookie
+from app.user_auth.utils.auth_utils import hash_token, pkce_challenge, random_urlsafe
 from app.user_auth.utils.jwt import make_access, make_refresh, verify_token
 
 router = APIRouter(prefix="/auth", tags=["web-auth"])
@@ -25,6 +26,9 @@ AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPES = "openid email profile"
 PROVIDER = OAuthProvider.google
+OAUTH_STATE_COOKIE = "oauth_state"
+RETURN_TO_COOKIE = "rt"
+AUTHENTICATED_ROLES = {"admin", "user"}
 
 
 @router.get("/google/start")
@@ -48,7 +52,8 @@ async def google_start(return_to: str | None = None, db: AsyncSession = Depends(
     await db.commit()
 
     resp = RedirectResponse(url="/")
-    set_return_to_cookie(resp, return_to)
+    set_oauth_state_cookie(resp, state)
+    set_return_to_cookie(resp, sanitize_return_to(return_to))
     params = {
         "client_id": settings.google_client_id,
         "redirect_uri": redirect_uri,
@@ -76,8 +81,9 @@ async def google_callback(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="missing state or code")
 
     oauth_state = await db.scalar(select(OAuthState).where(OAuthState.state == state))
-    if oauth_state is None or oauth_state.consumed_at is not None:
+    if oauth_state is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid or used state")
+    validate_oauth_state_values(state, request.cookies.get(OAUTH_STATE_COOKIE), oauth_state)
 
     token_response = requests.post(
         TOKEN_URL,
@@ -108,10 +114,14 @@ async def google_callback(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"id_token verification failed: {exc}") from exc
 
     user = await resolve_oauth_user(db, idinfo)
-    if user.status != "active":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User inactive")
-
     oauth_state.consumed_at = datetime.now(timezone.utc)
+    if not can_authenticate_user(user):
+        await db.commit()
+        resp = RedirectResponse(approval_required_url())
+        clear_auth_cookies(resp)
+        clear_oauth_temp_cookies(resp)
+        return resp
+
     session_id = create_auth_session(db, user, request)
     await db.flush()
     await db.refresh(user)
@@ -120,10 +130,10 @@ async def google_callback(
     refresh = make_refresh(str(user.id), session_id)
     await db.commit()
 
-    return_to = request.cookies.get("rt") or settings.app_base_url
+    return_to = sanitize_return_to(request.cookies.get(RETURN_TO_COOKIE))
     resp = RedirectResponse(return_to)
     set_auth_cookies(resp, access, refresh)
-    pop_return_to_cookie(resp)
+    clear_oauth_temp_cookies(resp)
     return resp
 
 
@@ -144,10 +154,8 @@ async def check_user(request: Request, db: AsyncSession = Depends(get_db)) -> Us
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token missing sub")
     user = await db.get(User, user_id)
-    if user is None or user.status != "active":
+    if user is None or not can_authenticate_user(user):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User inactive")
-    if user.role not in ALLOWED_USER_ROLES:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user role")
     return user_to_data(user)
 
 
@@ -164,7 +172,9 @@ async def refresh(request: Request, response: Response, db: AsyncSession = Depen
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh session revoked")
 
     user = await db.get(User, claims["sub"])
-    if user is None or user.status != "active":
+    if user is None or not can_authenticate_user(user):
+        auth_session.revoked_at = datetime.now(timezone.utc)
+        await db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User inactive")
     auth_session.last_seen_at = datetime.now(timezone.utc)
 
@@ -186,9 +196,7 @@ async def logout(request: Request, response: Response, db: AsyncSession = Depend
         except HTTPException:
             pass
 
-    kwargs = auth_cookie_kwargs()
-    response.delete_cookie("access_token", path="/", **kwargs)
-    response.delete_cookie("refresh_token", path="/", **kwargs)
+    delete_auth_cookies(response)
     return OkResponse()
 
 
@@ -267,7 +275,7 @@ def ensure_google_configured() -> None:
 
 
 def google_redirect_uri() -> str:
-    return settings.google_redirect_uri or f"{settings.public_base_url}/web/auth/google/callback"
+    return google_redirect_uri_for(settings)
 
 
 def auth_cookie_kwargs() -> dict:
@@ -282,3 +290,69 @@ def set_auth_cookies(resp: Response, access: str, refresh_token: str) -> None:
     kwargs = auth_cookie_kwargs()
     resp.set_cookie("access_token", access, max_age=settings.access_ttl_sec, path="/", **kwargs)
     resp.set_cookie("refresh_token", refresh_token, max_age=settings.refresh_ttl_sec, path="/", **kwargs)
+
+
+def delete_auth_cookies(resp: Response) -> None:
+    kwargs = auth_cookie_kwargs()
+    resp.delete_cookie("access_token", path="/", **kwargs)
+    resp.delete_cookie("refresh_token", path="/", **kwargs)
+
+
+def set_oauth_state_cookie(resp: Response, state: str) -> None:
+    resp.set_cookie(OAUTH_STATE_COOKIE, state, max_age=settings.oauth_state_ttl_seconds, path="/", **auth_cookie_kwargs())
+
+
+def set_return_to_cookie(resp: Response, return_to: str) -> None:
+    resp.set_cookie(RETURN_TO_COOKIE, return_to, max_age=settings.oauth_state_ttl_seconds, path="/", **auth_cookie_kwargs())
+
+
+def clear_oauth_temp_cookies(resp: Response) -> None:
+    kwargs = auth_cookie_kwargs()
+    resp.delete_cookie(OAUTH_STATE_COOKIE, path="/", **kwargs)
+    resp.delete_cookie(RETURN_TO_COOKIE, path="/", **kwargs)
+
+
+def clear_auth_cookies(resp: Response) -> None:
+    delete_auth_cookies(resp)
+
+
+def validate_oauth_state_values(query_state: str, cookie_state: str | None, oauth_state: OAuthState) -> None:
+    if not query_state or not cookie_state or not secrets.compare_digest(query_state, cookie_state):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OAuth state cookie mismatch")
+    if oauth_state.consumed_at is not None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid or used state")
+    if normalize_utc(oauth_state.created_at) + timedelta(seconds=settings.oauth_state_ttl_seconds) <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="expired state")
+
+
+def sanitize_return_to(return_to: str | None) -> str:
+    app_base = settings.app_base_url.rstrip("/")
+    if not return_to:
+        return app_base
+    candidate = return_to.strip()
+    if candidate.startswith("/") and not candidate.startswith("//"):
+        return f"{app_base}{candidate}"
+
+    parsed_candidate = urlparse(candidate)
+    parsed_app = urlparse(app_base)
+    if (
+        parsed_candidate.scheme == parsed_app.scheme
+        and parsed_candidate.netloc == parsed_app.netloc
+        and candidate.startswith(app_base)
+    ):
+        return candidate
+    return app_base
+
+
+def approval_required_url() -> str:
+    return f"{settings.app_base_url.rstrip('/')}/login?approval_required=1"
+
+
+def can_authenticate_user(user: User | None) -> bool:
+    return bool(user is not None and user.status == "active" and user.role in AUTHENTICATED_ROLES)
+
+
+def normalize_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)

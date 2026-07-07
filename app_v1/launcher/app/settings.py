@@ -20,8 +20,8 @@ class LauncherSettings(BaseSettings):
         extra="ignore",
     )
 
-    api_url: str = "http://127.0.0.1:8100"
-    access_token: str = "demo-launcher-token"
+    api_url: str
+    access_token: str
     launcher_name: str = Field(default_factory=gethostname)
     heartbeat_interval_seconds: float = Field(default=5.0, gt=0)
     session_ready_timeout_seconds: float = Field(default=10.0, gt=0)
@@ -29,7 +29,7 @@ class LauncherSettings(BaseSettings):
     @field_validator("api_url")
     @classmethod
     def strip_api_url(cls, value: str) -> str:
-        return value.rstrip("/") or "http://127.0.0.1:8100"
+        return value.rstrip("/")
 
     @property
     def control_websocket_url(self) -> str:

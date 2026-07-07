@@ -16,32 +16,22 @@ cd app_v1/server
 poetry run gpstation-v1-server
 ```
 
-The server uses `GPSTATION_V1_DB_URL` for Postgres. The default local value is:
+The server uses `GPSTATION_V1_DB_URL` for Postgres. Environment-specific server values live in `app_v1/server/.env`; there are no runtime fallback defaults. Use `app_v1/server/env.example` as the shared template and replace every secret placeholder.
 
-```text
-postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/gpstation_v1
-```
-
-Environment-specific server values live in `app_v1/server/.env`. Use `app_v1/server/env.example` as the shared template for local setup.
-
-Demo tokens are enabled by default:
-
-- Client: `demo-client-token`
-- Launcher: `demo-launcher-token`
-
-The default demo principal is seeded into the `users` table with a deterministic UUID on startup. The `/v1/*` APIs accept DB-backed Access Tokens first and keep these static bearer tokens as local fallback.
+Static bearer tokens are not supported. The `/v1/*` APIs accept only DB-backed Access Tokens created from the website, and the token must include the required `client` or `launcher` scope.
 
 ## Website Auth
 
 Browser management APIs live under `/web/*` and use Google OAuth plus JWT cookies. Configure these values in `app_v1/server/.env`:
 
 ```text
-GPSTATION_V1_APP_BASE_URL=http://localhost:3002
-GPSTATION_V1_GOOGLE_CLIENT_ID=
-GPSTATION_V1_GOOGLE_CLIENT_SECRET=
-GPSTATION_V1_GOOGLE_REDIRECT_URI=http://localhost:8100/web/auth/google/callback
-GPSTATION_V1_JWT_SECRET=change-this-to-a-long-random-secret
-GPSTATION_V1_SECURE_COOKIES=false
+GPSTATION_V1_PUBLIC_BASE_URL=https://gps.qutat.com
+GPSTATION_V1_APP_BASE_URL=https://gps.qutat.com
+GPSTATION_V1_GOOGLE_CLIENT_ID=replace-with-google-oauth-web-client-id.apps.googleusercontent.com
+GPSTATION_V1_GOOGLE_CLIENT_SECRET=replace-with-google-oauth-client-secret
+GPSTATION_V1_GOOGLE_REDIRECT_URI=https://gps.qutat.com/web/auth/google/callback
+GPSTATION_V1_JWT_SECRET=replace-with-a-random-secret-at-least-32-characters
+GPSTATION_V1_SECURE_COOKIES=true
 ```
 
 New OAuth users start as `unauthorized`. Promote the first admin manually:

@@ -42,6 +42,9 @@ def test_launcher_routes_replace_legacy_routes():
     assert "/crud/auth_sessions/list" not in paths
     assert "/crud/oauth_states/list" not in paths
     assert "/crud/auth_audit/list" not in paths
+    assert "/docs" not in paths
+    assert "/openapi.json" not in paths
+    assert "/redoc" not in paths
     assert legacy_prefix not in paths
     assert f"{legacy_prefix}/control" not in paths
 

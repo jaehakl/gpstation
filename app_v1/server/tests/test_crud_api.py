@@ -151,7 +151,7 @@ async def test_crud_write_rejects_non_admin():
     assert upsert_exc.value.status_code == 403
 
     with pytest.raises(HTTPException) as delete_exc:
-        await crud.delete_rows(object(), slave_sessions.CRUD_SPEC, CrudDeleteRequest(ids=["session-1"]), user)
+        await crud.delete_rows(object(), launchers.CRUD_SPEC, CrudDeleteRequest(ids=["launcher-1"]), user)
     assert delete_exc.value.status_code == 403
 
 
@@ -193,6 +193,19 @@ async def test_crud_bearer_auth_requires_client_scope(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_crud_cookie_auth_rejects_unauthorized_role(monkeypatch):
+    async def check_unauthorized(_request, _db):
+        return make_user_data("unauthorized")
+
+    monkeypatch.setattr("app.routers.crud.auth.check_user", check_unauthorized)
+
+    with pytest.raises(HTTPException) as exc:
+        await require_crud_user(object(), "", object())
+
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_crud_access_key_delete_revokes_without_exposing_hash():
     access_key = AccessKey(
         id="key-1",
@@ -228,7 +241,7 @@ async def test_crud_slave_session_delete_uses_session_service(monkeypatch):
 
     monkeypatch.setattr(slave_sessions.SessionService, "close_session", close_session)
 
-    db = object()
+    db = FakeDeleteDb(["session-1", "missing"])
     result = await crud.delete_rows(
         db,
         slave_sessions.CRUD_SPEC,
@@ -238,3 +251,35 @@ async def test_crud_slave_session_delete_uses_session_service(monkeypatch):
 
     assert result.deleted == 1
     assert calls == [(db, "session-1", "closed by CRUD"), (db, "missing", "closed by CRUD")]
+
+
+@pytest.mark.asyncio
+async def test_crud_slave_session_delete_filters_user_owned_rows(monkeypatch):
+    calls = []
+
+    class CapturingDb(FakeDeleteDb):
+        def __init__(self, rows):
+            super().__init__(rows)
+            self.statements = []
+
+        async def execute(self, stmt):
+            self.statements.append(stmt)
+            return await super().execute(stmt)
+
+    async def close_session(db, session_id, reason):
+        calls.append((db, session_id, reason))
+        return object()
+
+    monkeypatch.setattr(slave_sessions.SessionService, "close_session", close_session)
+
+    db = CapturingDb(["owned-session"])
+    result = await crud.delete_rows(
+        db,
+        slave_sessions.CRUD_SPEC,
+        CrudDeleteRequest(ids=["owned-session", "other-session"]),
+        make_user_data("user", "user-1"),
+    )
+
+    assert result.deleted == 1
+    assert calls == [(db, "owned-session", "closed by CRUD")]
+    assert "slave_sessions.user_id" in str(db.statements[0])

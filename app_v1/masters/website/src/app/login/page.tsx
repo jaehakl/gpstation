@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { LogIn, LogOut } from 'lucide-react';
 
 import { useAuthStore } from '../../stores/authStore';
@@ -11,6 +12,8 @@ export default function LoginPage() {
   const authReady = useAuthStore((state) => state.authReady);
   const startLogin = useAuthStore((state) => state.startLogin);
   const logoutUser = useAuthStore((state) => state.logoutUser);
+  const searchParams = useSearchParams();
+  const approvalRequired = searchParams.get('approval_required') === '1';
 
   return (
     <div className="loginBox panel">
@@ -19,7 +22,7 @@ export default function LoginPage() {
 
       {!authReady ? (
         <p className="message warn" style={{ marginTop: 16 }}>사용자 정보를 확인 중입니다.</p>
-      ) : user ? (
+      ) : user && user.role !== 'unauthorized' ? (
         <div className="sectionStack" style={{ marginTop: 16 }}>
           <div className="identityBlock" style={{ border: 0, padding: 0 }}>
             <div className="avatar">{displayUserName(user).slice(0, 1).toUpperCase()}</div>
@@ -28,11 +31,6 @@ export default function LoginPage() {
               <span>{user.role} / {user.status}</span>
             </div>
           </div>
-          {user.role === 'unauthorized' ? (
-            <p className="message warn">
-              관리자 승인 전 계정입니다. 승인 전에는 내 계정 조회와 계정 삭제만 사용할 수 있습니다.
-            </p>
-          ) : null}
           <button
             type="button"
             className="button fullButton"
@@ -48,15 +46,22 @@ export default function LoginPage() {
           </Link>
         </div>
       ) : (
-        <button
-          type="button"
-          className="button primaryButton fullButton"
-          style={{ marginTop: 16 }}
-          onClick={startLogin}
-        >
-          <LogIn size={16} aria-hidden="true" />
-          Google로 로그인
-        </button>
+        <>
+          {approvalRequired ? (
+            <p className="message warn" style={{ marginTop: 16 }}>
+              관리자 승인 전에는 콘솔에 접근할 수 없습니다.
+            </p>
+          ) : null}
+          <button
+            type="button"
+            className="button primaryButton fullButton"
+            style={{ marginTop: 16 }}
+            onClick={startLogin}
+          >
+            <LogIn size={16} aria-hidden="true" />
+            Google로 로그인
+          </button>
+        </>
       )}
     </div>
   );

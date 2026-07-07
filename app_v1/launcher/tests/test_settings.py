@@ -30,12 +30,38 @@ def test_launcher_settings_reads_prefixed_values_from_env_file(tmp_path, monkeyp
 
 
 def test_control_websocket_url_uses_v1_path():
-    settings = LauncherSettings(api_url="http://127.0.0.1:8100/")
+    settings = LauncherSettings(api_url="http://127.0.0.1:8000/", access_token="test-token")
 
-    assert settings.control_websocket_url == "ws://127.0.0.1:8100/v1/launchers/control"
+    assert settings.control_websocket_url == "ws://127.0.0.1:8000/v1/launchers/control"
 
 
 def test_https_api_url_uses_wss():
-    settings = LauncherSettings(api_url="https://gps.example.com/base")
+    settings = LauncherSettings(api_url="https://gps.example.com/base", access_token="test-token")
 
     assert settings.control_websocket_url == "wss://gps.example.com/base/v1/launchers/control"
+
+
+def test_launcher_settings_requires_access_token(monkeypatch):
+    monkeypatch.setenv("GPSTATION_V1_API_URL", "http://127.0.0.1:8000")
+    monkeypatch.delenv("GPSTATION_V1_ACCESS_TOKEN", raising=False)
+    monkeypatch.setitem(LauncherSettings.model_config, "env_file", "")
+
+    try:
+        LauncherSettings()
+    except Exception as exc:
+        assert "access_token" in str(exc)
+    else:
+        raise AssertionError("LauncherSettings should require GPSTATION_V1_ACCESS_TOKEN")
+
+
+def test_launcher_settings_requires_api_url(monkeypatch):
+    monkeypatch.delenv("GPSTATION_V1_API_URL", raising=False)
+    monkeypatch.setenv("GPSTATION_V1_ACCESS_TOKEN", "test-launcher-token")
+    monkeypatch.setitem(LauncherSettings.model_config, "env_file", "")
+
+    try:
+        LauncherSettings()
+    except Exception as exc:
+        assert "api_url" in str(exc)
+    else:
+        raise AssertionError("LauncherSettings should require GPSTATION_V1_API_URL")

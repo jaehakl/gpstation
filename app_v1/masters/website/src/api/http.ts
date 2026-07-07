@@ -1,7 +1,7 @@
 import axios from 'axios';
 
-const apiBaseUrl = process.env.NEXT_PUBLIC_GPSTATION_V1_API_URL || 'http://127.0.0.1:8100';
-export const API_URL = apiBaseUrl.replace(/\/+$/, '') || 'http://127.0.0.1:8100';
+const apiBaseUrl = process.env.NEXT_PUBLIC_GPSTATION_V1_API_URL || '';
+export const API_URL = apiBaseUrl.replace(/\/+$/, '');
 
 type HttpMethod = 'get' | 'post' | 'patch' | 'delete';
 

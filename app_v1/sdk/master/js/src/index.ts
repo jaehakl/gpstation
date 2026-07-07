@@ -138,7 +138,7 @@ export class GpStationClient {
   private readonly rtcConfig?: RTCConfiguration;
 
   constructor(options: GpStationClientOptions) {
-    this.apiBaseUrl = options.apiBaseUrl.replace(/\/+$/, '') || 'http://127.0.0.1:8100';
+    this.apiBaseUrl = options.apiBaseUrl.replace(/\/+$/, '');
     this.token = options.token;
     this.rtcConfig = options.rtcConfig;
   }

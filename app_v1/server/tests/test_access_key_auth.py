@@ -89,6 +89,14 @@ async def test_db_access_key_auth_updates_last_used_and_scopes():
 
 
 @pytest.mark.asyncio
+async def test_bearer_auth_rejects_tokens_without_db_access_key():
+    with pytest.raises(HTTPException) as exc:
+        await authenticate_bearer_token(FakeAuthDb(access_key=None, user=None), "missing-token")
+
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_db_access_key_auth_rejects_revoked_expired_or_unauthorized_user():
     secret = "gpsk_secret"
     access_key = AccessKey(

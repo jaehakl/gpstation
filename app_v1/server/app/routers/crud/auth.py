@@ -25,6 +25,6 @@ async def require_crud_user(
         return user_to_data(user)
 
     current_user = await check_user(request, db)
-    if current_user.role not in {"admin", "user", "unauthorized"}:
+    if current_user.role not in {"admin", "user"}:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
     return current_user

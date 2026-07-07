@@ -76,11 +76,8 @@ export default function DashboardPage() {
           <p className="eyebrow">Approval</p>
           <h1>관리자 승인 대기 중</h1>
           <p className="message warn" style={{ marginTop: 16 }}>
-            승인 전에는 내 계정 조회와 계정 삭제만 사용할 수 있습니다. 관리자가 DB에서 role을 admin 또는 user로 변경하면 콘솔 메뉴가 열립니다.
+            승인 전에는 콘솔에 접근할 수 없습니다. 관리자가 DB에서 role을 admin 또는 user로 변경하면 다시 로그인해 주세요.
           </p>
-          <Link href={`/users/${user.id}`} className="button" style={{ marginTop: 14 }}>
-            내 계정 보기
-          </Link>
         </section>
       </div>
     );

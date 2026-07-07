@@ -27,7 +27,7 @@ export function AppShell({ children }: AppShellProps) {
 
   return (
     <div className="appFrame">
-      {authReady && user ? (
+      {authReady && user && user.role !== 'unauthorized' ? (
         <aside className="sidebar">
           <Sidebar pathname={pathname} />
         </aside>
@@ -55,7 +55,7 @@ function HeaderAction() {
     return <span className="mutedText">인증 확인 중</span>;
   }
 
-  if (!user) {
+  if (!user || user.role === 'unauthorized') {
     return (
       <Link href="/login" className="button smallButton">
         <LogIn size={16} aria-hidden="true" />

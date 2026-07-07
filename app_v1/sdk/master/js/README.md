@@ -12,8 +12,8 @@ npm run build
 
 ```ts
 const client = new GpStationClient({
-  apiBaseUrl: 'http://127.0.0.1:8100',
-  token: 'demo-client-token',
+  apiBaseUrl: 'https://gps.qutat.com',
+  token: process.env.GPSTATION_V1_ACCESS_TOKEN!,
 });
 
 const launchers = await client.listLaunchers();

@@ -16,7 +16,7 @@ router = APIRouter(prefix="/users", tags=["web-users"])
 @router.get("/me", response_model=UserData)
 async def api_get_me(
     db: AsyncSession = Depends(get_db),
-    current_user: UserData = Depends(require_roles(["admin", "user", "unauthorized"])),
+    current_user: UserData = Depends(require_roles(["admin", "user"])),
 ) -> UserData:
     user = await UserService.get_user(db, current_user.id)
     if user is None:
@@ -70,7 +70,7 @@ async def api_revoke_my_access_token(
 async def api_get_user(
     user_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: UserData = Depends(require_roles(["admin", "user", "unauthorized"])),
+    current_user: UserData = Depends(require_roles(["admin", "user"])),
 ) -> UserData:
     if current_user.role != "admin" and current_user.id != user_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
@@ -101,7 +101,7 @@ async def api_delete_user(
     user_id: str,
     response: Response,
     db: AsyncSession = Depends(get_db),
-    current_user: UserData = Depends(require_roles(["admin", "user", "unauthorized"])),
+    current_user: UserData = Depends(require_roles(["admin", "user"])),
 ) -> OkResponse:
     if current_user.role != "admin" and current_user.id != user_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")

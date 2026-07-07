@@ -10,8 +10,8 @@ import {
   LauncherSessionView,
 } from '@gpstation/v1-master-js-sdk';
 
-const defaultApiBaseUrl = process.env.NEXT_PUBLIC_GPSTATION_V1_API_URL || 'http://127.0.0.1:8100';
-const defaultAccessToken = process.env.NEXT_PUBLIC_GPSTATION_V1_ACCESS_TOKEN || 'demo-client-token';
+const defaultApiBaseUrl = process.env.NEXT_PUBLIC_GPSTATION_V1_API_URL || '';
+const defaultAccessToken = process.env.NEXT_PUBLIC_GPSTATION_V1_ACCESS_TOKEN || '';
 
 type LogItem = {
   id: number;

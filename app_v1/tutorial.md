@@ -117,15 +117,15 @@ cd app_v1/masters/echo
 
 기본 주소와 토큰:
 
-- Server: `http://127.0.0.1:8100`
+- Server: `https://gps.qutat.com` in production, or the explicit URL from your local `.env`
 - Web: `http://localhost:3001`
-- Client token: `demo-client-token`
-- Launcher token: `demo-launcher-token`
+- Client token: website에서 `client` scope로 발급한 Access Token
+- Launcher token: website에서 `launcher` scope로 발급한 Access Token
 
 브라우저에서 `http://localhost:3001`을 열고 다음 순서로 확인합니다.
 
-1. Server에 `http://127.0.0.1:8100` 입력
-2. Token에 `demo-client-token` 입력
+1. Server에 `.env`에 설정한 API URL 입력
+2. Token에 `client` scope Access Token 입력
 3. `Refresh` 클릭
 4. launcher 선택
 5. `echo` slave app 선택
@@ -140,7 +140,7 @@ master 예제에서 `Connect`를 누르면 JS SDK가 먼저 서버에 세션 생
 
 ```text
 POST /v1/sessions
-Authorization: Bearer demo-client-token
+Authorization: Bearer <client-scope-access-token>
 
 {
   "launcher_session_id": "...",
@@ -166,7 +166,7 @@ Authorization: Bearer demo-client-token
   "session_id": "...",
   "launcher_session_id": "...",
   "slave_app_id": "echo",
-  "signaling_url": "ws://127.0.0.1:8100/v1/sessions/.../signal?token=...",
+  "signaling_url": "wss://gps.qutat.com/v1/sessions/.../signal?token=...",
   "token": "...",
   "expires_at": "..."
 }
@@ -258,14 +258,7 @@ DataChannel request control frame 예:
 - `WS /v1/launchers/control`: launcher main process가 붙는 control channel
 - `WS /v1/sessions/{session_id}/signal`: 브라우저 signaling channel
 
-인증은 `server/app/auth.py`와 `settings.py`에 있습니다. 지금은 production 인증이 아니라 static bearer token map입니다. 단, 기본 demo principal은 startup 때 `users` table에 deterministic UUID로 seed됩니다.
-
-기본값:
-
-```text
-demo-client-token -> deterministic demo user UUID, scope client
-demo-launcher-token -> deterministic demo user UUID, scope launcher
-```
+인증은 `server/app/auth.py`와 `service/access_key_service.py`에 있습니다. `/v1/*` programmatic API는 website에서 발급한 DB-backed Access Token만 허용합니다.
 
 서버는 `client` scope로 REST API를 열고, `launcher` scope로 launcher control WebSocket을 엽니다.
 
@@ -549,8 +542,8 @@ Get-Content -Encoding UTF8 .run\v1-launcher.out.log -Tail 80
 launcher 목록이 비어 있으면:
 
 - launcher process가 실행 중인지 확인
-- launcher token이 `demo-launcher-token`인지 확인
-- server URL이 `http://127.0.0.1:8100`인지 확인
+- launcher token이 `launcher` scope Access Token인지 확인
+- server URL이 `.env`에 설정한 API URL과 같은지 확인
 
 session 생성이 실패하면:
 
@@ -571,7 +564,7 @@ DataChannel이 안 열리면:
 
 1. echo 외의 실제 slave app plugin 추가
 2. Python master SDK에 WebRTC client 기능 추가
-3. static token map을 기존 사용자/auth 시스템과 연결
+3. Access Token rate limit과 origin/IP 제한 필드 적용
 4. launcher capacity와 multi-session 정책 정의
 5. timeout, cancel, progress, result 메시지를 DataChannel protocol에 추가
 6. master 예제에서 request/response history와 binary payload 테스트 추가

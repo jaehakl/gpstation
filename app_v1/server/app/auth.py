@@ -9,7 +9,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import AccessKey, get_db
-from app.settings import get_settings
 from app.user_auth.db import User
 from app.user_auth.utils.auth_utils import hash_token
 
@@ -31,22 +30,11 @@ def token_from_authorization(authorization: str) -> str:
     return authorization.split(" ", 1)[1].strip()
 
 
-def authenticate_token(token: str) -> Principal:
-    entry = get_settings().tokens.get(token)
-    if entry is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    return Principal(token=token, user_id=entry.user_id, scopes=frozenset(entry.scopes))
-
-
-def authenticate_authorization(authorization: str) -> Principal:
-    return authenticate_token(token_from_authorization(authorization))
-
-
 async def authenticate_bearer_token(db: AsyncSession, token: str) -> Principal:
     principal = await authenticate_access_key(db, token)
     if principal is not None:
         return principal
-    return authenticate_token(token)
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid AccessKey")
 
 
 async def authenticate_access_key(db: AsyncSession, token: str) -> Principal | None:

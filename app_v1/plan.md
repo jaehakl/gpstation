@@ -2,7 +2,7 @@
 
 ## Completed MVP Status
 - [x] Foundation: repository-local `app_v1/` layout, protocol contracts, config examples, and run notes.
-- [x] Server orchestration: FastAPI server, DB-backed launcher/session state, static bearer auth, TTL cleanup, and signaling relay.
+- [x] Server orchestration: FastAPI server, DB-backed launcher/session state, DB AccessKey auth, TTL cleanup, and signaling relay.
 - [x] Slave launcher runtime: control WebSocket client, slave subprocess lifecycle, JSON-lines IPC, and `aiortc` DataChannel handler calls.
 - [x] Master path: TypeScript SDK and example web client.
 - [x] Hardening and verification: tests and build/type checks.
@@ -10,11 +10,11 @@
 - [x] Poetry migration: Python packages, lockfiles, and run scripts use Poetry.
 
 ## Next Implementation Targets
-- [x] Add OAuth/JWT website auth, DB-backed Access Token issuance, and management pages while keeping demo static bearer tokens as local fallback.
+- [x] Add OAuth/JWT website auth, DB-backed Access Token issuance, and management pages with strict DB AccessKey-only programmatic auth.
 - [ ] Extend slave app DataChannel protocols from `echo` to real job messages: start, cancel, progress, result, and error.
 - [ ] Add Python master SDK WebRTC support, not only REST session creation.
 - [ ] Define launcher capacity policy for multiple concurrent sessions.
-- [ ] Add deployment docs and production runtime configuration.
+- [x] Add deployment docs and production runtime configuration.
 
 ## MVP Scope
 - A user connects only to launcher sessions owned by that same user.
@@ -24,10 +24,9 @@
 - Billing, marketplace matching, persistent session storage, and quota enforcement are out of scope.
 
 ## Local Demo Defaults
-- Client token: `demo-client-token`
-- Launcher token: `demo-launcher-token`
-- Demo user id: deterministic UUID seeded into the `users` table
-- Server URL: `http://127.0.0.1:8100`
+- Client token: create an Access Token with `client` scope from the website.
+- Launcher token: create an Access Token with `launcher` scope from the website.
+- Server URL: configure explicitly in each `.env`; production uses `https://gps.qutat.com`
 - DataChannel label: `gpstation.v1`
 
 ## Milestone Notes

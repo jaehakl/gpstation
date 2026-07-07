@@ -18,18 +18,18 @@ Fresh MVP implementation for the README flow. This directory is intentionally se
 2. Start the v1 server with `cd app_v1/server && poetry run gpstation-v1-server`.
 3. Start one slave launcher with `cd app_v1/launcher && poetry run gpstation-v1-slave-launcher`.
 4. Open the management website with `cd app_v1/masters/website && npm run dev`.
-5. For the raw WebRTC demo, open the example web client with `demo-client-token`.
+5. For the raw WebRTC demo, create a user Access Token with `client` scope and put it in the example web client.
 6. Refresh launchers, select the connected launcher and `echo` slave app, create a session, and call a handler such as `echo.request` with JSON and optional files.
 
 ## Environment Files
 
 Runtime settings that change by environment live in each app root:
 
-- `server/.env`: server DB URL, host/port, public URL, CORS origins, session timeouts, and demo bearer tokens.
+- `server/.env`: server DB URL, host/port, public URL, Google OAuth, JWT, CORS origins, and session timeouts.
 - `launcher/.env`: server API URL, launcher access token, optional launcher name, and launcher timing settings.
 - `masters/echo/.env`: browser demo server URL and default client token.
 - `masters/website/.env`: management website API URL.
 
-Each app also has an `env.example` file with the same local defaults. The `.env` files are local-only and ignored by git.
+Each app also has an `env.example` file. Runtime defaults are intentionally not embedded in the server; local and production environments must provide explicit `.env` values. The `.env` files are local-only and ignored by git.
 
 See each package README for dependency installation details.

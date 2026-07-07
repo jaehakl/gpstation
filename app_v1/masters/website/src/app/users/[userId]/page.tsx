@@ -363,7 +363,7 @@ export default function UserDetailPage() {
         <section className="panel">
           <h2>접근 범위</h2>
           <p className="emptyText">
-            admin은 모든 회원을 조회하고 편집할 수 있습니다. user와 unauthorized는 자신의 계정만 조회하고 삭제할 수 있습니다.
+            admin은 모든 회원을 조회하고 편집할 수 있습니다. user는 자신의 계정만 조회하고 삭제할 수 있습니다.
           </p>
           {isAdmin ? (
             <Link href="/users" className="button fullButton" style={{ marginTop: 14 }}>

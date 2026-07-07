@@ -77,7 +77,7 @@ async def test_start_session_missing_executable_venv_sends_error(tmp_path):
     project_dir = tmp_path / "echo"
     project_dir.mkdir()
     registry = SlaveAppRegistry([SlaveApp(id="echo", name="Echo", module="app", project_dir=project_dir)])
-    manager = SessionManager(LauncherSettings(), send_control, registry)
+    manager = SessionManager(LauncherSettings(access_token="test-token"), send_control, registry)
 
     await manager.start_session("session-1", "echo", 60)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SlaveSession, get_db
@@ -13,9 +14,14 @@ from app.service.session_service import SessionService
 from app.utils.crud import CrudSpec, delete_rows, get_row, list_rows
 
 
-async def close_slave_sessions(db: AsyncSession, _spec: CrudSpec, ids: list[str], _owner_clause: object | None) -> int:
+async def close_slave_sessions(db: AsyncSession, spec: CrudSpec, ids: list[str], owner_clause: object | None) -> int:
+    clauses = [spec.model.id.in_(ids)]
+    if owner_clause is not None:
+        clauses.append(owner_clause)
+    close_ids = (await db.execute(select(spec.model.id).where(and_(*clauses)))).scalars().all()
+
     deleted = 0
-    for row_id in ids:
+    for row_id in close_ids:
         closed = await SessionService.close_session(db, row_id, "closed by CRUD")
         if closed is not None:
             deleted += 1
@@ -43,6 +49,7 @@ CRUD_SPEC = CrudSpec(
     searchable_fields=("slave_app_id", "master_ip_address", "master_user_agent", "status", "last_error"),
     sortable_fields=("slave_app_id", "status", "ttl_seconds", "expires_at", "ready_at", "closed_at", "created_at", "updated_at"),
     delete_handler=close_slave_sessions,
+    allow_owner_delete=True,
 )
 
 router = APIRouter(prefix="/slave_sessions", tags=["crud-slave-sessions"])

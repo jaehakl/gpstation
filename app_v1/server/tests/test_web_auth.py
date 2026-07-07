@@ -1,9 +1,11 @@
 from datetime import datetime, timezone
 
 import pytest
+from fastapi import HTTPException
 
-from app.routers.web.auth import get_active_auth_session, resolve_oauth_user
-from app.user_auth.db import Identity, Session as AuthSession, User
+from app.routers.web import auth as web_auth
+from app.routers.web.auth import can_authenticate_user, get_active_auth_session, resolve_oauth_user, validate_oauth_state_values
+from app.user_auth.db import Identity, OAuthProvider, OAuthState, Session as AuthSession, User
 from app.user_auth.utils.auth_utils import hash_token
 from app.user_auth.utils.jwt import make_access, make_refresh, verify_token
 
@@ -70,6 +72,52 @@ async def test_oauth_signup_creates_unauthorized_user_and_identity():
     assert user.status == "active"
     assert user.email == "new@example.test"
     assert any(isinstance(item, Identity) for item in db.added)
+
+
+def test_unauthorized_oauth_user_cannot_authenticate():
+    user = User(id="user-1", email="user@example.test", role="unauthorized", status="active")
+
+    assert can_authenticate_user(user) is False
+
+
+def test_oauth_state_requires_matching_cookie_and_unconsumed_state():
+    oauth_state = OAuthState(
+        provider=OAuthProvider.google,
+        state="state-1",
+        created_at=datetime.now(timezone.utc),
+    )
+
+    validate_oauth_state_values("state-1", "state-1", oauth_state)
+
+    with pytest.raises(HTTPException) as mismatch:
+        validate_oauth_state_values("state-1", "other", oauth_state)
+    assert mismatch.value.status_code == 400
+
+    oauth_state.consumed_at = datetime.now(timezone.utc)
+    with pytest.raises(HTTPException) as reused:
+        validate_oauth_state_values("state-1", "state-1", oauth_state)
+    assert reused.value.status_code == 400
+
+
+def test_oauth_state_expires(monkeypatch):
+    monkeypatch.setattr(web_auth.settings, "oauth_state_ttl_seconds", 60)
+    oauth_state = OAuthState(
+        provider=OAuthProvider.google,
+        state="state-1",
+        created_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(HTTPException) as expired:
+        validate_oauth_state_values("state-1", "state-1", oauth_state)
+    assert expired.value.status_code == 400
+
+
+def test_return_to_is_limited_to_app_origin(monkeypatch):
+    monkeypatch.setattr(web_auth.settings, "app_base_url", "http://localhost:3000")
+
+    assert web_auth.sanitize_return_to("/users") == "http://localhost:3000/users"
+    assert web_auth.sanitize_return_to("http://localhost:3000/users") == "http://localhost:3000/users"
+    assert web_auth.sanitize_return_to("https://evil.example/users") == "http://localhost:3000"
 
 
 @pytest.mark.asyncio
