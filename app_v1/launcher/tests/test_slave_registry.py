@@ -116,6 +116,26 @@ async def test_record_subprocess_log_sends_control_message_and_stores_buffer():
 
 
 @pytest.mark.asyncio
+async def test_record_subprocess_log_can_disable_control_forwarding():
+    messages = []
+
+    async def send_control(message):
+        messages.append(message)
+
+    manager = SessionManager(
+        LauncherSettings(access_token="test-token"),
+        send_control,
+        SlaveAppRegistry([]),
+        forward_session_logs=False,
+    )
+
+    await manager.record_subprocess_log("session-1", "stderr", "loading model")
+
+    assert manager.get_session_logs("session-1")[0]["line"] == "loading model"
+    assert messages == []
+
+
+@pytest.mark.asyncio
 async def test_subprocess_log_buffer_discards_old_lines():
     messages = []
 

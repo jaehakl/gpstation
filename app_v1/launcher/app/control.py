@@ -36,8 +36,8 @@ async def run_connection(settings: LauncherSettings) -> None:
     async with await open_websocket(settings.control_websocket_url, headers) as websocket:
         send_lock = asyncio.Lock()
         registry = load_default_registry()
-        manager = SessionManager(settings, lambda message: send_json(websocket, send_lock, message), registry)
-        heartbeat_task = asyncio.create_task(send_heartbeats(websocket, send_lock, manager, settings))
+        manager: SessionManager | None = None
+        heartbeat_task: asyncio.Task[None] | None = None
         try:
             await send_json(
                 websocket,
@@ -53,16 +53,30 @@ async def run_connection(settings: LauncherSettings) -> None:
             if accepted.get("type") != "launcher.accepted":
                 raise RuntimeError(f"Expected launcher.accepted, received {accepted.get('type')}")
             print(f"Launcher session: {accepted.get('launcher_session_id')}", flush=True)
+            capabilities = accepted.get("capabilities") if isinstance(accepted.get("capabilities"), dict) else {}
+            forward_session_logs = capabilities.get("session_logs") is True
+            if not forward_session_logs:
+                print("Session log forwarding disabled: server did not advertise session_logs capability", flush=True)
+            manager = SessionManager(
+                settings,
+                lambda message: send_json(websocket, send_lock, message),
+                registry,
+                forward_session_logs=forward_session_logs,
+            )
+            heartbeat_task = asyncio.create_task(send_heartbeats(websocket, send_lock, manager, settings))
 
             async for raw_message in websocket:
                 await handle_server_message(manager, json.loads(raw_message))
         finally:
-            heartbeat_task.cancel()
-            await manager.stop_all("launcher shutdown")
-            try:
-                await heartbeat_task
-            except asyncio.CancelledError:
-                pass
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()
+            if manager is not None:
+                await manager.stop_all("launcher shutdown")
+            if heartbeat_task is not None:
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
 
 
 async def open_websocket(url: str, headers: dict[str, str]) -> Any:

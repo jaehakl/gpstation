@@ -34,6 +34,7 @@ class LauncherAccepted(StrictModel):
     type: Literal["launcher.accepted"]
     launcher_session_id: str
     server_time: str
+    capabilities: dict[str, Any] = Field(default_factory=dict)
 
 
 class SessionStart(StrictModel):

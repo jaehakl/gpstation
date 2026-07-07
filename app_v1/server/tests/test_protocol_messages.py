@@ -17,6 +17,20 @@ def test_parse_launcher_hello_message():
     assert message.slave_app_ids == ["echo"]
 
 
+def test_parse_launcher_accepted_capabilities():
+    message = parse_control_message(
+        {
+            "type": "launcher.accepted",
+            "launcher_session_id": "launcher-1",
+            "server_time": "2026-07-07T00:00:00+00:00",
+            "capabilities": {"session_logs": True},
+        }
+    )
+
+    assert message.type == "launcher.accepted"
+    assert message.capabilities == {"session_logs": True}
+
+
 def test_parse_rejects_extra_fields():
     try:
         parse_control_message({"type": "ping", "extra": True})

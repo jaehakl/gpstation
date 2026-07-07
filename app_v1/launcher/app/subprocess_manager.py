@@ -34,10 +34,12 @@ class SessionManager:
         settings: LauncherSettings,
         send_control: SendControl,
         registry: SlaveAppRegistry | None = None,
+        forward_session_logs: bool = True,
     ) -> None:
         self.settings = settings
         self.send_control = send_control
         self.registry = registry or load_default_registry()
+        self.forward_session_logs = forward_session_logs
         self.sessions: dict[str, ManagedSession] = {}
         self.session_logs: dict[str, deque[dict[str, str]]] = {}
 
@@ -212,6 +214,8 @@ class SessionManager:
         items = self.session_logs.setdefault(session_id, deque(maxlen=SESSION_LOG_LINE_LIMIT))
         items.append({"time": logged_at, "stream": stream, "line": line})
         print(f"[{session_id}] {line}", flush=True)
+        if not self.forward_session_logs:
+            return
         await self.send_control(
             {
                 "type": "session.log",

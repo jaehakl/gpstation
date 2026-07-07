@@ -60,6 +60,7 @@ async def launcher_control(websocket: WebSocket) -> None:
                     "type": "launcher.accepted",
                     "launcher_session_id": launcher_id,
                     "server_time": utcnow().isoformat(),
+                    "capabilities": {"session_logs": True},
                 }
             )
 
