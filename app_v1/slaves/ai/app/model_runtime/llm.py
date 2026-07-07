@@ -185,6 +185,10 @@ def reset_llm_runtime_for_tests() -> None:
     release_llm_runtime()
 
 
+def warmup_llm_import() -> None:
+    _load_llama_cls("startup")
+
+
 def release_llm_runtime(device_id: int | None = None) -> None:
     global _prompt_llm_model_key, _prompt_llm
 
@@ -277,11 +281,7 @@ def _get_prompt_llm_locked(config: PromptLlmConfig) -> Any:
     if _prompt_llm is None:
         model_ref = config.model_path or f"{config.repo_id}/{config.model_filename}"
         try:
-            log(f"preparing LLM native libraries model={model_ref}")
-            _add_llm_dll_directories()
-            log(f"importing llama_cpp model={model_ref}")
-            from llama_cpp import Llama
-            log(f"llama_cpp imported model={model_ref}")
+            Llama = _load_llama_cls(model_ref)
         except (ModuleNotFoundError, OSError, RuntimeError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -324,6 +324,15 @@ def _get_prompt_llm_locked(config: PromptLlmConfig) -> Any:
         _prompt_llm_model_key = model_key
         log(f"LLM model loaded model={model_ref}")
     return _prompt_llm
+
+
+def _load_llama_cls(model_ref: str) -> Any:
+    log(f"preparing LLM native libraries model={model_ref}")
+    _add_llm_dll_directories()
+    log(f"importing llama_cpp model={model_ref}")
+    from llama_cpp import Llama
+    log(f"llama_cpp imported model={model_ref}")
+    return Llama
 
 
 def _add_llm_dll_directories() -> None:

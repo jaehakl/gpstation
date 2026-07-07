@@ -31,15 +31,24 @@ def _get_embedding_model_locked(model_name: str) -> Any:
     global _embedding_model_name, _embedding_model
 
     if _embedding_model is None or _embedding_model_name != model_name:
-        log(f"importing sentence_transformers model={model_name}")
-        from sentence_transformers import SentenceTransformer
+        SentenceTransformer = _load_sentence_transformer_cls(model_name)
 
-        log(f"sentence_transformers imported model={model_name}")
         log(f"loading embedding model model={model_name}")
         _embedding_model = _load_sentence_transformer(SentenceTransformer, model_name)
         _embedding_model_name = model_name
         log(f"embedding model loaded model={model_name}")
     return _embedding_model
+
+
+def warmup_embedding_import(model_name: str) -> None:
+    _load_sentence_transformer_cls(model_name)
+
+
+def _load_sentence_transformer_cls(model_name: str) -> Any:
+    log(f"importing sentence_transformers model={model_name}")
+    from sentence_transformers import SentenceTransformer
+    log(f"sentence_transformers imported model={model_name}")
+    return SentenceTransformer
 
 
 def _load_sentence_transformer(sentence_transformer_cls: Any, model_name: str) -> Any:

@@ -6,13 +6,38 @@ import time
 from sdk.slave import DataChannelAttachment, DataChannelMessage, SlaveApp, SlaveContext, run_app
 
 from app.logging import log, log_exception
+from app.model_runtime.embedding import warmup_embedding_import
+from app.model_runtime.image import warmup_sdxl_imports
+from app.model_runtime.llm import warmup_llm_import
 from app.models import EmbeddingRequest, LlmRequest, SdxlT2IRequest
 from app.service.embedding import generate_embedding
 from app.service.image import generate_sdxl_t2i_images
 from app.service.llm import generate_llm_answer
+from app.settings import settings
 
 
 app = SlaveApp()
+
+
+@app.initialize
+async def initialize(memory: None, context: SlaveContext) -> None:
+    try:
+        model_name = (settings.embedding_model_name or settings.embedding_model_path).strip()
+        if model_name:
+            log(f"ai initialize embedding import warmup start session={context.session_id} model={model_name}")
+            warmup_embedding_import(model_name)
+            log(f"ai initialize embedding import warmup complete session={context.session_id} model={model_name}")
+
+        log(f"ai initialize LLM import warmup start session={context.session_id}")
+        warmup_llm_import()
+        log(f"ai initialize LLM import warmup complete session={context.session_id}")
+
+        log(f"ai initialize SDXL import warmup start session={context.session_id}")
+        warmup_sdxl_imports()
+        log(f"ai initialize SDXL import warmup complete session={context.session_id}")
+    except Exception as exc:
+        log_exception(f"ai initialize import warmup failed session={context.session_id}", exc)
+        raise
 
 
 @app.handler("ai.llm")

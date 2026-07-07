@@ -86,6 +86,19 @@ def _reset_image_runtime_for_tests() -> None:
     _image_pipes.clear()
 
 
+def warmup_sdxl_imports() -> None:
+    log("importing torch for SDXL")
+    _load_image_torch()
+    log("torch imported for SDXL")
+    _load_diffusers_attrs(
+        "StableDiffusionXLPipeline",
+        "EulerDiscreteScheduler",
+        "EulerAncestralDiscreteScheduler",
+        "DPMSolverMultistepScheduler",
+        "UniPCMultistepScheduler",
+    )
+
+
 def get_available_cuda_device_ids() -> list[int]:
     try:
         torch = _load_image_torch()

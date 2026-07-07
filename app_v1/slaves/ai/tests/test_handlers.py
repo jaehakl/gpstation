@@ -20,6 +20,20 @@ def context() -> SlaveContext:
 
 
 class AiHandlerTest(unittest.IsolatedAsyncioTestCase):
+    async def test_initialize_warms_runtime_imports(self) -> None:
+        with (
+            patch.object(ai_slave.settings, "embedding_model_name", "fake-model"),
+            patch.object(ai_slave.settings, "embedding_model_path", ""),
+            patch.object(ai_slave, "warmup_embedding_import") as warmup_embedding_import,
+            patch.object(ai_slave, "warmup_llm_import") as warmup_llm_import,
+            patch.object(ai_slave, "warmup_sdxl_imports") as warmup_sdxl_imports,
+        ):
+            await ai_slave.initialize(None, context())
+
+        warmup_embedding_import.assert_called_once_with("fake-model")
+        warmup_llm_import.assert_called_once_with()
+        warmup_sdxl_imports.assert_called_once_with()
+
     async def test_llm_handler_returns_answer_payload(self) -> None:
         generate_llm_answer = AsyncMock(return_value=LlmResponse(answer="hello"))
 
