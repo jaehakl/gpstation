@@ -10,13 +10,23 @@ npm ci
 npm run build
 ```
 
-The build output is:
+The Vite build output is:
 
 ```text
 /home/ubuntu/gpstation/app_v1/masters/website/dist
 ```
 
-Nginx serves that directory directly and falls back to `/index.html` for SPA routes such as `/users/<user_id>`.
+Publish that output to the Nginx web root:
+
+```bash
+sudo mkdir -p /var/www/gpstation-v1
+sudo rsync -a --delete /home/ubuntu/gpstation/app_v1/masters/website/dist/ /var/www/gpstation-v1/
+sudo chown -R root:www-data /var/www/gpstation-v1
+sudo find /var/www/gpstation-v1 -type d -exec chmod 755 {} \;
+sudo find /var/www/gpstation-v1 -type f -exec chmod 644 {} \;
+```
+
+Nginx serves `/var/www/gpstation-v1` directly and falls back to `/index.html` for SPA routes such as `/users/<user_id>`.
 
 ## Env
 

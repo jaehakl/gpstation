@@ -28,7 +28,7 @@ VITE_GPSTATION_V1_API_URL=https://gps.qutat.com
 VITE_GPSTATION_V1_API_URL=http://localhost:8000
 ```
 
-운영에서는 `npm run build`로 생성되는 `dist` 디렉터리를 Nginx가 정적 파일로 직접 서빙합니다. 별도의 website Node/systemd 서비스는 사용하지 않습니다.
+운영에서는 `npm run build`로 생성되는 `dist` 디렉터리를 `/var/www/gpstation-v1`로 publish하고, Nginx가 그 디렉터리를 정적 파일로 직접 서빙합니다. 별도의 website Node/systemd 서비스는 사용하지 않습니다.
 
 Google Cloud Console production 설정:
 

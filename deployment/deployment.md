@@ -5,7 +5,7 @@ This guide deploys `app_v1/server` and the Vite static website at `app_v1/master
 - Public URL: `https://gps.qutat.com`
 - FastAPI server: `127.0.0.1:8000`
 - Website dev/preview port: `127.0.0.1:3000`
-- Production website serving: Nginx static files from `app_v1/masters/website/dist`
+- Production website serving: Nginx static files from `/var/www/gpstation-v1`
 - Repository path: `/home/ubuntu/gpstation`
 
 ## 1. DNS and firewall
@@ -22,7 +22,7 @@ Open only `22`, `80`, and `443` to the internet. Port `8000` must stay local beh
 
 ```bash
 sudo apt update && sudo apt -y upgrade
-sudo apt -y install nginx certbot python3-certbot-nginx git python3-venv build-essential curl
+sudo apt -y install nginx certbot python3-certbot-nginx git python3-venv build-essential curl rsync
 
 curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
 source ~/.bashrc
@@ -61,7 +61,15 @@ npm ci
 npm run build
 ```
 
-`npm run build` creates `app_v1/masters/website/dist`. Nginx serves that directory directly in production.
+`npm run build` creates `app_v1/masters/website/dist`. Publish it to the Nginx web root:
+
+```bash
+sudo mkdir -p /var/www/gpstation-v1
+sudo rsync -a --delete /home/ubuntu/gpstation/app_v1/masters/website/dist/ /var/www/gpstation-v1/
+sudo chown -R root:www-data /var/www/gpstation-v1
+sudo find /var/www/gpstation-v1 -type d -exec chmod 755 {} \;
+sudo find /var/www/gpstation-v1 -type f -exec chmod 644 {} \;
+```
 
 ## 5. systemd service
 
@@ -142,7 +150,7 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-The final Nginx config serves the website from `app_v1/masters/website/dist`, proxies `/web/`, `/crud/`, `/v1/`, and `/health` to FastAPI, and logs `/v1/sessions/<id>/signal` without query strings.
+The final Nginx config serves the website from `/var/www/gpstation-v1`, proxies `/web/`, `/crud/`, `/v1/`, and `/health` to FastAPI, and logs `/v1/sessions/<id>/signal` without query strings.
 
 Check renewal:
 
@@ -161,6 +169,16 @@ Smoke checks:
 
 ```bash
 curl -I https://gps.qutat.com/
-curl -I https://gps.qutat.com/health
+curl -sS -i https://gps.qutat.com/health
 sudo systemctl status gpstation-v1-server --no-pager
 ```
+
+If `/` returns Nginx `500`, check the static publish target first:
+
+```bash
+ls -la /var/www/gpstation-v1
+sudo -u www-data test -r /var/www/gpstation-v1/index.html && echo "index readable"
+sudo tail -n 80 /var/log/nginx/error.log
+```
+
+The usual cause is an empty or unreadable web root. Re-run `bash deployment/update.sh` after `rsync` is installed.
