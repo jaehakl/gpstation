@@ -28,6 +28,7 @@ class LauncherSettings(BaseSettings):
     session_ready_timeout_seconds: float = Field(default=10.0, gt=0)
     rtc_ice_servers_json: str = DEFAULT_RTC_ICE_SERVERS_JSON
     rtc_ice_gather_timeout_seconds: str = ""
+    rtc_memory_cache_enabled: str = ""
 
     @field_validator("api_url")
     @classmethod
@@ -42,6 +43,11 @@ class LauncherSettings(BaseSettings):
     @field_validator("rtc_ice_gather_timeout_seconds")
     @classmethod
     def strip_rtc_ice_gather_timeout_seconds(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("rtc_memory_cache_enabled")
+    @classmethod
+    def strip_rtc_memory_cache_enabled(cls, value: str) -> str:
         return value.strip()
 
     @property

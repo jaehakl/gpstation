@@ -548,4 +548,6 @@ def subprocess_env(settings: LauncherSettings) -> dict[str, str]:
     env["GPSTATION_V1_RTC_ICE_SERVERS_JSON"] = settings.rtc_ice_servers_json
     if settings.rtc_ice_gather_timeout_seconds:
         env["GPSTATION_V1_RTC_ICE_GATHER_TIMEOUT_SECONDS"] = settings.rtc_ice_gather_timeout_seconds
+    if settings.rtc_memory_cache_enabled:
+        env["GPSTATION_V1_RTC_MEMORY_CACHE_ENABLED"] = settings.rtc_memory_cache_enabled
     return env

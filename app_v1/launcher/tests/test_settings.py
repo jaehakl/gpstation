@@ -17,6 +17,7 @@ def test_launcher_settings_reads_prefixed_values_from_env_file(tmp_path, monkeyp
                 "GPSTATION_V1_ACCESS_TOKEN=test-launcher-token",
                 'GPSTATION_V1_RTC_ICE_SERVERS_JSON=[{"urls":"stun:example.com:3478"}]',
                 "GPSTATION_V1_RTC_ICE_GATHER_TIMEOUT_SECONDS=1.5",
+                "GPSTATION_V1_RTC_MEMORY_CACHE_ENABLED=false",
             ]
         ),
         encoding="utf-8",
@@ -31,6 +32,7 @@ def test_launcher_settings_reads_prefixed_values_from_env_file(tmp_path, monkeyp
     assert settings.access_token == "test-launcher-token"
     assert settings.rtc_ice_servers_json == '[{"urls":"stun:example.com:3478"}]'
     assert settings.rtc_ice_gather_timeout_seconds == "1.5"
+    assert settings.rtc_memory_cache_enabled == "false"
 
 
 def test_control_websocket_url_uses_v1_path():

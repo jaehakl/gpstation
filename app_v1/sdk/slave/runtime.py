@@ -19,6 +19,7 @@ CHUNK_SIZE = 16 * 1024
 JOB_RESULT_ACK_TIMEOUT_SECONDS = 5.0
 RTC_ICE_SERVERS_ENV = "GPSTATION_V1_RTC_ICE_SERVERS_JSON"
 RTC_ICE_GATHER_TIMEOUT_ENV = "GPSTATION_V1_RTC_ICE_GATHER_TIMEOUT_SECONDS"
+RTC_MEMORY_CACHE_ENABLED_ENV = "GPSTATION_V1_RTC_MEMORY_CACHE_ENABLED"
 DEFAULT_RTC_ICE_SERVERS = [{"urls": "stun:stun.l.google.com:19302"}]
 DEFAULT_STUN_ICE_GATHER_TIMEOUT_SECONDS = 1.0
 DEFAULT_TURN_ICE_GATHER_TIMEOUT_SECONDS = 5.0
@@ -70,6 +71,22 @@ class PendingCall:
             for attachment in self.attachments.values()
         ]
         return DataChannelMessage(id=self.id, type=self.type, payload=self.payload, attachments=attachments)
+
+
+@dataclass
+class PreparedWorkerPeer:
+    pc: Any
+    created_at: float
+
+
+@dataclass
+class WorkerJobPeerState:
+    ready_event: asyncio.Event = field(default_factory=asyncio.Event)
+    result_ack_event: asyncio.Event = field(default_factory=asyncio.Event)
+    closed_event: asyncio.Event = field(default_factory=asyncio.Event)
+    channel_holder: dict[str, Any] = field(default_factory=dict)
+    ready_payload: dict[str, Any] = field(default_factory=lambda: {"input": None})
+    ready_error: dict[str, str] = field(default_factory=dict)
 
 
 class SlaveApp:
@@ -151,50 +168,89 @@ async def _run_worker_stdio(*, app: SlaveApp) -> None:
     try:
         ice_servers = load_rtc_ice_servers()
         ice_gather_timeout_seconds = load_rtc_ice_gather_timeout_seconds(ice_servers)
+        memory_cache_enabled = load_rtc_memory_cache_enabled()
         configure_aioice_gather_timeout(AioIceConnection, ice_gather_timeout_seconds)
         rtc_configuration = build_rtc_configuration(RTCConfiguration, RTCIceServer, ice_servers)
         log(f"RTC ICE gather timeout: {ice_gather_timeout_seconds:g}s")
+        log(f"RTC memory cache enabled: {memory_cache_enabled}")
     except Exception as exc:
         emit({"type": "error", "code": "rtc_configuration_failed", "detail": str(exc)})
         return
 
-    warmup_task = asyncio.create_task(warm_rtc_runtime(RTCPeerConnection, rtc_configuration, label="worker"))
+    prepared_peer: PreparedWorkerPeer | None = None
+    prepare_task = (
+        asyncio.create_task(prepare_worker_peer(RTCPeerConnection, rtc_configuration, label="worker"))
+        if memory_cache_enabled
+        else None
+    )
     try:
         await app.run_initialize(SlaveContext(session_id="worker", ttl_seconds=0))
-        await warmup_task
+        if prepare_task is not None:
+            try:
+                prepared_peer = await prepare_task
+            except Exception as exc:
+                memory_cache_enabled = False
+                log(f"worker ICE memory cache disabled: {exc}")
     except Exception as exc:
-        if not warmup_task.done():
-            warmup_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await warmup_task
+        if prepare_task is not None and not prepare_task.done():
+            prepare_task.cancel()
+        if prepare_task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await prepare_task
         emit({"type": "error", "code": "initialize_failed", "detail": str(exc)})
         return
 
     emit({"type": "worker.ready"})
     current_job_task: asyncio.Task[None] | None = None
     current_job_id: str | None = None
+    stdin_task: asyncio.Task[str] | None = asyncio.create_task(asyncio.to_thread(read_stdin_line))
     try:
         while True:
-            if current_job_task is not None and current_job_task.done():
+            wait_tasks: set[asyncio.Task[Any]] = set()
+            if stdin_task is not None:
+                wait_tasks.add(stdin_task)
+            if current_job_task is not None:
+                wait_tasks.add(current_job_task)
+            if not wait_tasks:
+                break
+            done, _pending = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+
+            if current_job_task is not None and current_job_task in done:
                 await drain_worker_job_task(current_job_task)
                 current_job_task = None
                 current_job_id = None
+                if memory_cache_enabled and prepared_peer is None:
+                    try:
+                        prepared_peer = await prepare_worker_peer(RTCPeerConnection, rtc_configuration, label="worker")
+                    except Exception as exc:
+                        memory_cache_enabled = False
+                        log(f"worker ICE memory cache disabled: {exc}")
 
-            line = await asyncio.to_thread(read_stdin_line)
+            if stdin_task is None or stdin_task not in done:
+                continue
+
+            line = stdin_task.result()
+            stdin_task = None
             if not line:
                 break
+            should_stop = False
             try:
                 message = json.loads(line)
                 message_type = message.get("type")
                 if message_type == "stop":
-                    break
+                    should_stop = True
                 if message_type == "job.cancel":
                     if current_job_task is not None and current_job_id == str(message.get("job_id")):
                         current_job_task.cancel()
                         await drain_worker_job_task(current_job_task)
                         current_job_task = None
                         current_job_id = None
-                    continue
+                        if memory_cache_enabled and prepared_peer is None:
+                            try:
+                                prepared_peer = await prepare_worker_peer(RTCPeerConnection, rtc_configuration, label="worker")
+                            except Exception as exc:
+                                memory_cache_enabled = False
+                                log(f"worker ICE memory cache disabled: {exc}")
                 if message_type == "job.start":
                     if current_job_task is not None and not current_job_task.done():
                         emit(
@@ -205,24 +261,35 @@ async def _run_worker_stdio(*, app: SlaveApp) -> None:
                                 "detail": f"worker is busy with job {current_job_id}",
                             }
                         )
-                        continue
-                    current_job_id = str(message["job_id"])
-                    current_job_task = asyncio.create_task(
-                        run_worker_job(
-                            app=app,
-                            message=message,
-                            rtc_configuration=rtc_configuration,
-                            rtc_session_description=RTCSessionDescription,
-                            candidate_from_sdp=candidate_from_sdp,
-                            ice_servers=ice_servers,
+                    else:
+                        current_job_id = str(message["job_id"])
+                        job_prepared_peer = prepared_peer
+                        prepared_peer = None
+                        current_job_task = asyncio.create_task(
+                            run_worker_job(
+                                app=app,
+                                message=message,
+                                rtc_configuration=rtc_configuration,
+                                rtc_peer_connection_cls=RTCPeerConnection,
+                                rtc_session_description=RTCSessionDescription,
+                                candidate_from_sdp=candidate_from_sdp,
+                                ice_servers=ice_servers,
+                                prepared_peer=job_prepared_peer,
+                            )
                         )
-                    )
             except Exception as exc:
                 emit({"type": "error", "code": "worker_runtime_error", "detail": str(exc)})
+            if should_stop:
+                break
+            stdin_task = asyncio.create_task(asyncio.to_thread(read_stdin_line))
     finally:
+        if stdin_task is not None and not stdin_task.done():
+            stdin_task.cancel()
         if current_job_task is not None and not current_job_task.done():
             current_job_task.cancel()
             await drain_worker_job_task(current_job_task)
+        if prepared_peer is not None:
+            await maybe_await(prepared_peer.pc.close())
 
 
 async def drain_worker_job_task(task: asyncio.Task[None]) -> None:
@@ -234,129 +301,213 @@ async def drain_worker_job_task(task: asyncio.Task[None]) -> None:
         emit({"type": "error", "code": "worker_runtime_error", "detail": str(exc)})
 
 
+async def prepare_worker_peer(rtc_peer_connection_cls: Any, rtc_configuration: Any, *, label: str) -> PreparedWorkerPeer:
+    started_at = time.perf_counter()
+    pc = rtc_peer_connection_cls(rtc_configuration)
+    try:
+        create_sctp_transport = getattr(pc, "_RTCPeerConnection__createSctpTransport", None)
+        if create_sctp_transport is None:
+            raise RuntimeError("aiortc SCTP prewarm hook is unavailable")
+        create_sctp_transport()
+        ice_transports = list(getattr(pc, "_RTCPeerConnection__iceTransports", ()))
+        if not ice_transports:
+            raise RuntimeError("aiortc created no ICE transports for memory cache")
+        await asyncio.gather(*(transport.iceGatherer.gather() for transport in ice_transports))
+        log(
+            f"{label} ICE memory cache prepared duration_ms={elapsed_ms(started_at)} "
+            f"candidates: {format_candidate_summary(summarize_pc_local_candidates(pc))}"
+        )
+        return PreparedWorkerPeer(pc=pc, created_at=time.perf_counter())
+    except Exception:
+        await maybe_await(pc.close())
+        raise
+
+
+def create_worker_job_peer(
+    rtc_peer_connection_cls: Any,
+    rtc_configuration: Any,
+    prepared_peer: PreparedWorkerPeer | None,
+    job_id: str,
+    job_started_at: float,
+) -> tuple[Any, WorkerJobPeerState, bool]:
+    if prepared_peer is not None:
+        pc = prepared_peer.pc
+        used_prepared_peer = True
+        log(
+            f"job peer connection prepared cache hit: id={job_id} "
+            f"age_ms={elapsed_ms(prepared_peer.created_at)}"
+        )
+    else:
+        pc = rtc_peer_connection_cls(rtc_configuration)
+        used_prepared_peer = False
+        log(f"job peer connection created: id={job_id} duration_ms={elapsed_ms(job_started_at)}")
+    return pc, attach_worker_job_peer_handlers(pc, job_id, job_started_at), used_prepared_peer
+
+
+def attach_worker_job_peer_handlers(pc: Any, job_id: str, job_started_at: float) -> WorkerJobPeerState:
+    state = WorkerJobPeerState()
+
+    @pc.on("datachannel")
+    def on_datachannel(channel: Any) -> None:
+        log(f"job datachannel: {channel.label}")
+        state.channel_holder["channel"] = channel
+
+        @channel.on("message")
+        def on_message(raw_message: Any) -> None:
+            try:
+                if isinstance(raw_message, str):
+                    is_ready_message, input_payload, error_detail = parse_job_ready_message(raw_message, job_id)
+                    if is_ready_message:
+                        if error_detail is not None:
+                            state.ready_error["detail"] = error_detail
+                        else:
+                            state.ready_payload["input"] = input_payload
+                            log(f"job ready received: id={job_id} duration_ms={elapsed_ms(job_started_at)}")
+                        state.ready_event.set()
+                        return
+                    payload = json.loads(raw_message)
+                    if payload.get("kind") == "job.result.ack" and str(payload.get("id")) == job_id:
+                        state.result_ack_event.set()
+                        return
+                    if not state.ready_event.is_set():
+                        state.ready_error["detail"] = f"expected job.ready before {payload.get('kind') or 'unknown message'}"
+                        state.ready_event.set()
+                        return
+                log(f"unsupported worker job datachannel message: {raw_message}")
+            except Exception as exc:
+                if not state.ready_event.is_set():
+                    state.ready_error["detail"] = f"malformed job.ready frame: {exc}"
+                    state.ready_event.set()
+                    return
+                log(f"job datachannel message error: {exc}")
+
+        @channel.on("close")
+        def on_close() -> None:
+            log("job datachannel closed")
+            state.closed_event.set()
+
+        @channel.on("error")
+        def on_error(error: Exception | None = None) -> None:
+            log(f"job datachannel error: {error}")
+            state.closed_event.set()
+
+    @pc.on("connectionstatechange")
+    async def on_connectionstatechange() -> None:
+        log(f"job peer connection state: {pc.connectionState}")
+        if pc.connectionState in {"closed", "failed", "disconnected"}:
+            state.closed_event.set()
+
+    return state
+
+
+async def build_worker_job_answer(
+    pc: Any,
+    offer: dict[str, Any],
+    rtc_session_description: Any,
+    ice_servers: list[dict[str, Any]],
+    job_id: str,
+) -> str:
+    log(f"job offer candidates: {format_candidate_summary(summarize_sdp_candidates(offer['sdp']))}")
+    remote_started_at = time.perf_counter()
+    await pc.setRemoteDescription(rtc_session_description(sdp=offer["sdp"], type="offer"))
+    log(f"job remote offer set: id={job_id} duration_ms={elapsed_ms(remote_started_at)}")
+    answer_started_at = time.perf_counter()
+    answer = await pc.createAnswer()
+    log(f"job answer created: id={job_id} duration_ms={elapsed_ms(answer_started_at)}")
+    local_started_at = time.perf_counter()
+    await pc.setLocalDescription(answer)
+    log(f"job local answer set and ICE gathered: id={job_id} duration_ms={elapsed_ms(local_started_at)}")
+    log(f"job post-setLocal ICE state: id={job_id} state={pc.iceGatheringState}")
+    answer_summary = summarize_sdp_candidates(pc.localDescription.sdp)
+    log(f"job answer candidates: {format_candidate_summary(answer_summary)}")
+    has_stun_server = any(url.startswith(("stun:", "stuns:")) for url in iter_rtc_ice_server_urls(ice_servers))
+    if answer_summary["srflx"] == 0 and has_stun_server:
+        log(
+            f"job {job_id} warning: no srflx ICE candidates gathered; "
+            f"consider increasing {RTC_ICE_GATHER_TIMEOUT_ENV}"
+        )
+    return pc.localDescription.sdp
+
+
 async def run_worker_job(
     *,
     app: SlaveApp,
     message: dict[str, Any],
     rtc_configuration: Any,
+    rtc_peer_connection_cls: Any,
     rtc_session_description: Any,
     candidate_from_sdp: Any,
     ice_servers: list[dict[str, Any]],
+    prepared_peer: PreparedWorkerPeer | None = None,
 ) -> None:
     job_id = str(message["job_id"])
     handler_type = str(message["handler_type"])
     context = SlaveContext(session_id=job_id, ttl_seconds=0)
     pc = None
+    state: WorkerJobPeerState | None = None
     try:
-        from aiortc import RTCPeerConnection
-
         job_started_at = time.perf_counter()
-        pc = RTCPeerConnection(rtc_configuration)
-        log(f"job peer connection created: id={job_id} duration_ms={elapsed_ms(job_started_at)}")
-        ready_event = asyncio.Event()
-        result_ack_event = asyncio.Event()
-        closed_event = asyncio.Event()
-        channel_holder: dict[str, Any] = {}
-        ready_payload: dict[str, Any] = {"input": None}
-        ready_error: dict[str, str] = {}
-
-        @pc.on("datachannel")
-        def on_datachannel(channel: Any) -> None:
-            log(f"job datachannel: {channel.label}")
-            channel_holder["channel"] = channel
-
-            @channel.on("message")
-            def on_message(raw_message: Any) -> None:
-                try:
-                    if isinstance(raw_message, str):
-                        is_ready_message, input_payload, error_detail = parse_job_ready_message(raw_message, job_id)
-                        if is_ready_message:
-                            if error_detail is not None:
-                                ready_error["detail"] = error_detail
-                            else:
-                                ready_payload["input"] = input_payload
-                                log(f"job ready received: id={job_id} duration_ms={elapsed_ms(job_started_at)}")
-                            ready_event.set()
-                            return
-                        payload = json.loads(raw_message)
-                        if payload.get("kind") == "job.result.ack" and str(payload.get("id")) == job_id:
-                            result_ack_event.set()
-                            return
-                        if not ready_event.is_set():
-                            ready_error["detail"] = f"expected job.ready before {payload.get('kind') or 'unknown message'}"
-                            ready_event.set()
-                            return
-                    log(f"unsupported worker job datachannel message: {raw_message}")
-                except Exception as exc:
-                    if not ready_event.is_set():
-                        ready_error["detail"] = f"malformed job.ready frame: {exc}"
-                        ready_event.set()
-                        return
-                    log(f"job datachannel message error: {exc}")
-
-            @channel.on("close")
-            def on_close() -> None:
-                log("job datachannel closed")
-                closed_event.set()
-
-            @channel.on("error")
-            def on_error(error: Exception | None = None) -> None:
-                log(f"job datachannel error: {error}")
-                closed_event.set()
-
-        @pc.on("connectionstatechange")
-        async def on_connectionstatechange() -> None:
-            log(f"job peer connection state: {pc.connectionState}")
-            if pc.connectionState in {"closed", "failed", "disconnected"}:
-                closed_event.set()
-
-        offer = message["offer"]
-        log(f"job offer candidates: {format_candidate_summary(summarize_sdp_candidates(offer['sdp']))}")
-        remote_started_at = time.perf_counter()
-        await pc.setRemoteDescription(rtc_session_description(sdp=offer["sdp"], type="offer"))
-        log(f"job remote offer set: id={job_id} duration_ms={elapsed_ms(remote_started_at)}")
-        answer_started_at = time.perf_counter()
-        answer = await pc.createAnswer()
-        log(f"job answer created: id={job_id} duration_ms={elapsed_ms(answer_started_at)}")
-        local_started_at = time.perf_counter()
-        await pc.setLocalDescription(answer)
-        log(f"job local answer set and ICE gathered: id={job_id} duration_ms={elapsed_ms(local_started_at)}")
-        log(f"job post-setLocal ICE state: id={job_id} state={pc.iceGatheringState}")
-        answer_summary = summarize_sdp_candidates(pc.localDescription.sdp)
-        log(f"job answer candidates: {format_candidate_summary(answer_summary)}")
-        has_stun_server = any(url.startswith(("stun:", "stuns:")) for url in iter_rtc_ice_server_urls(ice_servers))
-        if answer_summary["srflx"] == 0 and has_stun_server:
-            log(
-                f"job {job_id} warning: no srflx ICE candidates gathered; "
-                f"consider increasing {RTC_ICE_GATHER_TIMEOUT_ENV}"
+        pc, state, used_prepared_peer = create_worker_job_peer(
+            rtc_peer_connection_cls,
+            rtc_configuration,
+            prepared_peer,
+            job_id,
+            job_started_at,
+        )
+        try:
+            answer_sdp = await build_worker_job_answer(
+                pc,
+                message["offer"],
+                rtc_session_description,
+                ice_servers,
+                job_id,
+            )
+        except Exception as exc:
+            if not used_prepared_peer:
+                raise
+            log(f"job prepared peer failed before answer: id={job_id} error={exc}; retrying cold peer")
+            await maybe_await(pc.close())
+            pc, state, _used_prepared_peer = create_worker_job_peer(
+                rtc_peer_connection_cls,
+                rtc_configuration,
+                None,
+                job_id,
+                job_started_at,
+            )
+            answer_sdp = await build_worker_job_answer(
+                pc,
+                message["offer"],
+                rtc_session_description,
+                ice_servers,
+                job_id,
             )
         emit(
             {
                 "type": "job.answer",
                 "job_id": job_id,
-                "answer": {"type": "answer", "sdp": pc.localDescription.sdp},
+                "answer": {"type": "answer", "sdp": answer_sdp},
             }
         )
         log(f"job answer emitted: id={job_id} duration_ms={elapsed_ms(job_started_at)}")
 
         ready_wait_started_at = time.perf_counter()
-        ready_task = asyncio.create_task(ready_event.wait())
-        closed_task = asyncio.create_task(closed_event.wait())
+        ready_task = asyncio.create_task(state.ready_event.wait())
+        closed_task = asyncio.create_task(state.closed_event.wait())
         done, pending = await asyncio.wait({ready_task, closed_task}, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
             task.cancel()
-        if closed_task in done and not ready_event.is_set():
+        if closed_task in done and not state.ready_event.is_set():
             raise RuntimeError("peer connection closed before job ready")
-        if ready_error:
-            raise RuntimeError(ready_error["detail"])
+        if state.ready_error:
+            raise RuntimeError(state.ready_error["detail"])
         log(f"job ready wait complete: id={job_id} duration_ms={elapsed_ms(ready_wait_started_at)}")
 
-        channel = channel_holder.get("channel")
+        channel = state.channel_holder.get("channel")
         if channel is None:
             raise RuntimeError("datachannel was not opened")
         emit({"type": "job.running", "job_id": job_id})
         response = await app.dispatch(
-            DataChannelMessage(id=job_id, type=handler_type, payload=ready_payload.get("input"), attachments=[]),
+            DataChannelMessage(id=job_id, type=handler_type, payload=state.ready_payload.get("input"), attachments=[]),
             context,
         )
         if response is None:
@@ -364,7 +515,7 @@ async def run_worker_job(
         send_job_result(channel, job_id, response)
         log(f"job result sent: id={job_id}")
         log(f"job result ack wait: id={job_id} timeout_s={JOB_RESULT_ACK_TIMEOUT_SECONDS:g}")
-        await wait_for_job_result_ack(job_id, result_ack_event, closed_event)
+        await wait_for_job_result_ack(job_id, state.result_ack_event, state.closed_event)
         log(f"job result ack received: id={job_id}")
         emit(
             {
@@ -374,7 +525,7 @@ async def run_worker_job(
         )
     except asyncio.CancelledError:
         log(f"job cancelled: id={job_id}")
-        channel = locals().get("channel_holder", {}).get("channel")
+        channel = state.channel_holder.get("channel") if state is not None else None
         if channel is not None:
             try:
                 channel.send(
@@ -388,7 +539,7 @@ async def run_worker_job(
         emit({"type": "job.cancelled", "job_id": job_id, "reason": "cancelled"})
     except Exception as exc:
         log(f"job failed: id={job_id} error={exc}")
-        channel = locals().get("channel_holder", {}).get("channel")
+        channel = state.channel_holder.get("channel") if state is not None else None
         if channel is not None:
             try:
                 channel.send(json.dumps({"kind": "job.error", "id": job_id, "detail": str(exc)}, ensure_ascii=False))
@@ -638,6 +789,17 @@ def load_rtc_ice_gather_timeout_seconds(ice_servers: list[dict[str, Any]]) -> fl
     return DEFAULT_STUN_ICE_GATHER_TIMEOUT_SECONDS
 
 
+def load_rtc_memory_cache_enabled() -> bool:
+    raw_value = os.environ.get(RTC_MEMORY_CACHE_ENABLED_ENV, "").strip().lower()
+    if not raw_value:
+        return True
+    if raw_value in {"1", "true", "yes", "on"}:
+        return True
+    if raw_value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{RTC_MEMORY_CACHE_ENABLED_ENV} must be true or false")
+
+
 def configure_aioice_gather_timeout(aioice_connection_cls: Any, timeout_seconds: float) -> None:
     original = getattr(aioice_connection_cls, "_gpstation_original_get_component_candidates", None)
     if original is None:
@@ -703,6 +865,19 @@ def summarize_sdp_candidates(sdp: str) -> dict[str, int]:
             summary[candidate_type] += 1
         else:
             summary["unknown"] += 1
+    return summary
+
+
+def summarize_pc_local_candidates(pc: Any) -> dict[str, int]:
+    summary = {"host": 0, "srflx": 0, "relay": 0, "prflx": 0, "unknown": 0, "total": 0}
+    for ice_transport in getattr(pc, "_RTCPeerConnection__iceTransports", ()):
+        for candidate in ice_transport.iceGatherer.getLocalCandidates():
+            summary["total"] += 1
+            candidate_type = getattr(candidate, "type", "unknown")
+            if candidate_type in {"host", "srflx", "relay", "prflx"}:
+                summary[candidate_type] += 1
+            else:
+                summary["unknown"] += 1
     return summary
 
 

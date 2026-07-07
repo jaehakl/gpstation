@@ -202,6 +202,17 @@ type PreparedJobConnection = {
   diagnosticsRegistered: boolean;
 };
 
+class RunJobAttemptError extends Error {
+  constructor(
+    message: string,
+    readonly jobId: string | undefined,
+    readonly inputSent: boolean,
+  ) {
+    super(message);
+    this.name = 'RunJobAttemptError';
+  }
+}
+
 const DEFAULT_CHUNK_SIZE = 16 * 1024;
 const BUFFERED_AMOUNT_HIGH_WATER_MARK = 512 * 1024;
 const BUFFERED_AMOUNT_LOW_WATER_MARK = 128 * 1024;
@@ -306,7 +317,7 @@ export class GpStationClient {
     const diagnostic = options.onDiagnostic ?? (() => undefined);
     emitDiagnostic(prepared.peerConnection, prepared.dataChannel, diagnostic, {
       stage: 'job-prewarm',
-      message: 'job network prewarm started',
+      message: 'job prewarm refreshed',
       elapsedMs: 0,
       stageStartedAt: Date.now(),
     });
@@ -329,12 +340,71 @@ export class GpStationClient {
     const timeoutMs = options.timeoutMs ?? 60000;
     const slaveAppId = options.slaveAppId ?? 'echo';
     const rtcConfig = rtcConfigWithDefaults(options.rtcConfig ?? this.rtcConfig);
+    try {
+      return await this.runJobAttempt<TInput, TResult>({
+        handlerType,
+        input,
+        options,
+        status,
+        diagnostic,
+        timeoutMs,
+        slaveAppId,
+        rtcConfig,
+        attempt: 0,
+      });
+    } catch (error) {
+      const attemptError =
+        error instanceof RunJobAttemptError
+          ? error
+          : new RunJobAttemptError(error instanceof Error ? error.message : String(error), undefined, false);
+      if (attemptError.inputSent) {
+        diagnostic({
+          stage: 'job-retry',
+          message: 'retry skipped after input sent',
+        });
+        throw attemptError;
+      }
+      diagnostic({
+        stage: 'job-retry',
+        message: 'retry attempt=1',
+        elapsedMs: 0,
+      });
+      await this.killJobBestEffort(attemptError.jobId);
+      return await this.runJobAttempt<TInput, TResult>({
+        handlerType,
+        input,
+        options,
+        status,
+        diagnostic,
+        timeoutMs,
+        slaveAppId,
+        rtcConfig,
+        attempt: 1,
+      });
+    } finally {
+      this.prewarmJobConnection({ slaveAppId, rtcConfig, onDiagnostic: diagnostic });
+    }
+  }
+
+  private async runJobAttempt<TInput = unknown, TResult = unknown>(params: {
+    handlerType: string;
+    input?: TInput;
+    options: RunJobOptions;
+    status: (status: string) => void;
+    diagnostic: (event: ConnectDiagnosticEvent) => void;
+    timeoutMs: number;
+    slaveAppId: string;
+    rtcConfig: RTCConfiguration;
+    attempt: number;
+  }): Promise<CallResult<TResult>> {
+    const { handlerType, input, options, status, diagnostic, timeoutMs, slaveAppId, rtcConfig, attempt } = params;
     const prepared = this.takePrewarmedJobConnection(slaveAppId, rtcConfig);
     const prewarmHit = prepared !== undefined;
     const peerConnection = prepared?.peerConnection ?? new RTCPeerConnection(rtcConfig);
     const dataChannel = prepared?.dataChannel ?? peerConnection.createDataChannel('gpstation.v1', { ordered: true });
     const jobPeer = new GpStationJobPeer(peerConnection, dataChannel, diagnostic);
     let jobId: string | undefined;
+    let inputSent = false;
     const runStartedAt = Date.now();
     if (prepared) {
       registerPreparedJobConnectionDiagnostics(prepared, diagnostic);
@@ -350,6 +420,15 @@ export class GpStationClient {
         elapsedMs: Date.now() - runStartedAt,
         stageStartedAt: runStartedAt,
       });
+      if (attempt > 0) {
+        emitDiagnostic(peerConnection, dataChannel, diagnostic, {
+          stage: 'job-retry',
+          message: `retry attempt=${attempt}`,
+          prewarmHit,
+          elapsedMs: Date.now() - runStartedAt,
+          stageStartedAt: runStartedAt,
+        });
+      }
       status('creating offer');
       const offerGatherStartedAt = Date.now();
       const offer = await peerConnection.createOffer();
@@ -375,7 +454,7 @@ export class GpStationClient {
         method: 'POST',
         body: JSON.stringify({
           handler_type: handlerType,
-          slave_app_id: options.slaveAppId ?? 'echo',
+          slave_app_id: slaveAppId,
           offer: {
             type: 'offer',
             sdp: peerConnection.localDescription.sdp,
@@ -417,6 +496,7 @@ export class GpStationClient {
         dataChannelOpenMs,
       });
       dataChannel.send(JSON.stringify({ kind: 'job.ready', id: created.job.id, input: input === undefined ? null : input }));
+      inputSent = true;
       emitDiagnostic(peerConnection, dataChannel, diagnostic, {
         stage: 'job-ready',
         message: input === undefined ? 'sent job ready' : 'sent job input',
@@ -428,9 +508,18 @@ export class GpStationClient {
     } catch (error) {
       peerConnection.close();
       const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(jobId ? `job ${jobId} failed: ${detail}` : detail);
-    } finally {
-      this.prewarmJobConnection({ slaveAppId, rtcConfig, onDiagnostic: diagnostic });
+      throw new RunJobAttemptError(jobId ? `job ${jobId} failed: ${detail}` : detail, jobId, inputSent);
+    }
+  }
+
+  private async killJobBestEffort(jobId?: string): Promise<void> {
+    if (!jobId) {
+      return;
+    }
+    try {
+      await this.request<{ ok: boolean }>(`/v1/jobs/${encodeURIComponent(jobId)}/kill`, { method: 'POST' });
+    } catch {
+      // Best-effort cleanup only; the retry path should still surface its own result.
     }
   }
 

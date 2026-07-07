@@ -18,8 +18,10 @@ from sdk.slave.runtime import (
     handle_datachannel_message,
     emit,
     load_rtc_ice_gather_timeout_seconds,
+    load_rtc_memory_cache_enabled,
     load_rtc_ice_servers,
     parse_job_ready_message,
+    prepare_worker_peer,
     read_stdin_line,
     send_job_result,
     summarize_sdp_candidates,
@@ -71,6 +73,44 @@ class FakeAioIceConnection:
     async def get_component_candidates(self, component: int, addresses: list[str], timeout: float = 5):
         FakeAioIceConnection.observed_timeouts.append(timeout)
         return []
+
+
+class FakeCandidate:
+    def __init__(self, candidate_type: str) -> None:
+        self.type = candidate_type
+
+
+class FakeGatherer:
+    gathered = False
+
+    async def gather(self):
+        FakeGatherer.gathered = True
+
+    def getLocalCandidates(self):
+        return [FakeCandidate("host"), FakeCandidate("srflx")]
+
+
+class FakeIceTransport:
+    def __init__(self) -> None:
+        self.iceGatherer = FakeGatherer()
+
+
+class FakePreparedPeerConnection:
+    closed = False
+    created = False
+
+    def __init__(self, configuration) -> None:
+        self.configuration = configuration
+        FakePreparedPeerConnection.created = True
+        FakePreparedPeerConnection.closed = False
+        FakeGatherer.gathered = False
+        setattr(self, "_RTCPeerConnection__iceTransports", set())
+
+    def _RTCPeerConnection__createSctpTransport(self) -> None:
+        getattr(self, "_RTCPeerConnection__iceTransports").add(FakeIceTransport())
+
+    async def close(self) -> None:
+        FakePreparedPeerConnection.closed = True
 
 
 def test_handler_decorators_preserve_registration_order():
@@ -155,6 +195,32 @@ def test_load_rtc_ice_gather_timeout_rejects_invalid_env(monkeypatch, value):
         load_rtc_ice_gather_timeout_seconds([{"urls": "stun:stun.example.com:3478"}])
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("", True),
+        ("true", True),
+        ("1", True),
+        ("false", False),
+        ("0", False),
+    ],
+)
+def test_load_rtc_memory_cache_enabled(monkeypatch, value, expected):
+    if value:
+        monkeypatch.setenv("GPSTATION_V1_RTC_MEMORY_CACHE_ENABLED", value)
+    else:
+        monkeypatch.delenv("GPSTATION_V1_RTC_MEMORY_CACHE_ENABLED", raising=False)
+
+    assert load_rtc_memory_cache_enabled() is expected
+
+
+def test_load_rtc_memory_cache_enabled_rejects_invalid_env(monkeypatch):
+    monkeypatch.setenv("GPSTATION_V1_RTC_MEMORY_CACHE_ENABLED", "maybe")
+
+    with pytest.raises(ValueError, match="true or false"):
+        load_rtc_memory_cache_enabled()
+
+
 @pytest.mark.asyncio
 async def test_configure_aioice_gather_timeout_patches_default_timeout():
     FakeAioIceConnection.observed_timeouts = []
@@ -163,6 +229,21 @@ async def test_configure_aioice_gather_timeout_patches_default_timeout():
     await FakeAioIceConnection().get_component_candidates(component=1, addresses=["10.0.0.2"])
 
     assert FakeAioIceConnection.observed_timeouts == [1.25]
+
+
+@pytest.mark.asyncio
+async def test_prepare_worker_peer_keeps_live_gathered_peer(capsys):
+    configuration = object()
+
+    prepared = await prepare_worker_peer(FakePreparedPeerConnection, configuration, label="test")
+
+    assert prepared.pc.configuration is configuration
+    assert FakePreparedPeerConnection.created is True
+    assert FakePreparedPeerConnection.closed is False
+    assert FakeGatherer.gathered is True
+    captured = capsys.readouterr()
+    assert "test ICE memory cache prepared" in captured.err
+    assert "srflx=1" in captured.err
 
 
 def test_summarize_sdp_candidates_counts_candidate_types():
