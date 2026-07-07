@@ -8,8 +8,23 @@ def test_launcher_routes_replace_legacy_routes():
     paths = {route.path for route in app.routes}
     legacy_prefix = "/v1/" + "work" + "ers"
 
+    for path in [
+        "/web/auth/google/start",
+        "/web/auth/google/callback",
+        "/web/auth/me",
+        "/web/auth/refresh",
+        "/web/auth/logout",
+        "/web/dashboard/summary",
+        "/web/users/me",
+        "/web/users",
+        "/web/users/me/access-tokens",
+        "/web/launchers",
+        "/web/slave-sessions",
+    ]:
+        assert path in paths
     assert "/v1/launchers" in paths
     assert "/v1/launchers/control" in paths
+    assert "/v1/sessions" in paths
     assert legacy_prefix not in paths
     assert f"{legacy_prefix}/control" not in paths
 

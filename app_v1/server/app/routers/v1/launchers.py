@@ -7,7 +7,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sdk.protocol.messages import LauncherHello, parse_control_message
-from app.auth import Principal, authenticate_authorization, require_client
+from app.auth import Principal, authenticate_db_authorization, require_client
 from app.db import SessionLocal, get_db
 from app.models import LauncherSessionView
 from app.service.realtime_service import safe_close_client, safe_send_json
@@ -29,16 +29,16 @@ async def list_launchers(
 @router.websocket("/control")
 async def launcher_control(websocket: WebSocket) -> None:
     launcher_id: str | None = None
-    try:
-        principal = authenticate_authorization(websocket.headers.get("authorization", ""))
-        principal.require_scope("launcher")
-    except HTTPException:
-        await websocket.accept()
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
-
-    await websocket.accept()
     async with SessionLocal() as db:
+        try:
+            principal = await authenticate_db_authorization(db, websocket.headers.get("authorization", ""))
+            principal.require_scope("launcher")
+        except HTTPException:
+            await websocket.accept()
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        await websocket.accept()
         try:
             hello_payload = await websocket.receive_json()
             hello = parse_control_message(hello_payload)

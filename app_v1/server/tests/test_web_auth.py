@@ -1,0 +1,94 @@
+from datetime import datetime, timezone
+
+import pytest
+
+from app.routers.web.auth import get_active_auth_session, resolve_oauth_user
+from app.user_auth.db import Identity, Session as AuthSession, User
+from app.user_auth.utils.auth_utils import hash_token
+from app.user_auth.utils.jwt import make_access, make_refresh, verify_token
+
+
+class FakeOAuthDb:
+    def __init__(self, scalar_result=None):
+        self.scalar_result = scalar_result
+        self.added = []
+        self.flushes = 0
+
+    async def scalar(self, _stmt):
+        return self.scalar_result
+
+    async def get(self, model, object_id):
+        if isinstance(self.scalar_result, Identity) and model is User:
+            return User(id=object_id, email="linked@example.test", role="user", status="active")
+        return None
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    async def flush(self):
+        self.flushes += 1
+        for obj in self.added:
+            if isinstance(obj, User) and obj.id is None:
+                obj.id = "oauth-user-1"
+
+
+class FakeSessionDb:
+    def __init__(self, session):
+        self.session = session
+
+    async def scalar(self, _stmt):
+        return self.session
+
+
+def test_jwt_access_and_refresh_round_trip():
+    user = User(id="user-1", email="user@example.test", role="admin", status="active")
+
+    access = verify_token(make_access(user))
+    refresh = verify_token(make_refresh("user-1", "session-1"))
+
+    assert access["sub"] == "user-1"
+    assert access["role"] == "admin"
+    assert refresh["typ"] == "refresh"
+    assert refresh["sid"] == "session-1"
+
+
+@pytest.mark.asyncio
+async def test_oauth_signup_creates_unauthorized_user_and_identity():
+    db = FakeOAuthDb()
+
+    user = await resolve_oauth_user(
+        db,
+        {
+            "sub": "google-user-1",
+            "email": "new@example.test",
+            "email_verified": True,
+            "name": "New User",
+        },
+    )
+
+    assert user.role == "unauthorized"
+    assert user.status == "active"
+    assert user.email == "new@example.test"
+    assert any(isinstance(item, Identity) for item in db.added)
+
+
+@pytest.mark.asyncio
+async def test_revoked_refresh_session_is_not_active():
+    active = AuthSession(
+        id="session-row-1",
+        user_id="user-1",
+        session_id_hash=hash_token("session-1"),
+        created_at=datetime.now(timezone.utc),
+        last_seen_at=datetime.now(timezone.utc),
+    )
+    revoked = AuthSession(
+        id="session-row-2",
+        user_id="user-1",
+        session_id_hash=hash_token("session-2"),
+        created_at=datetime.now(timezone.utc),
+        last_seen_at=datetime.now(timezone.utc),
+        revoked_at=datetime.now(timezone.utc),
+    )
+
+    assert await get_active_auth_session(FakeSessionDb(active), "session-1") is active
+    assert await get_active_auth_session(FakeSessionDb(revoked), "session-2") is None

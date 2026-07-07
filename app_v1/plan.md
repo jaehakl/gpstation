@@ -10,7 +10,7 @@
 - [x] Poetry migration: Python packages, lockfiles, and run scripts use Poetry.
 
 ## Next Implementation Targets
-- [ ] Replace demo static bearer tokens with the real user/auth model.
+- [x] Add OAuth/JWT website auth, DB-backed Access Token issuance, and management pages while keeping demo static bearer tokens as local fallback.
 - [ ] Extend slave app DataChannel protocols from `echo` to real job messages: start, cancel, progress, result, and error.
 - [ ] Add Python master SDK WebRTC support, not only REST session creation.
 - [ ] Define launcher capacity policy for multiple concurrent sessions.
