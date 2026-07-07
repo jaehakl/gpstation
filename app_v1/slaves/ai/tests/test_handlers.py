@@ -27,12 +27,17 @@ class AiHandlerTest(unittest.IsolatedAsyncioTestCase):
             patch.object(ai_slave, "warmup_embedding_import") as warmup_embedding_import,
             patch.object(ai_slave, "warmup_llm_import") as warmup_llm_import,
             patch.object(ai_slave, "warmup_sdxl_imports") as warmup_sdxl_imports,
+            redirect_stderr(StringIO()) as stderr,
         ):
             await ai_slave.initialize(None, context())
 
         warmup_embedding_import.assert_called_once_with("fake-model")
         warmup_llm_import.assert_called_once_with()
         warmup_sdxl_imports.assert_called_once_with()
+        self.assertIn("ai initialize embedding import warmup complete", stderr.getvalue())
+        self.assertIn("ai initialize LLM import warmup complete", stderr.getvalue())
+        self.assertIn("ai initialize SDXL import warmup complete", stderr.getvalue())
+        self.assertIn("duration_ms=", stderr.getvalue())
 
     async def test_llm_handler_returns_answer_payload(self) -> None:
         generate_llm_answer = AsyncMock(return_value=LlmResponse(answer="hello"))

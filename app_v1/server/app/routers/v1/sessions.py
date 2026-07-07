@@ -60,14 +60,18 @@ async def create_session(
         await close_session_and_launcher(db, str(session.id), "launcher unavailable", status="error")
         raise
 
+    ready_timeout_seconds = await resolve_session_ready_timeout_seconds(str(session.launcher_id), session.slave_app_id)
     try:
         await asyncio.wait_for(
             runtime_session.ready_event.wait(),
-            timeout=settings.session_ready_timeout_seconds,
+            timeout=ready_timeout_seconds,
         )
     except TimeoutError as exc:
         await close_session_and_launcher(db, str(session.id), "ready timeout", status="error")
-        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Launcher session start timed out") from exc
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"Launcher session start timed out after {ready_timeout_seconds:g}s",
+        ) from exc
 
     await db.refresh(session)
     if session.status != "ready":
@@ -165,3 +169,8 @@ def build_signaling_url(session_id: str, token: str) -> str:
     base_path = parsed.path.rstrip("/")
     path = f"{base_path}/v1/sessions/{session_id}/signal" if base_path else f"/v1/sessions/{session_id}/signal"
     return urlunparse((scheme, parsed.netloc, path, "", urlencode({"token": token}), ""))
+
+
+async def resolve_session_ready_timeout_seconds(launcher_id: str, slave_app_id: str) -> float:
+    startup_timeout = await runtime.get_slave_startup_timeout(launcher_id, slave_app_id)
+    return max(settings.session_ready_timeout_seconds, startup_timeout or 0)

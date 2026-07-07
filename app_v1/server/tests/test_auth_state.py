@@ -13,12 +13,14 @@ async def test_runtime_registry_tracks_live_launcher_and_session():
     registry = RuntimeRegistry()
     websocket = DummyWebSocket()
 
-    launcher = await registry.register_launcher("launcher-1", websocket)
+    launcher = await registry.register_launcher("launcher-1", websocket, {"ai": 300})
     session = await registry.register_session("session-1", launcher.id)
     await registry.mark_session_ready(session.id)
 
     assert (await registry.get_launcher(launcher.id)).websocket is websocket
     assert (await registry.get_session(session.id)).status == "ready"
+    assert await registry.get_slave_startup_timeout(launcher.id, "ai") == 300
+    assert await registry.get_slave_startup_timeout(launcher.id, "echo") is None
 
 
 @pytest.mark.asyncio

@@ -9,12 +9,20 @@ def test_parse_launcher_hello_message():
             "type": "launcher.hello",
             "launcher_name": "desktop-4090",
             "slave_app_ids": ["echo"],
+            "metadata": {
+                "slave_apps": {
+                    "ai": {
+                        "startup_timeout_seconds": 300,
+                    }
+                }
+            },
         }
     )
 
     assert message.type == "launcher.hello"
     assert message.launcher_name == "desktop-4090"
     assert message.slave_app_ids == ["echo"]
+    assert message.metadata["slave_apps"]["ai"]["startup_timeout_seconds"] == 300
 
 
 def test_parse_launcher_accepted_capabilities():

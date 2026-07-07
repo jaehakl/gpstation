@@ -54,7 +54,11 @@ async def launcher_control(websocket: WebSocket) -> None:
                 ip_address=websocket.client.host if websocket.client else None,
             )
             launcher_id = str(launcher.id)
-            await runtime.register_launcher(launcher_id, websocket)
+            await runtime.register_launcher(
+                launcher_id,
+                websocket,
+                extract_slave_startup_timeouts(hello.metadata),
+            )
             await websocket.send_json(
                 {
                     "type": "launcher.accepted",
@@ -124,3 +128,25 @@ async def relay_to_client(session_id: str, message: dict[str, Any]) -> None:
     websocket = await runtime.store_or_get_client_socket(session_id, message)
     if websocket is not None:
         await safe_send_json(websocket, message)
+
+
+def extract_slave_startup_timeouts(metadata: dict[str, Any]) -> dict[str, float]:
+    slave_apps = metadata.get("slave_apps")
+    if not isinstance(slave_apps, dict):
+        return {}
+    timeouts: dict[str, float] = {}
+    for slave_app_id, raw_config in slave_apps.items():
+        if not isinstance(raw_config, dict):
+            continue
+        raw_timeout = raw_config.get("startup_timeout_seconds")
+        if raw_timeout is None:
+            continue
+        if isinstance(raw_timeout, bool):
+            continue
+        try:
+            timeout = float(raw_timeout)
+        except (TypeError, ValueError):
+            continue
+        if timeout > 0:
+            timeouts[str(slave_app_id)] = timeout
+    return timeouts

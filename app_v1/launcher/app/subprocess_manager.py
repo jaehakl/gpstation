@@ -102,9 +102,10 @@ class SessionManager:
             stderr_task=asyncio.create_task(self.read_stderr(session_id, process)),
         )
         self.sessions[session_id] = session
+        ready_timeout_seconds = self.ready_timeout_seconds_for(slave_app_id)
 
         try:
-            await asyncio.wait_for(ready_event.wait(), timeout=self.settings.session_ready_timeout_seconds)
+            await asyncio.wait_for(ready_event.wait(), timeout=ready_timeout_seconds)
         except TimeoutError:
             await self.stop_session(session_id, "ready timeout")
             await self.send_control(
@@ -112,7 +113,7 @@ class SessionManager:
                     "type": "session.error",
                     "session_id": session_id,
                     "code": "ready_timeout",
-                    "detail": "slave subprocess did not become ready",
+                    "detail": f"slave subprocess did not become ready within {ready_timeout_seconds:g}s",
                 }
             )
             return
@@ -230,6 +231,11 @@ class SessionManager:
         items = list(self.session_logs.get(session_id, ()))
         clamped_limit = max(1, min(limit, SESSION_LOG_LINE_LIMIT))
         return items[-clamped_limit:]
+
+    def ready_timeout_seconds_for(self, slave_app_id: str) -> float:
+        slave_app = self.registry.get(slave_app_id)
+        startup_timeout_seconds = slave_app.startup_timeout_seconds if slave_app is not None else None
+        return max(self.settings.session_ready_timeout_seconds, startup_timeout_seconds or 0)
 
     async def handle_subprocess_message(self, session_id: str, message: dict[str, Any]) -> None:
         message_type = message.get("type")

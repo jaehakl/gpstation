@@ -7,7 +7,7 @@ from typing import Any
 import websockets
 
 from app.settings import LauncherSettings
-from app.slave_registry import load_default_registry
+from app.slave_registry import SlaveAppRegistry, load_default_registry
 from app.subprocess_manager import SessionManager
 
 BACKOFF_SECONDS = [1, 2, 5, 10, 30]
@@ -42,12 +42,7 @@ async def run_connection(settings: LauncherSettings) -> None:
             await send_json(
                 websocket,
                 send_lock,
-                {
-                    "type": "launcher.hello",
-                    "launcher_name": settings.launcher_name,
-                    "slave_app_ids": registry.ids(),
-                    "metadata": {},
-                },
+                launcher_hello_payload(settings, registry),
             )
             accepted = json.loads(await websocket.recv())
             if accepted.get("type") != "launcher.accepted":
@@ -131,3 +126,12 @@ async def handle_server_message(manager: SessionManager, message: dict[str, Any]
         print(f"Server control error: {message.get('detail') or message}", flush=True)
         return
     print(f"Unsupported server message: {message_type}", flush=True)
+
+
+def launcher_hello_payload(settings: LauncherSettings, registry: SlaveAppRegistry) -> dict[str, Any]:
+    return {
+        "type": "launcher.hello",
+        "launcher_name": settings.launcher_name,
+        "slave_app_ids": registry.ids(),
+        "metadata": registry.metadata(),
+    }

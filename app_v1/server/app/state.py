@@ -20,6 +20,7 @@ class LauncherRuntime:
     id: str
     websocket: WebSocket
     active_session_ids: set[str] = field(default_factory=set)
+    slave_app_startup_timeouts: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -40,8 +41,17 @@ class RuntimeRegistry:
         self.sessions: dict[str, SessionRuntime] = {}
         self.session_logs: dict[str, deque[dict[str, str]]] = {}
 
-    async def register_launcher(self, launcher_id: str, websocket: WebSocket) -> LauncherRuntime:
-        launcher = LauncherRuntime(id=launcher_id, websocket=websocket)
+    async def register_launcher(
+        self,
+        launcher_id: str,
+        websocket: WebSocket,
+        slave_app_startup_timeouts: dict[str, float] | None = None,
+    ) -> LauncherRuntime:
+        launcher = LauncherRuntime(
+            id=launcher_id,
+            websocket=websocket,
+            slave_app_startup_timeouts=slave_app_startup_timeouts or {},
+        )
         async with self.lock:
             self.launchers[launcher_id] = launcher
         return launcher
@@ -66,6 +76,13 @@ class RuntimeRegistry:
             launcher = self.launchers.get(launcher_id)
             if launcher is not None:
                 launcher.active_session_ids = set(active_session_ids)
+
+    async def get_slave_startup_timeout(self, launcher_id: str, slave_app_id: str) -> float | None:
+        async with self.lock:
+            launcher = self.launchers.get(launcher_id)
+            if launcher is None:
+                return None
+            return launcher.slave_app_startup_timeouts.get(slave_app_id)
 
     async def register_session(self, session_id: str, launcher_id: str) -> SessionRuntime:
         session = SessionRuntime(id=session_id, launcher_id=launcher_id)

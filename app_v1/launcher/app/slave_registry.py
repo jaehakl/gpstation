@@ -4,6 +4,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -12,6 +13,7 @@ class SlaveApp:
     name: str
     module: str
     project_dir: Path
+    startup_timeout_seconds: float | None = None
 
     @property
     def python_executable(self) -> Path:
@@ -54,6 +56,14 @@ class SlaveAppRegistry:
             str(ttl_seconds),
         ]
 
+    def metadata(self) -> dict[str, Any]:
+        slave_apps: dict[str, dict[str, float]] = {}
+        for app_id in self.ids():
+            app = self.require(app_id)
+            if app.startup_timeout_seconds is not None:
+                slave_apps[app_id] = {"startup_timeout_seconds": app.startup_timeout_seconds}
+        return {"slave_apps": slave_apps} if slave_apps else {}
+
 
 def load_default_registry() -> SlaveAppRegistry:
     return load_registry(default_plugins_dir())
@@ -73,7 +83,22 @@ def load_manifest(manifest_path: Path) -> SlaveApp:
         name=str(payload.get("name") or payload["id"]),
         module=str(payload["module"]),
         project_dir=manifest_path.parent,
+        startup_timeout_seconds=parse_startup_timeout_seconds(payload.get("startup_timeout_seconds"), manifest_path),
     )
+
+
+def parse_startup_timeout_seconds(value: Any, manifest_path: Path) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{manifest_path}: startup_timeout_seconds must be a positive number")
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{manifest_path}: startup_timeout_seconds must be a positive number") from exc
+    if timeout <= 0:
+        raise ValueError(f"{manifest_path}: startup_timeout_seconds must be positive")
+    return timeout
 
 
 def default_plugins_dir() -> Path:

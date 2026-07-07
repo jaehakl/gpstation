@@ -170,6 +170,30 @@ async def test_launcher_session_log_message_is_stored(monkeypatch):
     ]
 
 
+def test_extract_slave_startup_timeouts_ignores_invalid_values():
+    assert launchers.extract_slave_startup_timeouts(
+        {
+            "slave_apps": {
+                "ai": {"startup_timeout_seconds": 300},
+                "echo": {},
+                "bad": {"startup_timeout_seconds": "not-a-number"},
+                "zero": {"startup_timeout_seconds": 0},
+            }
+        }
+    ) == {"ai": 300}
+
+
+@pytest.mark.asyncio
+async def test_session_ready_timeout_uses_runtime_slave_timeout(monkeypatch):
+    registry = RuntimeRegistry()
+    await registry.register_launcher("launcher-1", object(), {"ai": 300})
+    monkeypatch.setattr(sessions, "runtime", registry)
+    monkeypatch.setattr(sessions.settings, "session_ready_timeout_seconds", 10)
+
+    assert await sessions.resolve_session_ready_timeout_seconds("launcher-1", "ai") == 300
+    assert await sessions.resolve_session_ready_timeout_seconds("launcher-1", "echo") == 10
+
+
 @pytest.mark.asyncio
 async def test_v1_session_logs_requires_session_owner(monkeypatch):
     registry = RuntimeRegistry()

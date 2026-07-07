@@ -30,6 +30,10 @@ poetry run gpstation-v1-slave-launcher
 
 The launcher discovers `../slaves/*/manifest.json`. Each executable must have its own `.venv`; if it is missing, session startup fails with a clear `executable_venv_missing` error.
 
+Manifest files require `id`, `name`, and `module`. They may also set `startup_timeout_seconds` when an executable needs more time before it can emit the SDK `ready` frame. The launcher advertises that value to the server and both sides use it for session startup waits.
+
+`ai/` sets `startup_timeout_seconds` to `300` because it pre-imports the LLM, SDXL, and embedding libraries during `initialize`. This does not preload model weights, but it can still take longer than the default lightweight slave timeout.
+
 ## AI Handlers
 
 `ai` supports these call types:

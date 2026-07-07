@@ -2,13 +2,13 @@ import json
 
 import pytest
 
-from app.control import handle_server_message
+from app.control import handle_server_message, launcher_hello_payload
 from app.settings import LauncherSettings
 from app.slave_registry import SlaveApp, SlaveAppRegistry, load_registry
 from app.subprocess_manager import SESSION_LOG_LINE_LIMIT, SessionManager
 
 
-def write_manifest(root, folder_name: str, slave_app_id: str) -> None:
+def write_manifest(root, folder_name: str, slave_app_id: str, **extra) -> None:
     plugin_dir = root / folder_name
     plugin_dir.mkdir()
     (plugin_dir / "manifest.json").write_text(
@@ -17,6 +17,7 @@ def write_manifest(root, folder_name: str, slave_app_id: str) -> None:
                 "id": slave_app_id,
                 "name": slave_app_id.title(),
                 "module": "app",
+                **extra,
             }
         ),
         encoding="utf-8",
@@ -25,13 +26,46 @@ def write_manifest(root, folder_name: str, slave_app_id: str) -> None:
 
 def test_load_registry_from_manifests(tmp_path):
     write_manifest(tmp_path, "echo", "echo")
-    write_manifest(tmp_path, "other", "other")
+    write_manifest(tmp_path, "other", "other", startup_timeout_seconds=300)
 
     registry = load_registry(tmp_path)
 
     assert registry.ids() == ["echo", "other"]
     assert registry.require("echo").module == "app"
     assert registry.require("echo").project_dir == tmp_path / "echo"
+    assert registry.require("echo").startup_timeout_seconds is None
+    assert registry.require("other").startup_timeout_seconds == 300
+
+
+def test_registry_builds_slave_app_metadata(tmp_path):
+    write_manifest(tmp_path, "echo", "echo")
+    write_manifest(tmp_path, "ai", "ai", startup_timeout_seconds=300)
+
+    registry = load_registry(tmp_path)
+
+    assert registry.metadata() == {
+        "slave_apps": {
+            "ai": {
+                "startup_timeout_seconds": 300,
+            }
+        }
+    }
+
+
+def test_launcher_hello_payload_includes_slave_app_metadata(tmp_path):
+    write_manifest(tmp_path, "ai", "ai", startup_timeout_seconds=300)
+    registry = load_registry(tmp_path)
+
+    payload = launcher_hello_payload(LauncherSettings(access_token="test-token"), registry)
+
+    assert payload["slave_app_ids"] == ["ai"]
+    assert payload["metadata"] == {
+        "slave_apps": {
+            "ai": {
+                "startup_timeout_seconds": 300,
+            }
+        }
+    }
 
 
 def test_registry_rejects_duplicate_ids(tmp_path):
@@ -59,6 +93,38 @@ def test_registry_builds_subprocess_args(tmp_path):
         "--ttl-seconds",
         "60",
     ]
+
+
+def test_session_manager_uses_slave_startup_timeout_when_larger(tmp_path):
+    registry = SlaveAppRegistry(
+        [
+            SlaveApp(
+                id="ai",
+                name="AI",
+                module="app",
+                project_dir=tmp_path / "ai",
+                startup_timeout_seconds=300,
+            )
+        ]
+    )
+    manager = SessionManager(
+        LauncherSettings(access_token="test-token", session_ready_timeout_seconds=10),
+        async_noop,
+        registry,
+    )
+
+    assert manager.ready_timeout_seconds_for("ai") == 300
+
+
+def test_session_manager_uses_global_timeout_without_slave_override(tmp_path):
+    registry = SlaveAppRegistry([SlaveApp(id="echo", name="Echo", module="app", project_dir=tmp_path / "echo")])
+    manager = SessionManager(
+        LauncherSettings(access_token="test-token", session_ready_timeout_seconds=10),
+        async_noop,
+        registry,
+    )
+
+    assert manager.ready_timeout_seconds_for("echo") == 10
 
 
 def test_registry_rejects_unknown_launch_app(tmp_path):
@@ -165,3 +231,7 @@ async def test_server_error_message_prints_detail(capsys):
 
     captured = capsys.readouterr()
     assert "Server control error: protocol mismatch" in captured.out
+
+
+async def async_noop(message):
+    return None
