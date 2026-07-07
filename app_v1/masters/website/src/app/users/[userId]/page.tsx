@@ -5,10 +5,10 @@ import { useParams, useRouter } from 'next/navigation';
 import { Clipboard, KeyRound, RefreshCw, Save, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
-import { api } from '../../../api/api';
-import type { AccessKeyData, AccessKeyScope, LauncherSessionView, SlaveSessionData, UserAdminUpdate, UserData, UserRole } from '../../../api/types';
+import { dbTables } from '../../../api/api';
+import type { AccessKeyScope, CrudAccessKeyRow, CrudLauncherRow, CrudSlaveSessionRow, CrudUserRow, UserRole } from '../../../api/types';
 import { useAuthStore } from '../../../stores/authStore';
-import { displayUserName, errorMessage, formatDate, nullableText } from '../../format';
+import { displayAccessKeyName, displayLauncherName, displaySlaveSessionName, displayUserName, errorMessage, formatDate, nullableText } from '../../format';
 
 type UserFormState = {
   email: string;
@@ -28,11 +28,11 @@ export default function UserDetailPage() {
   const refreshUser = useAuthStore((state) => state.refreshUser);
   const userIdParam = params.userId;
   const userId = Array.isArray(userIdParam) ? userIdParam[0] : userIdParam;
-  const [loadedUser, setLoadedUser] = useState<UserData | null>(null);
+  const [loadedUser, setLoadedUser] = useState<CrudUserRow | null>(null);
   const [form, setForm] = useState<UserFormState | null>(null);
-  const [launchers, setLaunchers] = useState<LauncherSessionView[]>([]);
-  const [sessions, setSessions] = useState<SlaveSessionData[]>([]);
-  const [tokens, setTokens] = useState<AccessKeyData[]>([]);
+  const [launchers, setLaunchers] = useState<CrudLauncherRow[]>([]);
+  const [sessions, setSessions] = useState<CrudSlaveSessionRow[]>([]);
+  const [tokens, setTokens] = useState<CrudAccessKeyRow[]>([]);
   const [tokenName, setTokenName] = useState('');
   const [tokenExpiresAt, setTokenExpiresAt] = useState('');
   const [tokenScopes, setTokenScopes] = useState<AccessKeyScope[]>(['client', 'launcher']);
@@ -60,7 +60,7 @@ export default function UserDetailPage() {
     setError(null);
     setMessage(null);
     try {
-      const nextUser = await api.users.get(userId);
+      const nextUser = await dbTables.users.getRow(userId);
       setLoadedUser(nextUser);
       setForm(userToForm(nextUser));
     } catch (loadError) {
@@ -71,23 +71,34 @@ export default function UserDetailPage() {
   }, [authReady, currentUser, userId]);
 
   const loadRelated = useCallback(async () => {
-    if (!authReady || !currentUser || !userId || !canViewRuntime) {
+    if (!authReady || !currentUser || !loadedUser || !canViewRuntime) {
+      setLaunchers([]);
+      setSessions([]);
+      return;
+    }
+    const launcherIds = loadedUser.launcher_ids ?? [];
+    const slaveSessionIds = loadedUser.slave_session_ids ?? [];
+    if (launcherIds.length === 0 && slaveSessionIds.length === 0) {
       setLaunchers([]);
       setSessions([]);
       return;
     }
     try {
       const [nextLaunchers, nextSessions] = await Promise.all([
-        api.launchers.list(isAdmin ? userId : undefined),
-        api.slaveSessions.list(isAdmin ? userId : undefined),
+        launcherIds.length > 0
+          ? dbTables.launchers.listRows({ selected_ids: launcherIds, limit: launcherIds.length, sort: ['last_heartbeat_at', 'desc'] })
+          : Promise.resolve({ items: [] as CrudLauncherRow[], total: 0 }),
+        slaveSessionIds.length > 0
+          ? dbTables.slaveSessions.listRows({ selected_ids: slaveSessionIds, limit: 10, sort: ['created_at', 'desc'] })
+          : Promise.resolve({ items: [] as CrudSlaveSessionRow[], total: 0 }),
       ]);
-      setLaunchers(nextLaunchers);
-      setSessions(nextSessions.slice(0, 10));
+      setLaunchers(nextLaunchers.items);
+      setSessions(nextSessions.items);
     } catch {
       setLaunchers([]);
       setSessions([]);
     }
-  }, [authReady, canViewRuntime, currentUser, isAdmin, userId]);
+  }, [authReady, canViewRuntime, currentUser, loadedUser]);
 
   const loadTokens = useCallback(async () => {
     if (!authReady || !currentUser || !loadedUser || !userId || !canManageTokens) {
@@ -97,13 +108,19 @@ export default function UserDetailPage() {
     setIsTokenBusy(true);
     setTokenError(null);
     try {
-      setTokens(isAdmin && !isSelf ? await api.accessTokens.listForUser(userId) : await api.accessTokens.listMine());
+      const accessKeyIds = loadedUser.access_key_ids ?? [];
+      if (accessKeyIds.length === 0) {
+        setTokens([]);
+        return;
+      }
+      const result = await dbTables.accessKeys.listRows({ selected_ids: accessKeyIds, limit: accessKeyIds.length, sort: ['created_at', 'desc'] });
+      setTokens(result.items);
     } catch (loadError) {
       setTokenError(errorMessage(loadError, 'Access Token 목록을 불러오지 못했습니다.'));
     } finally {
       setIsTokenBusy(false);
     }
-  }, [authReady, canManageTokens, currentUser, isAdmin, isSelf, loadedUser, userId]);
+  }, [authReady, canManageTokens, currentUser, loadedUser, userId]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -134,7 +151,8 @@ export default function UserDetailPage() {
     setError(null);
     setMessage(null);
     try {
-      const updatedUser = await api.users.update(userId, buildPayload(form));
+      await dbTables.users.upsertRow([{ id: userId, ...buildPayload(form) }]);
+      const updatedUser = await dbTables.users.getRow(userId);
       setLoadedUser(updatedUser);
       setForm(userToForm(updatedUser));
       setMessage('저장했습니다.');
@@ -155,8 +173,9 @@ export default function UserDetailPage() {
     setIsDeleting(true);
     setError(null);
     try {
-      await api.users.delete(userId);
+      await dbTables.users.deleteRows([userId]);
       if (isSelf) {
+        await dbTables.auth.logout();
         await refreshUser();
         router.push('/login');
       } else {
@@ -184,9 +203,11 @@ export default function UserDetailPage() {
         expires_at: parseExpires(tokenExpiresAt),
       };
       const result = isAdmin && !isSelf
-        ? await api.accessTokens.createForUser(userId, payload)
-        : await api.accessTokens.createMine(payload);
-      setTokens((items) => [result.access_key, ...items.filter((item) => item.id !== result.access_key.id)]);
+        ? await dbTables.accessKeys.createForUser(userId, payload)
+        : await dbTables.accessKeys.createMine(payload);
+      const createdKey: CrudAccessKeyRow = result.access_key;
+      setTokens((items) => [createdKey, ...items.filter((item) => item.id !== createdKey.id)]);
+      setLoadedUser((item) => item ? { ...item, access_key_ids: [createdKey.id, ...(item.access_key_ids ?? []).filter((id) => id !== createdKey.id)] } : item);
       setTokenName('');
       setTokenExpiresAt('');
       setCreatedSecret(result.secret);
@@ -199,18 +220,15 @@ export default function UserDetailPage() {
   }
 
   async function revokeToken(tokenId: string) {
-    if (!userId || !window.confirm('이 Access Token을 폐기할까요?')) {
+    if (!window.confirm('이 Access Token을 폐기할까요?')) {
       return;
     }
     setRevokingTokenId(tokenId);
     setTokenError(null);
     setTokenMessage(null);
     try {
-      if (isAdmin && !isSelf) {
-        await api.accessTokens.revokeForUser(userId, tokenId);
-      } else {
-        await api.accessTokens.revokeMine(tokenId);
-      }
+      await dbTables.accessKeys.deleteRows([tokenId]);
+      setLoadedUser((item) => item ? { ...item, access_key_ids: (item.access_key_ids ?? []).filter((id) => id !== tokenId) } : item);
       setCreatedSecret(null);
       setTokenMessage('Access Token을 폐기했습니다.');
       await loadTokens();
@@ -254,17 +272,20 @@ export default function UserDetailPage() {
               <p className="eyebrow">User</p>
               <h1>{loadedUser ? displayUserName(loadedUser) : '사용자'}</h1>
             </div>
-            {loadedUser ? <span className="statusPill">{loadedUser.role} / {loadedUser.status}</span> : null}
+            {loadedUser ? (
+              <span className="statusPill">
+                {loadedUser.role} / {loadedUser.status}
+              </span>
+            ) : null}
           </div>
 
           {error ? <p className="message danger">{error}</p> : null}
           {message ? <p className="message success">{message}</p> : null}
           {isLoading ? <p className="message warn">사용자 정보를 불러오는 중입니다.</p> : null}
 
-          {loadedUser && form ? (
+              {loadedUser && form ? (
             <div className="sectionStack">
               <dl className="detailList">
-                <InfoItem label="ID" value={loadedUser.id} />
                 <InfoItem label="생성일" value={formatDate(loadedUser.created_at)} />
                 <InfoItem label="수정일" value={formatDate(loadedUser.updated_at)} />
               </dl>
@@ -280,7 +301,9 @@ export default function UserDetailPage() {
                       권한
                       <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as UserRole })}>
                         {roleOptions.map((role) => (
-                          <option key={role} value={role}>{role}</option>
+                          <option key={role} value={role}>
+                            {role}
+                          </option>
                         ))}
                       </select>
                     </label>
@@ -342,7 +365,11 @@ export default function UserDetailPage() {
           <p className="emptyText">
             admin은 모든 회원을 조회하고 편집할 수 있습니다. user와 unauthorized는 자신의 계정만 조회하고 삭제할 수 있습니다.
           </p>
-          {isAdmin ? <Link href="/users" className="button fullButton" style={{ marginTop: 14 }}>회원 목록</Link> : null}
+          {isAdmin ? (
+            <Link href="/users" className="button fullButton" style={{ marginTop: 14 }}>
+              회원 목록
+            </Link>
+          ) : null}
         </section>
 
         <RuntimePanel canView={canViewRuntime} launchers={launchers} sessions={sessions} />
@@ -351,7 +378,7 @@ export default function UserDetailPage() {
   );
 }
 
-function userToForm(user: UserData): UserFormState {
+function userToForm(user: CrudUserRow): UserFormState {
   return {
     email: user.email ?? '',
     username: user.username ?? '',
@@ -361,7 +388,7 @@ function userToForm(user: UserData): UserFormState {
   };
 }
 
-function buildPayload(form: UserFormState): UserAdminUpdate {
+function buildPayload(form: UserFormState): Partial<CrudUserRow> {
   return {
     email: nullableText(form.email),
     username: nullableText(form.username),
@@ -394,8 +421,10 @@ function parseExpires(value: string) {
 function NeedLogin() {
   return (
     <div className="loginBox panel">
-      <h1>로그인이 필요합니다</h1>
-      <Link href="/login" className="button primaryButton fullButton" style={{ marginTop: 16 }}>로그인으로 이동</Link>
+      <h1>로그인이 필요합니다.</h1>
+      <Link href="/login" className="button primaryButton fullButton" style={{ marginTop: 16 }}>
+        로그인으로 이동
+      </Link>
     </div>
   );
 }
@@ -404,8 +433,12 @@ function Forbidden({ currentUserId }: { currentUserId: string }) {
   return (
     <div className="loginBox panel">
       <h1>접근할 수 없습니다</h1>
-      <p className="message warn" style={{ marginTop: 16 }}>자신의 계정 정보만 확인할 수 있습니다.</p>
-      <Link href={`/users/${currentUserId}`} className="button fullButton" style={{ marginTop: 14 }}>내 계정으로 이동</Link>
+      <p className="message warn" style={{ marginTop: 16 }}>
+        자신의 계정 정보만 확인할 수 있습니다.
+      </p>
+      <Link href={`/users/${currentUserId}`} className="button fullButton" style={{ marginTop: 14 }}>
+        내 계정으로 이동
+      </Link>
     </div>
   );
 }
@@ -464,7 +497,7 @@ function AccessTokenPanel({
   onCopy,
 }: {
   canManage: boolean;
-  tokens: AccessKeyData[];
+  tokens: CrudAccessKeyRow[];
   tokenName: string;
   tokenExpiresAt: string;
   tokenScopes: AccessKeyScope[];
@@ -578,15 +611,19 @@ function AccessTokenPanel({
             <tbody>
               {tokens.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="emptyText">생성된 Access Token이 없습니다.</td>
+                  <td colSpan={6} className="emptyText">
+                    생성된 Access Token이 없습니다.
+                  </td>
                 </tr>
               ) : (
                 tokens.map((token) => (
                   <tr key={token.id}>
-                    <td>{token.name}</td>
+                    <td>{displayAccessKeyName(token)}</td>
                     <td className="mono">{token.key_prefix}</td>
                     <td>{token.scopes.join(', ') || '-'}</td>
-                    <td><span className="statusPill">{token.status}</span></td>
+                    <td>
+                      <span className="statusPill">{token.status}</span>
+                    </td>
                     <td>{formatDate(token.created_at)}</td>
                     <td>
                       <div className="rowActions">
@@ -620,8 +657,8 @@ function RuntimePanel({
   sessions,
 }: {
   canView: boolean;
-  launchers: LauncherSessionView[];
-  sessions: SlaveSessionData[];
+  launchers: CrudLauncherRow[];
+  sessions: CrudSlaveSessionRow[];
 }) {
   if (!canView) {
     return (
@@ -634,14 +671,17 @@ function RuntimePanel({
 
   return (
     <section className="panel sectionStack">
-      <h2>사용자별 런타임</h2>
+      <h2>사용자별 현황</h2>
       <div>
         <h3>Launcher</h3>
         <dl className="detailList">
           {launchers.slice(0, 5).map((launcher) => (
             <div className="detailItem" key={launcher.id}>
-              <dt>{launcher.launcher_name} / {launcher.status}</dt>
+              <dt>
+                {displayLauncherName(launcher)} / {launcher.status}
+              </dt>
               <dd>{launcher.slave_app_ids.join(', ') || '-'}</dd>
+              <dd>활성 세션 {launcher.active_session_ids.length}</dd>
               <dd>{formatDate(launcher.last_heartbeat_at)}</dd>
             </div>
           ))}
@@ -653,8 +693,9 @@ function RuntimePanel({
         <dl className="detailList">
           {sessions.slice(0, 5).map((session) => (
             <div className="detailItem" key={session.id}>
-              <dt>{session.slave_app_id} / {session.status}</dt>
-              <dd className="mono">{session.id}</dd>
+              <dt>
+                {displaySlaveSessionName(session)} / {session.status}
+              </dt>
               <dd>{formatDate(session.created_at)}</dd>
             </div>
           ))}

@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { create } from 'zustand';
 
-import { api, logout, startGoogleLogin } from '../api/api';
+import { dbTables } from '../api/api';
 import type { UserData } from '../api/types';
 
 type AuthStore = {
@@ -24,7 +24,7 @@ export const useAuthStore = create<AuthStore>((set) => ({
     }
 
     refreshUserPromise = (async () => {
-      const user = await api.users.fetchMe();
+      const user = await dbTables.auth.fetchMe();
       set({ user, authReady: true });
       return user;
     })().finally(() => {
@@ -35,12 +35,12 @@ export const useAuthStore = create<AuthStore>((set) => ({
   },
 
   startLogin: () => {
-    startGoogleLogin();
+    dbTables.auth.startGoogleLogin();
   },
 
   logoutUser: async () => {
     try {
-      await logout();
+      await dbTables.auth.logout();
     } finally {
       set({ user: null, authReady: true });
     }

@@ -1,8 +1,11 @@
 from app.initserver import server
-from app.routers import v1, web
+from app.routers.crud import routes as crud
+from app.routers.v1 import routes as v1
+from app.routers.web import routes as web
 
 
 app = server()
+app.include_router(crud.router)
 app.include_router(web.router)
 app.include_router(v1.router)
 

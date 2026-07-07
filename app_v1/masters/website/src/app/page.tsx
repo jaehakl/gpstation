@@ -4,17 +4,17 @@ import Link from 'next/link';
 import { KeyRound, ListChecks, Monitor, RefreshCw, Users } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
-import { api } from '../api/api';
-import type { DashboardSummary, LauncherSessionView, SlaveSessionData } from '../api/types';
+import { dbTables } from '../api/api';
+import type { CrudLauncherRow, CrudSlaveSessionRow, DashboardSummary } from '../api/types';
 import { useAuthStore } from '../stores/authStore';
-import { errorMessage, formatDate } from './format';
+import { displaySlaveSessionName, errorMessage, formatDate } from './format';
 
 export default function DashboardPage() {
   const user = useAuthStore((state) => state.user);
   const authReady = useAuthStore((state) => state.authReady);
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
-  const [launchers, setLaunchers] = useState<LauncherSessionView[]>([]);
-  const [sessions, setSessions] = useState<SlaveSessionData[]>([]);
+  const [launchers, setLaunchers] = useState<CrudLauncherRow[]>([]);
+  const [sessions, setSessions] = useState<CrudSlaveSessionRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,13 +28,13 @@ export default function DashboardPage() {
     setError(null);
     try {
       const [nextSummary, nextLaunchers, nextSessions] = await Promise.all([
-        api.dashboard.summary(),
-        api.launchers.list(),
-        api.slaveSessions.list(),
+        dbTables.dashboard.summary(),
+        dbTables.launchers.listRows({ limit: 5, sort: ['last_heartbeat_at', 'desc'] }),
+        dbTables.slaveSessions.listRows({ limit: 5, sort: ['created_at', 'desc'] }),
       ]);
       setSummary(nextSummary);
-      setLaunchers(nextLaunchers.slice(0, 5));
-      setSessions(nextSessions.slice(0, 5));
+      setLaunchers(nextLaunchers.items);
+      setSessions(nextSessions.items);
     } catch (loadError) {
       setError(errorMessage(loadError, '대시보드를 불러오지 못했습니다.'));
     } finally {
@@ -119,7 +119,9 @@ export default function DashboardPage() {
         <section className="panel">
           <div className="toolbar">
             <h2>최근 Launcher</h2>
-            <Link href="/launchers" className="button smallButton">전체 보기</Link>
+            <Link href="/launchers" className="button smallButton">
+              전체 보기
+            </Link>
           </div>
           <div className="tableWrap">
             <div className="scrollTable">
@@ -128,7 +130,8 @@ export default function DashboardPage() {
                   <tr>
                     <th>이름</th>
                     <th>상태</th>
-                    <th>앱</th>
+                    <th>Slave App</th>
+                    <th>활성 세션</th>
                     <th>Heartbeat</th>
                   </tr>
                 </thead>
@@ -136,12 +139,15 @@ export default function DashboardPage() {
                   {launchers.map((launcher) => (
                     <tr key={launcher.id}>
                       <td>{launcher.launcher_name}</td>
-                      <td><span className="statusPill">{launcher.status}</span></td>
+                      <td>
+                        <span className="statusPill">{launcher.status}</span>
+                      </td>
                       <td>{launcher.slave_app_ids.join(', ') || '-'}</td>
+                      <td>{launcher.active_session_ids.length}</td>
                       <td>{formatDate(launcher.last_heartbeat_at)}</td>
                     </tr>
                   ))}
-                  {launchers.length === 0 ? <EmptyRow colSpan={4} text="표시할 Launcher가 없습니다." /> : null}
+                  {launchers.length === 0 ? <EmptyRow colSpan={5} text="표시할 Launcher가 없습니다." /> : null}
                 </tbody>
               </table>
             </div>
@@ -151,13 +157,16 @@ export default function DashboardPage() {
         <section className="panel">
           <div className="toolbar">
             <h2>최근 SlaveSession</h2>
-            <Link href="/slave-sessions" className="button smallButton">전체 보기</Link>
+            <Link href="/slave-sessions" className="button smallButton">
+              전체 보기
+            </Link>
           </div>
           <dl className="detailList">
             {sessions.map((session) => (
               <div className="detailItem" key={session.id}>
-                <dt>{session.slave_app_id} / {session.status}</dt>
-                <dd className="mono">{session.id}</dd>
+                <dt>
+                  {displaySlaveSessionName(session)} / {session.status}
+                </dt>
                 <dd>{formatDate(session.created_at)}</dd>
               </div>
             ))}
@@ -172,7 +181,9 @@ export default function DashboardPage() {
 function Metric({ label, value, icon }: { label: string; value: number; icon: React.ReactNode }) {
   return (
     <div className="metricCard">
-      <span>{icon} {label}</span>
+      <span>
+        {icon} {label}
+      </span>
       <strong>{value.toLocaleString('ko-KR')}</strong>
     </div>
   );

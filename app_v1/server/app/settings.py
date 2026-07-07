@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
     google_redirect_uri: str = ""
+    google_id_token_clock_skew_seconds: int = Field(default=10, ge=0, le=300)
     jwt_secret: str = "dev-gpstation-v1-secret-change-me-32"
     jwt_alg: str = "HS256"
     access_ttl_sec: int = Field(default=1200, gt=0)

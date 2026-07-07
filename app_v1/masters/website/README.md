@@ -21,16 +21,16 @@ npm run dev
 ## Environment
 
 ```text
-NEXT_PUBLIC_GPSTATION_V1_API_URL=http://127.0.0.1:8100
+NEXT_PUBLIC_GPSTATION_V1_API_URL=http://localhost:8100
 ```
 
 서버에는 Google OAuth 설정이 필요합니다.
 
 ```text
-GPSTATION_V1_APP_BASE_URL=http://127.0.0.1:3002
+GPSTATION_V1_APP_BASE_URL=http://localhost:3002
 GPSTATION_V1_GOOGLE_CLIENT_ID=
 GPSTATION_V1_GOOGLE_CLIENT_SECRET=
-GPSTATION_V1_GOOGLE_REDIRECT_URI=http://127.0.0.1:8100/web/auth/google/callback
+GPSTATION_V1_GOOGLE_REDIRECT_URI=http://localhost:8100/web/auth/google/callback
 GPSTATION_V1_JWT_SECRET=change-this-to-a-long-random-secret
 ```
 

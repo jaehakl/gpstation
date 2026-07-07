@@ -36,10 +36,10 @@ The default demo principal is seeded into the `users` table with a deterministic
 Browser management APIs live under `/web/*` and use Google OAuth plus JWT cookies. Configure these values in `app_v1/server/.env`:
 
 ```text
-GPSTATION_V1_APP_BASE_URL=http://127.0.0.1:3002
+GPSTATION_V1_APP_BASE_URL=http://localhost:3002
 GPSTATION_V1_GOOGLE_CLIENT_ID=
 GPSTATION_V1_GOOGLE_CLIENT_SECRET=
-GPSTATION_V1_GOOGLE_REDIRECT_URI=http://127.0.0.1:8100/web/auth/google/callback
+GPSTATION_V1_GOOGLE_REDIRECT_URI=http://localhost:8100/web/auth/google/callback
 GPSTATION_V1_JWT_SECRET=change-this-to-a-long-random-secret
 GPSTATION_V1_SECURE_COOKIES=false
 ```

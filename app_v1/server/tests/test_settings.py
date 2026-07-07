@@ -15,6 +15,7 @@ def test_settings_reads_prefixed_values_from_env_file(tmp_path, monkeypatch):
             [
                 "GPSTATION_V1_PORT=8123",
                 "GPSTATION_V1_PUBLIC_BASE_URL=http://example.test/base/",
+                "GPSTATION_V1_GOOGLE_ID_TOKEN_CLOCK_SKEW_SECONDS=12",
                 (
                     "GPSTATION_V1_TOKENS="
                     '\'{"client-token":{"user_id":"user-1","scopes":["client"]}}\''
@@ -32,5 +33,6 @@ def test_settings_reads_prefixed_values_from_env_file(tmp_path, monkeypatch):
 
     assert settings.port == 8123
     assert settings.public_base_url == "http://example.test/base"
+    assert settings.google_id_token_clock_skew_seconds == 12
     assert settings.tokens["client-token"].user_id == "user-1"
     assert settings.tokens["client-token"].scopes == ["client"]

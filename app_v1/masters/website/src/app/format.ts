@@ -1,5 +1,3 @@
-import type { UserData } from '../api/types';
-
 export function formatDate(value: string | null | undefined) {
   if (!value) {
     return '-';
@@ -11,8 +9,20 @@ export function formatDate(value: string | null | undefined) {
   return date.toLocaleString('ko-KR');
 }
 
-export function displayUserName(user: UserData) {
-  return user.display_name?.trim() || user.username || user.email || user.id;
+export function displayUserName(user: { display_name?: string | null; username?: string | null; email?: string | null }) {
+  return user.display_name?.trim() || user.username?.trim() || user.email?.trim() || '사용자';
+}
+
+export function displayAccessKeyName(accessKey: { name?: string | null }) {
+  return accessKey.name?.trim() || 'Access Token';
+}
+
+export function displayLauncherName(launcher: { ip_address?: string | null; launcher_name?: string | null }) {
+  return launcher.ip_address?.trim() || launcher.launcher_name?.trim() || 'Launcher';
+}
+
+export function displaySlaveSessionName(session: { master_ip_address?: string | null; slave_app_id: string }) {
+  return `${session.master_ip_address?.trim() || 'unknown'} / ${session.slave_app_id}`;
 }
 
 export function errorMessage(error: unknown, fallback: string) {

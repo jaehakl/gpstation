@@ -9,6 +9,18 @@ def test_launcher_routes_replace_legacy_routes():
     legacy_prefix = "/v1/" + "work" + "ers"
 
     for path in [
+        "/crud/users/list",
+        "/crud/users/{row_id}",
+        "/crud/users/upsert",
+        "/crud/users/delete",
+        "/crud/access_keys/list",
+        "/crud/access_keys/{row_id}",
+        "/crud/access_keys/delete",
+        "/crud/launchers/list",
+        "/crud/launchers/{row_id}",
+        "/crud/slave_sessions/list",
+        "/crud/slave_sessions/{row_id}",
+        "/crud/slave_sessions/delete",
         "/web/auth/google/start",
         "/web/auth/google/callback",
         "/web/auth/me",
@@ -25,6 +37,11 @@ def test_launcher_routes_replace_legacy_routes():
     assert "/v1/launchers" in paths
     assert "/v1/launchers/control" in paths
     assert "/v1/sessions" in paths
+    assert "/crud/{table}/list" not in paths
+    assert "/crud/identities/list" not in paths
+    assert "/crud/auth_sessions/list" not in paths
+    assert "/crud/oauth_states/list" not in paths
+    assert "/crud/auth_audit/list" not in paths
     assert legacy_prefix not in paths
     assert f"{legacy_prefix}/control" not in paths
 

@@ -1,11 +1,12 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Eye, RefreshCw, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
-import { api } from '../../api/api';
-import type { UserData } from '../../api/types';
+import { dbTables } from '../../api/api';
+import type { CrudUserRow } from '../../api/types';
 import { useAuthStore } from '../../stores/authStore';
 import { AdminGate } from '../AdminGate';
 import { displayUserName, errorMessage, formatDate } from '../format';
@@ -21,9 +22,10 @@ export default function UsersPage() {
 }
 
 function UsersPageContent() {
+  const router = useRouter();
   const currentUser = useAuthStore((state) => state.user);
   const refreshUser = useAuthStore((state) => state.refreshUser);
-  const [users, setUsers] = useState<UserData[]>([]);
+  const [users, setUsers] = useState<CrudUserRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
@@ -32,7 +34,8 @@ function UsersPageContent() {
     setIsLoading(true);
     setError(null);
     try {
-      setUsers(await api.users.list(pageSize, 0));
+      const result = await dbTables.users.listRows({ limit: pageSize, sort: ['created_at', 'desc'] });
+      setUsers(result.items);
     } catch (loadError) {
       setError(errorMessage(loadError, '사용자 목록을 불러오지 못했습니다.'));
     } finally {
@@ -54,9 +57,11 @@ function UsersPageContent() {
     setDeletingUserId(userId);
     setError(null);
     try {
-      await api.users.delete(userId);
+      await dbTables.users.deleteRows([userId]);
       if (currentUser?.id === userId) {
+        await dbTables.auth.logout();
         await refreshUser();
+        router.push('/login');
       }
       setUsers((items) => items.filter((item) => item.id !== userId));
     } catch (deleteError) {
@@ -109,9 +114,11 @@ function UsersPageContent() {
                   <tr key={item.id}>
                     <td>
                       <strong>{displayUserName(item)}</strong>
-                      <div className="mutedText">{item.email ?? item.id}</div>
+                      <div className="mutedText">{item.email ?? '이메일 없음'}</div>
                     </td>
-                    <td><span className="statusPill">{item.role}</span></td>
+                    <td>
+                      <span className="statusPill">{item.role}</span>
+                    </td>
                     <td>{item.status}</td>
                     <td>{formatDate(item.created_at)}</td>
                     <td>

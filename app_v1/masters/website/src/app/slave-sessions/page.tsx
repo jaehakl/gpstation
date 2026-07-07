@@ -3,17 +3,19 @@
 import { RefreshCw, Square } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
-import { api } from '../../api/api';
-import type { SlaveSessionData } from '../../api/types';
+import { dbTables } from '../../api/api';
+import type { CrudLauncherRow, CrudSlaveSessionRow, CrudUserRow } from '../../api/types';
 import { useAuthStore } from '../../stores/authStore';
-import { errorMessage, formatDate } from '../format';
+import { displayLauncherName, displaySlaveSessionName, displayUserName, errorMessage, formatDate } from '../format';
 
 export default function SlaveSessionsPage() {
   const user = useAuthStore((state) => state.user);
   const authReady = useAuthStore((state) => state.authReady);
   const isAdmin = user?.role === 'admin';
   const canUseConsole = user?.role === 'admin' || user?.role === 'user';
-  const [sessions, setSessions] = useState<SlaveSessionData[]>([]);
+  const [sessions, setSessions] = useState<CrudSlaveSessionRow[]>([]);
+  const [userLabels, setUserLabels] = useState<Record<string, string>>({});
+  const [launcherLabels, setLauncherLabels] = useState<Record<string, string>>({});
   const [userFilter, setUserFilter] = useState('');
   const [closingSessionId, setClosingSessionId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -27,7 +29,37 @@ export default function SlaveSessionsPage() {
     setIsLoading(true);
     setError(null);
     try {
-      setSessions(await api.slaveSessions.list(isAdmin ? userFilter.trim() : undefined));
+      const trimmedUserFilter = userFilter.trim();
+      let matchedUsers: CrudUserRow[] = [];
+      let userIds: string[] = [];
+
+      if (isAdmin && trimmedUserFilter) {
+        const userResult = await dbTables.users.listRows({ search_text: trimmedUserFilter, limit: 100 });
+        matchedUsers = userResult.items;
+        userIds = matchedUsers.map((item) => item.id);
+        if (userIds.length === 0) {
+          setSessions([]);
+          setUserLabels({});
+          setLauncherLabels({});
+          return;
+        }
+      }
+
+      const result = await dbTables.slaveSessions.listRows({
+        sort: ['created_at', 'desc'],
+        text_filter: userIds.length > 0 ? { user_id: userIds } : {},
+      });
+      const missingUserIds = Array.from(new Set(result.items.map((item) => item.user_id))).filter(
+        (userId) => !matchedUsers.some((item) => item.id === userId),
+      );
+      const launcherIds = Array.from(new Set(result.items.map((item) => item.launcher_id).filter((item): item is string => Boolean(item))));
+      const [extraUsers, sessionLaunchers] = await Promise.all([
+        missingUserIds.length > 0 ? dbTables.users.listRows({ selected_ids: missingUserIds, limit: missingUserIds.length }) : Promise.resolve({ items: [] as CrudUserRow[], total: 0 }),
+        launcherIds.length > 0 ? dbTables.launchers.listRows({ selected_ids: launcherIds, limit: launcherIds.length }) : Promise.resolve({ items: [] as CrudLauncherRow[], total: 0 }),
+      ]);
+      setUserLabels(Object.fromEntries([...matchedUsers, ...extraUsers.items].map((item) => [item.id, displayUserName(item)])));
+      setLauncherLabels(Object.fromEntries(sessionLaunchers.items.map((item) => [item.id, displayLauncherName(item)])));
+      setSessions(result.items);
     } catch (loadError) {
       setError(errorMessage(loadError, 'SlaveSession 목록을 불러오지 못했습니다.'));
     } finally {
@@ -50,7 +82,7 @@ export default function SlaveSessionsPage() {
     setError(null);
     setMessage(null);
     try {
-      await api.slaveSessions.close(sessionId);
+      await dbTables.slaveSessions.close(sessionId);
       setMessage('SlaveSession을 종료했습니다.');
       await loadSessions();
     } catch (closeError) {
@@ -92,7 +124,7 @@ export default function SlaveSessionsPage() {
         <section className="panel">
           <div className="filterGrid">
             <label className="field">
-              사용자 ID 필터
+              사용자 이름/이메일 필터
               <input value={userFilter} onChange={(event) => setUserFilter(event.target.value)} placeholder="비워두면 전체" />
             </label>
             <button
@@ -119,7 +151,7 @@ export default function SlaveSessionsPage() {
                 <th>세션</th>
                 <th>사용자</th>
                 <th>Launcher</th>
-                <th>Slave 앱</th>
+                <th>Slave App</th>
                 <th>상태</th>
                 <th>만료</th>
                 <th style={{ textAlign: 'right' }}>작업</th>
@@ -134,13 +166,15 @@ export default function SlaveSessionsPage() {
                 sessions.map((session) => (
                   <tr key={session.id}>
                     <td>
-                      <strong className="mono">{session.id}</strong>
+                      <strong>{displaySlaveSessionName(session)}</strong>
                       <div className="mutedText">{formatDate(session.created_at)}</div>
                     </td>
-                    <td className="mono">{session.user_id}</td>
-                    <td className="mono">{session.launcher_id ?? '-'}</td>
+                    <td>{userLabels[session.user_id] ?? '사용자'}</td>
+                    <td>{session.launcher_id ? launcherLabels[session.launcher_id] ?? 'Launcher' : '-'}</td>
                     <td>{session.slave_app_id}</td>
-                    <td><span className="statusPill">{session.status}</span></td>
+                    <td>
+                      <span className="statusPill">{session.status}</span>
+                    </td>
                     <td>{formatDate(session.expires_at)}</td>
                     <td>
                       <div className="rowActions">
@@ -171,7 +205,9 @@ export default function SlaveSessionsPage() {
 function EmptyRow({ text }: { text: string }) {
   return (
     <tr>
-      <td colSpan={7} className="emptyText">{text}</td>
+      <td colSpan={7} className="emptyText">
+        {text}
+      </td>
     </tr>
   );
 }

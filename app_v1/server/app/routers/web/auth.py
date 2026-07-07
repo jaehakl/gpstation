@@ -100,6 +100,7 @@ async def google_callback(
             token_response.json().get("id_token"),
             request_adapter,
             settings.google_client_id,
+            clock_skew_in_seconds=settings.google_id_token_clock_skew_seconds,
         )
         if oauth_state.nonce and idinfo.get("nonce") != oauth_state.nonce:
             raise ValueError("nonce mismatch")

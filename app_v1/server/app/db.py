@@ -7,7 +7,7 @@ from typing import Optional
 from sqlalchemy import DateTime, ForeignKey, Integer, LargeBinary, MetaData, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.settings import settings
 
@@ -97,6 +97,8 @@ class AccessKey(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
+    user: Mapped["User"] = relationship("User", back_populates="access_keys")
+
 
 class Launcher(TimestampMixin, Base):
     __tablename__ = "launchers"
@@ -111,6 +113,9 @@ class Launcher(TimestampMixin, Base):
     connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     disconnected_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    user: Mapped["User"] = relationship("User", back_populates="launchers")
+    slave_sessions: Mapped[list["SlaveSession"]] = relationship(back_populates="launcher", lazy="selectin")
 
 
 class SlaveSession(TimestampMixin, Base):
@@ -129,3 +134,6 @@ class SlaveSession(TimestampMixin, Base):
     ready_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[Optional[str]] = mapped_column(Text)
+
+    user: Mapped["User"] = relationship("User", back_populates="slave_sessions")
+    launcher: Mapped[Optional["Launcher"]] = relationship(back_populates="slave_sessions")
