@@ -121,6 +121,12 @@ export type CandidateSummary = {
 export type ConnectDiagnosticEvent = {
   stage: string;
   message: string;
+  elapsedMs?: number;
+  stageStartedAt?: number;
+  prewarmHit?: boolean;
+  offerGatheringMs?: number;
+  answerWaitMs?: number;
+  dataChannelOpenMs?: number;
   signalingState?: RTCSignalingState;
   iceGatheringState?: RTCIceGatheringState;
   iceConnectionState?: RTCIceConnectionState;
@@ -156,6 +162,12 @@ export type RunJobOptions = ConnectOptions & {
   onJobCreated?: (job: JobDescriptor) => void;
 };
 
+export type JobConnectionPrewarmOptions = {
+  slaveAppId?: string;
+  rtcConfig?: RTCConfiguration;
+  onDiagnostic?: (event: ConnectDiagnosticEvent) => void;
+};
+
 type NormalizedFile = AttachmentMetadata & {
   data: Uint8Array;
 };
@@ -181,10 +193,20 @@ type PendingCall = {
   response?: PendingResponse;
 };
 
+type PreparedJobConnection = {
+  peerConnection: RTCPeerConnection;
+  dataChannel: RTCDataChannel;
+  key: string;
+  slaveAppId: string;
+  rtcConfig: RTCConfiguration;
+  diagnosticsRegistered: boolean;
+};
+
 const DEFAULT_CHUNK_SIZE = 16 * 1024;
 const BUFFERED_AMOUNT_HIGH_WATER_MARK = 512 * 1024;
 const BUFFERED_AMOUNT_LOW_WATER_MARK = 128 * 1024;
 export const DEFAULT_RTC_ICE_SERVERS: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
+export const DEFAULT_RTC_ICE_CANDIDATE_POOL_SIZE = 2;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -192,6 +214,7 @@ export class GpStationClient {
   private readonly apiBaseUrl: string;
   private readonly token: string;
   private readonly rtcConfig?: RTCConfiguration;
+  private readonly prewarmedJobConnections: PreparedJobConnection[] = [];
 
   constructor(options: GpStationClientOptions) {
     this.apiBaseUrl = options.apiBaseUrl.replace(/\/+$/, '');
@@ -221,7 +244,7 @@ export class GpStationClient {
     const status = options.onStatus ?? (() => undefined);
     const diagnostic = options.onDiagnostic ?? (() => undefined);
     const timeoutMs = options.timeoutMs ?? 15000;
-    const peerConnection = new RTCPeerConnection(this.rtcConfig ?? { iceServers: DEFAULT_RTC_ICE_SERVERS });
+    const peerConnection = new RTCPeerConnection(rtcConfigWithDefaults(this.rtcConfig));
     const dataChannel = peerConnection.createDataChannel('gpstation.v1', { ordered: true });
     const socket = new WebSocket(descriptor.signaling_url);
     const peer = new GpStationPeer(peerConnection, dataChannel, socket);
@@ -271,6 +294,31 @@ export class GpStationClient {
     return peer;
   }
 
+  prewarmJobConnection(options: JobConnectionPrewarmOptions = {}): void {
+    const slaveAppId = options.slaveAppId ?? 'echo';
+    const rtcConfig = rtcConfigWithDefaults(options.rtcConfig ?? this.rtcConfig);
+    const key = jobConnectionKey(slaveAppId, rtcConfig);
+    this.dropClosedPrewarmedJobConnections();
+    if (this.prewarmedJobConnections.some((item) => item.key === key)) {
+      return;
+    }
+    const prepared = createPreparedJobConnection(slaveAppId, rtcConfig);
+    const diagnostic = options.onDiagnostic ?? (() => undefined);
+    emitDiagnostic(prepared.peerConnection, prepared.dataChannel, diagnostic, {
+      stage: 'job-prewarm',
+      message: 'job network prewarm started',
+      elapsedMs: 0,
+      stageStartedAt: Date.now(),
+    });
+    this.prewarmedJobConnections.push(prepared);
+  }
+
+  clearPrewarmedJobConnections(): void {
+    for (const item of this.prewarmedJobConnections.splice(0)) {
+      item.peerConnection.close();
+    }
+  }
+
   async runJob<TInput = unknown, TResult = unknown>(
     handlerType: string,
     input?: TInput,
@@ -279,23 +327,45 @@ export class GpStationClient {
     const status = options.onStatus ?? (() => undefined);
     const diagnostic = options.onDiagnostic ?? (() => undefined);
     const timeoutMs = options.timeoutMs ?? 60000;
-    const peerConnection = new RTCPeerConnection(options.rtcConfig ?? this.rtcConfig ?? { iceServers: DEFAULT_RTC_ICE_SERVERS });
-    const dataChannel = peerConnection.createDataChannel('gpstation.v1', { ordered: true });
+    const slaveAppId = options.slaveAppId ?? 'echo';
+    const rtcConfig = rtcConfigWithDefaults(options.rtcConfig ?? this.rtcConfig);
+    const prepared = this.takePrewarmedJobConnection(slaveAppId, rtcConfig);
+    const prewarmHit = prepared !== undefined;
+    const peerConnection = prepared?.peerConnection ?? new RTCPeerConnection(rtcConfig);
+    const dataChannel = prepared?.dataChannel ?? peerConnection.createDataChannel('gpstation.v1', { ordered: true });
     const jobPeer = new GpStationJobPeer(peerConnection, dataChannel, diagnostic);
     let jobId: string | undefined;
-    registerConnectionDiagnostics(peerConnection, dataChannel, diagnostic);
+    const runStartedAt = Date.now();
+    if (prepared) {
+      registerPreparedJobConnectionDiagnostics(prepared, diagnostic);
+    } else {
+      registerConnectionDiagnostics(peerConnection, dataChannel, diagnostic);
+    }
 
     try {
+      emitDiagnostic(peerConnection, dataChannel, diagnostic, {
+        stage: 'job-prewarm',
+        message: prewarmHit ? 'job prewarm hit' : 'job prewarm miss',
+        prewarmHit,
+        elapsedMs: Date.now() - runStartedAt,
+        stageStartedAt: runStartedAt,
+      });
       status('creating offer');
+      const offerGatherStartedAt = Date.now();
       const offer = await peerConnection.createOffer();
       await peerConnection.setLocalDescription(offer);
       await waitForIceGatheringComplete(peerConnection, timeoutMs);
+      const offerGatheringMs = Date.now() - offerGatherStartedAt;
       if (!peerConnection.localDescription) {
         throw new Error('localDescription was not created');
       }
       emitDiagnostic(peerConnection, dataChannel, diagnostic, {
         stage: 'local-offer',
         message: 'created local job offer',
+        elapsedMs: Date.now() - runStartedAt,
+        stageStartedAt: offerGatherStartedAt,
+        prewarmHit,
+        offerGatheringMs,
         localCandidateSummary: summarizeSdpCandidates(peerConnection.localDescription.sdp),
         localSdp: peerConnection.localDescription.sdp,
       });
@@ -316,7 +386,9 @@ export class GpStationClient {
       options.onJobCreated?.(created.job);
 
       status('waiting for answer');
+      const answerWaitStartedAt = Date.now();
       const answer = await this.waitJobAnswer(created.job.id, timeoutMs);
+      const answerWaitMs = Date.now() - answerWaitStartedAt;
       if (!answer.answer || answer.answer.type !== 'answer' || !answer.answer.sdp) {
         throw new Error(answer.last_error || `job ${created.job.id} did not produce an answer (state=${answer.state})`);
       }
@@ -324,16 +396,32 @@ export class GpStationClient {
       emitDiagnostic(peerConnection, dataChannel, diagnostic, {
         stage: 'remote-answer',
         message: 'received remote job answer',
+        elapsedMs: Date.now() - runStartedAt,
+        stageStartedAt: answerWaitStartedAt,
+        prewarmHit,
+        answerWaitMs,
         remoteCandidateSummary: summarizeSdpCandidates(answer.answer.sdp),
         remoteSdp: answer.answer.sdp,
       });
 
       status('waiting for data channel');
+      const dataChannelOpenStartedAt = Date.now();
       await jobPeer.waitUntilOpen(timeoutMs);
+      const dataChannelOpenMs = Date.now() - dataChannelOpenStartedAt;
+      emitDiagnostic(peerConnection, dataChannel, diagnostic, {
+        stage: 'data-channel-open',
+        message: 'job data channel opened',
+        elapsedMs: Date.now() - runStartedAt,
+        stageStartedAt: dataChannelOpenStartedAt,
+        prewarmHit,
+        dataChannelOpenMs,
+      });
       dataChannel.send(JSON.stringify({ kind: 'job.ready', id: created.job.id, input: input === undefined ? null : input }));
       emitDiagnostic(peerConnection, dataChannel, diagnostic, {
         stage: 'job-ready',
-        message: 'sent job ready',
+        message: input === undefined ? 'sent job ready' : 'sent job input',
+        elapsedMs: Date.now() - runStartedAt,
+        prewarmHit,
       });
       status('waiting for result');
       return await jobPeer.waitForResult<TResult>(created.job.id, timeoutMs);
@@ -341,6 +429,27 @@ export class GpStationClient {
       peerConnection.close();
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(jobId ? `job ${jobId} failed: ${detail}` : detail);
+    } finally {
+      this.prewarmJobConnection({ slaveAppId, rtcConfig, onDiagnostic: diagnostic });
+    }
+  }
+
+  private takePrewarmedJobConnection(slaveAppId: string, rtcConfig: RTCConfiguration): PreparedJobConnection | undefined {
+    const key = jobConnectionKey(slaveAppId, rtcConfig);
+    this.dropClosedPrewarmedJobConnections();
+    const index = this.prewarmedJobConnections.findIndex((item) => item.key === key);
+    if (index === -1) {
+      return undefined;
+    }
+    return this.prewarmedJobConnections.splice(index, 1)[0];
+  }
+
+  private dropClosedPrewarmedJobConnections(): void {
+    for (let index = this.prewarmedJobConnections.length - 1; index >= 0; index -= 1) {
+      const item = this.prewarmedJobConnections[index];
+      if (item.peerConnection.signalingState === 'closed' || item.dataChannel.readyState === 'closed') {
+        this.prewarmedJobConnections.splice(index, 1);
+      }
     }
   }
 
@@ -1093,6 +1202,42 @@ function isRtcIceServer(value: unknown): value is RTCIceServer {
   }
   const urls = (value as { urls?: unknown }).urls;
   return typeof urls === 'string' || (Array.isArray(urls) && urls.every((item) => typeof item === 'string'));
+}
+
+function rtcConfigWithDefaults(config?: RTCConfiguration): RTCConfiguration {
+  return {
+    ...(config ?? {}),
+    iceServers: config?.iceServers ?? DEFAULT_RTC_ICE_SERVERS,
+    iceCandidatePoolSize: config?.iceCandidatePoolSize ?? DEFAULT_RTC_ICE_CANDIDATE_POOL_SIZE,
+  };
+}
+
+function jobConnectionKey(slaveAppId: string, rtcConfig: RTCConfiguration): string {
+  return `${slaveAppId}:${JSON.stringify(rtcConfig)}`;
+}
+
+function createPreparedJobConnection(slaveAppId: string, rtcConfig: RTCConfiguration): PreparedJobConnection {
+  const peerConnection = new RTCPeerConnection(rtcConfig);
+  const dataChannel = peerConnection.createDataChannel('gpstation.v1', { ordered: true });
+  return {
+    peerConnection,
+    dataChannel,
+    key: jobConnectionKey(slaveAppId, rtcConfig),
+    slaveAppId,
+    rtcConfig,
+    diagnosticsRegistered: false,
+  };
+}
+
+function registerPreparedJobConnectionDiagnostics(
+  prepared: PreparedJobConnection,
+  diagnostic: (event: ConnectDiagnosticEvent) => void,
+): void {
+  if (prepared.diagnosticsRegistered) {
+    return;
+  }
+  registerConnectionDiagnostics(prepared.peerConnection, prepared.dataChannel, diagnostic);
+  prepared.diagnosticsRegistered = true;
 }
 
 function registerConnectionDiagnostics(

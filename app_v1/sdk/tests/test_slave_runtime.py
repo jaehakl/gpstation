@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 from io import BytesIO
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,7 @@ from sdk.slave.runtime import (
     read_stdin_line,
     send_job_result,
     summarize_sdp_candidates,
+    warm_rtc_runtime,
     wait_for_job_result_ack,
 )
 
@@ -32,6 +34,33 @@ class DummyChannel:
 
     def send(self, message: str | bytes) -> None:
         self.sent.append(message)
+
+
+class FakeWarmPeerConnection:
+    created_with = None
+    data_channel_label = None
+    closed = False
+
+    def __init__(self, configuration) -> None:
+        self.configuration = configuration
+        self.iceGatheringState = "complete"
+        self.localDescription = SimpleNamespace(sdp="")
+        FakeWarmPeerConnection.created_with = configuration
+        FakeWarmPeerConnection.closed = False
+
+    def createDataChannel(self, label: str) -> None:
+        FakeWarmPeerConnection.data_channel_label = label
+
+    async def createOffer(self):
+        return SimpleNamespace(type="offer", sdp="v=0")
+
+    async def setLocalDescription(self, _offer) -> None:
+        self.localDescription = SimpleNamespace(
+            sdp="\r\n".join(["v=0", "a=candidate:1 1 udp 1 10.0.0.2 5000 typ host"])
+        )
+
+    async def close(self) -> None:
+        FakeWarmPeerConnection.closed = True
 
 
 def test_handler_decorators_preserve_registration_order():
@@ -97,6 +126,20 @@ def test_summarize_sdp_candidates_counts_candidate_types():
     )
 
     assert summary == {"host": 1, "srflx": 1, "relay": 1, "prflx": 1, "unknown": 1, "total": 5}
+
+
+@pytest.mark.asyncio
+async def test_warm_rtc_runtime_creates_offer_gathers_and_closes(capsys):
+    configuration = object()
+
+    await warm_rtc_runtime(FakeWarmPeerConnection, configuration, label="test")
+
+    assert FakeWarmPeerConnection.created_with is configuration
+    assert FakeWarmPeerConnection.data_channel_label == DATA_CHANNEL_LABEL
+    assert FakeWarmPeerConnection.closed is True
+    captured = capsys.readouterr()
+    assert "test ICE warmup complete" in captured.err
+    assert "host=1" in captured.err
 
 
 def test_send_job_result_uses_job_result_envelope():

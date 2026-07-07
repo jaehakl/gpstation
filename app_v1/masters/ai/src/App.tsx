@@ -102,6 +102,7 @@ export function App() {
   const [subprocessLogs, setSubprocessLogs] = useState<JobLogItem[]>([]);
   const [subprocessLogsBusy, setSubprocessLogsBusy] = useState(false);
   const [subprocessLogStatus, setSubprocessLogStatus] = useState('No job');
+  const [prewarmStatus, setPrewarmStatus] = useState('cold');
 
   const [llmSystemPrompt, setLlmSystemPrompt] = useState('You are a concise assistant.');
   const [llmPrompt, setLlmPrompt] = useState('Say hello from the AI slave.');
@@ -160,11 +161,44 @@ export function App() {
     setDiagnostics((items) => [{ ...event, id, time: formatClock(new Date()) }, ...items].slice(0, 24));
   }, []);
 
+  const prewarmAiConnection = useCallback(
+    (logStart = false) => {
+      if (!apiBaseUrl.trim() || !token.trim()) {
+        setPrewarmStatus('waiting for server/token');
+        return;
+      }
+      try {
+        client.prewarmJobConnection({
+          slaveAppId: 'ai',
+          rtcConfig: parseRtcConfigInput(rtcIceServersJson),
+          onDiagnostic: addDiagnostic,
+        });
+        setPrewarmStatus('network warm');
+        if (logStart) {
+          addLog('network prewarm started');
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setPrewarmStatus('prewarm failed');
+        addLog(`network prewarm failed: ${message}`);
+      }
+    },
+    [addDiagnostic, addLog, apiBaseUrl, client, rtcIceServersJson, token],
+  );
+
   useEffect(() => {
     return () => {
       revokeFiles(sdxlFilesRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    client.clearPrewarmedJobConnections();
+    prewarmAiConnection(true);
+    return () => {
+      client.clearPrewarmedJobConnections();
+    };
+  }, [client, prewarmAiConnection]);
 
   const refreshJobLogs = useCallback(
     async (showBusy = true) => {
@@ -257,30 +291,34 @@ export function App() {
     setCurrentJob(null);
     setSubprocessLogs([]);
     setSubprocessLogStatus('Creating job');
-    return client.runJob<TPayload, TResult>(handlerType, payload, {
-      slaveAppId: 'ai',
-      timeoutMs,
-      rtcConfig: parseRtcConfigInput(rtcIceServersJson),
-      onJobCreated: (job) => {
-        setCurrentJob(job);
-        setSubprocessLogStatus('Waiting for logs');
-        addLog(`job: ${job.id}`);
-      },
-      onStatus: (nextStatus) => {
-        setStatus(nextStatus);
-        if (nextStatus === 'waiting for answer') {
-          setCurrentJobState('assigned');
-        }
-        if (nextStatus === 'waiting for data channel') {
-          setCurrentJobState('answer_ready');
-        }
-        if (nextStatus === 'waiting for result') {
-          setCurrentJobState('running');
-        }
-        addLog(nextStatus);
-      },
-      onDiagnostic: addDiagnostic,
-    });
+    try {
+      return await client.runJob<TPayload, TResult>(handlerType, payload, {
+        slaveAppId: 'ai',
+        timeoutMs,
+        rtcConfig: parseRtcConfigInput(rtcIceServersJson),
+        onJobCreated: (job) => {
+          setCurrentJob(job);
+          setSubprocessLogStatus('Waiting for logs');
+          addLog(`job: ${job.id}`);
+        },
+        onStatus: (nextStatus) => {
+          setStatus(nextStatus);
+          if (nextStatus === 'waiting for answer') {
+            setCurrentJobState('assigned');
+          }
+          if (nextStatus === 'waiting for data channel') {
+            setCurrentJobState('answer_ready');
+          }
+          if (nextStatus === 'waiting for result') {
+            setCurrentJobState('running');
+          }
+          addLog(nextStatus);
+        },
+        onDiagnostic: addDiagnostic,
+      });
+    } finally {
+      prewarmAiConnection();
+    }
   }
 
   async function callLlm() {
@@ -513,6 +551,10 @@ export function App() {
                   <dd>{currentJob?.state || 'idle'}</dd>
                 </div>
                 <div>
+                  <dt>Network Prewarm</dt>
+                  <dd>{prewarmStatus}</dd>
+                </div>
+                <div>
                   <dt>Reference Launcher</dt>
                   <dd>{selectedLauncher?.launcher_name || '-'}</dd>
                 </div>
@@ -542,6 +584,23 @@ export function App() {
                   <li key={item.id}>
                     <strong>{item.time}</strong> {item.message}
                     <span>{formatDiagnosticState(item)}</span>
+                    {(item.prewarmHit !== undefined ||
+                      item.offerGatheringMs !== undefined ||
+                      item.answerWaitMs !== undefined ||
+                      item.dataChannelOpenMs !== undefined ||
+                      item.elapsedMs !== undefined) && (
+                      <span>
+                        {[
+                          item.prewarmHit !== undefined ? `prewarm=${item.prewarmHit ? 'hit' : 'miss'}` : '',
+                          item.offerGatheringMs !== undefined ? `offer=${formatDuration(item.offerGatheringMs)}` : '',
+                          item.answerWaitMs !== undefined ? `answer=${formatDuration(item.answerWaitMs)}` : '',
+                          item.dataChannelOpenMs !== undefined ? `datachannel=${formatDuration(item.dataChannelOpenMs)}` : '',
+                          item.elapsedMs !== undefined ? `elapsed=${formatDuration(item.elapsedMs)}` : '',
+                        ]
+                          .filter(Boolean)
+                          .join(' / ')}
+                      </span>
+                    )}
                     {item.localCandidateSummary && <span>local: {formatCandidateSummary(item.localCandidateSummary)}</span>}
                     {item.remoteCandidateSummary && <span>remote: {formatCandidateSummary(item.remoteCandidateSummary)}</span>}
                   </li>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import inspect
 import json
 import os
@@ -149,9 +150,15 @@ async def _run_worker_stdio(*, app: SlaveApp) -> None:
         emit({"type": "error", "code": "rtc_configuration_failed", "detail": str(exc)})
         return
 
+    warmup_task = asyncio.create_task(warm_rtc_runtime(RTCPeerConnection, rtc_configuration, label="worker"))
     try:
         await app.run_initialize(SlaveContext(session_id="worker", ttl_seconds=0))
+        await warmup_task
     except Exception as exc:
+        if not warmup_task.done():
+            warmup_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await warmup_task
         emit({"type": "error", "code": "initialize_failed", "detail": str(exc)})
         return
 
@@ -233,7 +240,9 @@ async def run_worker_job(
     try:
         from aiortc import RTCPeerConnection
 
+        job_started_at = time.perf_counter()
         pc = RTCPeerConnection(rtc_configuration)
+        log(f"job peer connection created: id={job_id} duration_ms={elapsed_ms(job_started_at)}")
         ready_event = asyncio.Event()
         result_ack_event = asyncio.Event()
         closed_event = asyncio.Event()
@@ -256,6 +265,7 @@ async def run_worker_job(
                                 ready_error["detail"] = error_detail
                             else:
                                 ready_payload["input"] = input_payload
+                                log(f"job ready received: id={job_id} duration_ms={elapsed_ms(job_started_at)}")
                             ready_event.set()
                             return
                         payload = json.loads(raw_message)
@@ -292,10 +302,22 @@ async def run_worker_job(
 
         offer = message["offer"]
         log(f"job offer candidates: {format_candidate_summary(summarize_sdp_candidates(offer['sdp']))}")
+        remote_started_at = time.perf_counter()
         await pc.setRemoteDescription(rtc_session_description(sdp=offer["sdp"], type="offer"))
+        log(f"job remote offer set: id={job_id} duration_ms={elapsed_ms(remote_started_at)}")
+        answer_started_at = time.perf_counter()
         answer = await pc.createAnswer()
+        log(f"job answer created: id={job_id} duration_ms={elapsed_ms(answer_started_at)}")
+        local_started_at = time.perf_counter()
         await pc.setLocalDescription(answer)
+        log(f"job local answer set: id={job_id} duration_ms={elapsed_ms(local_started_at)}")
+        gather_started_at = time.perf_counter()
+        log(f"job answer ICE gathering start: id={job_id}")
         await wait_for_ice_gathering(pc)
+        log(
+            f"job answer ICE gathering complete: id={job_id} state={pc.iceGatheringState} "
+            f"duration_ms={elapsed_ms(gather_started_at)}"
+        )
         log(f"job answer candidates: {format_candidate_summary(summarize_sdp_candidates(pc.localDescription.sdp))}")
         emit(
             {
@@ -304,7 +326,9 @@ async def run_worker_job(
                 "answer": {"type": "answer", "sdp": pc.localDescription.sdp},
             }
         )
+        log(f"job answer emitted: id={job_id} duration_ms={elapsed_ms(job_started_at)}")
 
+        ready_wait_started_at = time.perf_counter()
         ready_task = asyncio.create_task(ready_event.wait())
         closed_task = asyncio.create_task(closed_event.wait())
         done, pending = await asyncio.wait({ready_task, closed_task}, return_when=asyncio.FIRST_COMPLETED)
@@ -314,6 +338,7 @@ async def run_worker_job(
             raise RuntimeError("peer connection closed before job ready")
         if ready_error:
             raise RuntimeError(ready_error["detail"])
+        log(f"job ready wait complete: id={job_id} duration_ms={elapsed_ms(ready_wait_started_at)}")
 
         channel = channel_holder.get("channel")
         if channel is None:
@@ -419,9 +444,15 @@ async def _run_app_stdio(
         emit({"type": "error", "code": "rtc_configuration_failed", "detail": str(exc)})
         return
 
+    warmup_task = asyncio.create_task(warm_rtc_runtime(RTCPeerConnection, rtc_configuration, label=f"session {session_id}"))
     try:
         await app.run_initialize(context)
+        await warmup_task
     except Exception as exc:
+        if not warmup_task.done():
+            warmup_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await warmup_task
         emit({"type": "error", "code": "initialize_failed", "detail": str(exc)})
         return
 
@@ -480,10 +511,19 @@ async def handle_signal(
     signal_type = signal.get("type")
     if signal_type == "offer":
         log(f"received offer candidates: {format_candidate_summary(summarize_sdp_candidates(signal['sdp']))}")
+        remote_started_at = time.perf_counter()
         await pc.setRemoteDescription(rtc_session_description(sdp=signal["sdp"], type="offer"))
+        log(f"remote offer set duration_ms={elapsed_ms(remote_started_at)}")
+        answer_started_at = time.perf_counter()
         answer = await pc.createAnswer()
+        log(f"answer created duration_ms={elapsed_ms(answer_started_at)}")
+        local_started_at = time.perf_counter()
         await pc.setLocalDescription(answer)
+        log(f"local answer set duration_ms={elapsed_ms(local_started_at)}")
+        gather_started_at = time.perf_counter()
+        log("answer ICE gathering start")
         await wait_for_ice_gathering(pc)
+        log(f"answer ICE gathering complete state={pc.iceGatheringState} duration_ms={elapsed_ms(gather_started_at)}")
         log(f"created answer candidates: {format_candidate_summary(summarize_sdp_candidates(pc.localDescription.sdp))}")
         emit(
             {
@@ -508,6 +548,33 @@ async def handle_signal(
         candidate.sdpMLineIndex = signal.get("sdpMLineIndex")
         await pc.addIceCandidate(candidate)
         log("received remote ICE candidate")
+
+
+async def warm_rtc_runtime(rtc_peer_connection_cls: Any, rtc_configuration: Any, *, label: str) -> None:
+    started_at = time.perf_counter()
+    pc = None
+    try:
+        pc = rtc_peer_connection_cls(rtc_configuration)
+        pc.createDataChannel(DATA_CHANNEL_LABEL)
+        offer = await maybe_await(pc.createOffer())
+        await maybe_await(pc.setLocalDescription(offer))
+        await wait_for_ice_gathering(pc)
+        sdp = getattr(getattr(pc, "localDescription", None), "sdp", "") or ""
+        log(
+            f"{label} ICE warmup complete state={pc.iceGatheringState} "
+            f"duration_ms={elapsed_ms(started_at)} candidates: {format_candidate_summary(summarize_sdp_candidates(sdp))}"
+        )
+    except Exception as exc:
+        log(f"{label} ICE warmup failed duration_ms={elapsed_ms(started_at)} error={exc}")
+    finally:
+        if pc is not None:
+            await maybe_await(pc.close())
+
+
+async def maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 def build_rtc_configuration(rtc_configuration_cls: Any, rtc_ice_server_cls: Any) -> Any:
@@ -580,6 +647,10 @@ def format_candidate_summary(summary: dict[str, int]) -> str:
         f"total={summary['total']} host={summary['host']} srflx={summary['srflx']} "
         f"relay={summary['relay']} prflx={summary['prflx']} unknown={summary['unknown']}"
     )
+
+
+def elapsed_ms(started_at: float) -> int:
+    return round((time.perf_counter() - started_at) * 1000)
 
 
 async def wait_for_ice_gathering(pc: Any) -> None:
