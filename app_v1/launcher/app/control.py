@@ -113,4 +113,7 @@ async def handle_server_message(manager: SessionManager, message: dict[str, Any]
         return
     if message_type == "pong":
         return
+    if message_type == "error":
+        print(f"Server control error: {message.get('detail') or message}", flush=True)
+        return
     print(f"Unsupported server message: {message_type}", flush=True)

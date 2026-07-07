@@ -112,6 +112,9 @@ async def handle_launcher_message(
                 {"type": "session.error", "code": message.code, "detail": message.detail},
             )
         return
+    if message.type == "session.log":
+        await runtime.append_session_log(message.session_id, message.stream, message.line, message.time)
+        return
     if message.type == "ping":
         await websocket.send_json({"type": "pong", "server_time": utcnow().isoformat()})
 

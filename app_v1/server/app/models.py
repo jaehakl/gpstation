@@ -39,6 +39,16 @@ class LauncherSessionView(BaseModel):
     disconnected_at: Optional[datetime] = None
 
 
+class SessionLogItem(BaseModel):
+    time: str
+    stream: str
+    line: str
+
+
+class SessionLogResponse(BaseModel):
+    items: list[SessionLogItem]
+
+
 from app.routers.v1.models import SessionCreateRequest, SessionCreateResult  # noqa: E402
 from app.routers.web.models import (  # noqa: E402
     AccessKeyCreate,
@@ -67,6 +77,8 @@ __all__ = [
     "OkResponse",
     "SessionCreateRequest",
     "SessionCreateResult",
+    "SessionLogItem",
+    "SessionLogResponse",
     "UserData",
     "UserRole",
 ]

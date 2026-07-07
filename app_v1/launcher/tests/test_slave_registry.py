@@ -2,9 +2,10 @@ import json
 
 import pytest
 
+from app.control import handle_server_message
 from app.settings import LauncherSettings
 from app.slave_registry import SlaveApp, SlaveAppRegistry, load_registry
-from app.subprocess_manager import SessionManager
+from app.subprocess_manager import SESSION_LOG_LINE_LIMIT, SessionManager
 
 
 def write_manifest(root, folder_name: str, slave_app_id: str) -> None:
@@ -87,3 +88,60 @@ async def test_start_session_missing_executable_venv_sends_error(tmp_path):
     assert str(project_dir) in messages[0]["detail"]
     assert "poetry install" in messages[0]["detail"]
     assert manager.sessions == {}
+
+
+@pytest.mark.asyncio
+async def test_record_subprocess_log_sends_control_message_and_stores_buffer():
+    messages = []
+
+    async def send_control(message):
+        messages.append(message)
+
+    manager = SessionManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
+
+    await manager.record_subprocess_log("session-1", "stderr", "loading model")
+
+    logs = manager.get_session_logs("session-1")
+    assert logs == [
+        {
+            "time": messages[0]["time"],
+            "stream": "stderr",
+            "line": "loading model",
+        }
+    ]
+    assert messages[0]["type"] == "session.log"
+    assert messages[0]["session_id"] == "session-1"
+    assert messages[0]["stream"] == "stderr"
+    assert messages[0]["line"] == "loading model"
+
+
+@pytest.mark.asyncio
+async def test_subprocess_log_buffer_discards_old_lines():
+    messages = []
+
+    async def send_control(message):
+        messages.append(message)
+
+    manager = SessionManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
+
+    for index in range(SESSION_LOG_LINE_LIMIT + 2):
+        await manager.record_subprocess_log("session-1", "stderr", f"line-{index}")
+
+    logs = manager.get_session_logs("session-1", limit=SESSION_LOG_LINE_LIMIT)
+    assert len(logs) == SESSION_LOG_LINE_LIMIT
+    assert logs[0]["line"] == "line-2"
+    assert logs[-1]["line"] == f"line-{SESSION_LOG_LINE_LIMIT + 1}"
+
+
+@pytest.mark.asyncio
+async def test_server_error_message_prints_detail(capsys):
+    await handle_server_message(
+        object(),
+        {
+            "type": "error",
+            "detail": "protocol mismatch",
+        },
+    )
+
+    captured = capsys.readouterr()
+    assert "Server control error: protocol mismatch" in captured.out

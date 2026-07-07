@@ -68,6 +68,14 @@ class SessionError(StrictModel):
     detail: str
 
 
+class SessionLog(StrictModel):
+    type: Literal["session.log"]
+    session_id: str
+    time: str
+    stream: Literal["stderr"]
+    line: str
+
+
 class SignalToLauncher(StrictModel):
     type: Literal["signal.to_launcher"]
     session_id: str
@@ -99,6 +107,7 @@ ControlMessage = Annotated[
         SessionStop,
         SessionClosed,
         SessionError,
+        SessionLog,
         SignalToLauncher,
         SignalToClient,
         Ping,

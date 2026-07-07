@@ -1,7 +1,21 @@
 import pytest
+from fastapi import HTTPException
 
+from app.auth import Principal
 from app.main import app
-from app.routers.v1 import launchers
+from app.models import UserData
+from app.routers.v1 import launchers, sessions
+from app.routers.web import slave_sessions
+from app.state import RuntimeRegistry
+
+
+class FakeDb:
+    def __init__(self, session):
+        self.session = session
+
+    async def scalar(self, stmt):
+        self.last_stmt = stmt
+        return self.session
 
 
 def test_launcher_routes_replace_legacy_routes():
@@ -29,11 +43,13 @@ def test_launcher_routes_replace_legacy_routes():
         "/web/users/me/access-tokens",
         "/web/users/{user_id}/access-tokens",
         "/web/slave-sessions/{session_id}/close",
+        "/web/slave-sessions/{session_id}/logs",
     ]:
         assert path in paths
     assert "/v1/launchers" in paths
     assert "/v1/launchers/control" in paths
     assert "/v1/sessions" in paths
+    assert "/v1/sessions/{session_id}/logs" in paths
     assert "/crud/users/list" not in paths
     assert "/crud/access_keys/list" not in paths
     assert "/crud/launchers/list" not in paths
@@ -125,6 +141,94 @@ async def test_session_ready_commits_db_before_waking_runtime(monkeypatch):
         ("db", db, "session-1"),
         ("runtime", "session-1"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_launcher_session_log_message_is_stored(monkeypatch):
+    registry = RuntimeRegistry()
+    monkeypatch.setattr(launchers, "runtime", registry)
+
+    await launchers.handle_launcher_message(
+        object(),
+        "launcher-1",
+        object(),
+        {
+            "type": "session.log",
+            "session_id": "session-1",
+            "time": "2026-07-07T00:00:00+00:00",
+            "stream": "stderr",
+            "line": "loading model",
+        },
+    )
+
+    assert await registry.get_session_logs("session-1") == [
+        {
+            "time": "2026-07-07T00:00:00+00:00",
+            "stream": "stderr",
+            "line": "loading model",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_v1_session_logs_requires_session_owner(monkeypatch):
+    registry = RuntimeRegistry()
+    await registry.append_session_log("session-1", "stderr", "owned log", "2026-07-07T00:00:00+00:00")
+    monkeypatch.setattr(sessions, "runtime", registry)
+
+    response = await sessions.get_session_logs(
+        "session-1",
+        limit=10,
+        principal=Principal(token="token", user_id="user-1", scopes=frozenset({"client"})),
+        db=FakeDb(object()),
+    )
+
+    assert response.items[0].line == "owned log"
+
+    with pytest.raises(HTTPException) as error:
+        await sessions.get_session_logs(
+            "session-1",
+            limit=10,
+            principal=Principal(token="token", user_id="other-user", scopes=frozenset({"client"})),
+            db=FakeDb(None),
+        )
+
+    assert error.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_web_session_logs_allows_admin_or_owner(monkeypatch):
+    registry = RuntimeRegistry()
+    await registry.append_session_log("session-1", "stderr", "web log", "2026-07-07T00:00:00+00:00")
+    monkeypatch.setattr(slave_sessions, "runtime", registry)
+
+    response = await slave_sessions.api_get_slave_session_logs(
+        "session-1",
+        limit=10,
+        db=FakeDb(object()),
+        current_user=UserData(id="user-1", role="user"),
+    )
+
+    assert response.items[0].line == "web log"
+
+    admin_response = await slave_sessions.api_get_slave_session_logs(
+        "session-1",
+        limit=10,
+        db=FakeDb(object()),
+        current_user=UserData(id="admin-1", role="admin"),
+    )
+
+    assert admin_response.items[0].line == "web log"
+
+    with pytest.raises(HTTPException) as error:
+        await slave_sessions.api_get_slave_session_logs(
+            "session-1",
+            limit=10,
+            db=FakeDb(None),
+            current_user=UserData(id="other-user", role="user"),
+        )
+
+    assert error.value.status_code == 404
 
 
 async def call_asgi(method: str, path: str, headers: dict[str, str]) -> tuple[int, dict[str, str]]:

@@ -83,6 +83,67 @@ async def test_json_only_call_dispatches_response_frame():
 
 
 @pytest.mark.asyncio
+async def test_call_dispatch_logs_to_stderr_without_stdout(capsys):
+    app = SlaveApp(memory={})
+    channel = DummyChannel()
+
+    @app.handler("sync.request")
+    def sync_handler(message, memory, context):
+        return DataChannelMessage(id=message.id, type="sync.result", payload=message.payload)
+
+    await handle_datachannel_message(
+        channel,
+        json.dumps(
+            {
+                "kind": "call.request",
+                "id": "sync-1",
+                "type": "sync.request",
+                "payload": {"value": 1},
+                "attachments": [],
+            }
+        ),
+        app,
+        SlaveContext(session_id="session-1", ttl_seconds=60),
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "call dispatch start" in captured.err
+    assert "call dispatch complete" in captured.err
+    assert json.loads(channel.sent[0])["kind"] == "call.response"
+
+
+@pytest.mark.asyncio
+async def test_call_dispatch_failure_logs_to_stderr_without_stdout(capsys):
+    app = SlaveApp(memory={})
+    channel = DummyChannel()
+
+    @app.handler("sync.request")
+    def sync_handler(message, memory, context):
+        raise ValueError("boom")
+
+    await handle_datachannel_message(
+        channel,
+        json.dumps(
+            {
+                "kind": "call.request",
+                "id": "sync-1",
+                "type": "sync.request",
+                "payload": {"value": 1},
+                "attachments": [],
+            }
+        ),
+        app,
+        SlaveContext(session_id="session-1", ttl_seconds=60),
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "call dispatch failed" in captured.err
+    assert json.loads(channel.sent[0])["kind"] == "call.error"
+
+
+@pytest.mark.asyncio
 async def test_call_with_attachment_assembles_bytes_and_sends_response_chunks():
     app = SlaveApp(memory={})
     channel = DummyChannel()

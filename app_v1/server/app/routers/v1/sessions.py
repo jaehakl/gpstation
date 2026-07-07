@@ -3,14 +3,15 @@ from __future__ import annotations
 import asyncio
 from urllib.parse import urlencode, urlparse, urlunparse
 
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sdk.protocol.messages import ClientSignalMessage
 from app.auth import Principal, require_client
-from app.db import SessionLocal, get_db
-from app.models import SessionCreateRequest, SessionCreateResult
+from app.db import SessionLocal, SlaveSession, get_db
+from app.models import SessionCreateRequest, SessionCreateResult, SessionLogResponse
 from app.service.realtime_service import safe_close_client, safe_send_json, send_to_launcher, stop_launcher_session
 from app.service.session_service import SessionService
 from app.settings import settings
@@ -82,6 +83,24 @@ async def create_session(
         token=token,
         expires_at=session.expires_at,
     )
+
+
+@router.get("/{session_id}/logs", response_model=SessionLogResponse)
+async def get_session_logs(
+    session_id: str,
+    limit: int = Query(default=200, ge=1, le=500),
+    principal: Principal = Depends(require_client),
+    db: AsyncSession = Depends(get_db),
+) -> SessionLogResponse:
+    session = await db.scalar(
+        select(SlaveSession).where(
+            SlaveSession.id == session_id,
+            SlaveSession.user_id == principal.user_id,
+        )
+    )
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="SlaveSession not found")
+    return SessionLogResponse(items=await runtime.get_session_logs(session_id, limit))
 
 
 @router.websocket("/{session_id}/signal")

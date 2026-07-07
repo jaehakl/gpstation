@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import WebSocket
+
+SESSION_LOG_LINE_LIMIT = 500
 
 
 def utcnow() -> datetime:
@@ -35,6 +38,7 @@ class RuntimeRegistry:
         self.lock = asyncio.Lock()
         self.launchers: dict[str, LauncherRuntime] = {}
         self.sessions: dict[str, SessionRuntime] = {}
+        self.session_logs: dict[str, deque[dict[str, str]]] = {}
 
     async def register_launcher(self, launcher_id: str, websocket: WebSocket) -> LauncherRuntime:
         launcher = LauncherRuntime(id=launcher_id, websocket=websocket)
@@ -67,6 +71,7 @@ class RuntimeRegistry:
         session = SessionRuntime(id=session_id, launcher_id=launcher_id)
         async with self.lock:
             self.sessions[session_id] = session
+            self.session_logs.setdefault(session_id, deque(maxlen=SESSION_LOG_LINE_LIMIT))
             launcher = self.launchers.get(launcher_id)
             if launcher is not None:
                 launcher.active_session_ids.add(session_id)
@@ -143,6 +148,29 @@ class RuntimeRegistry:
             session.status = "closed"
             session.ready_event.set()
             return session
+
+    async def append_session_log(
+        self,
+        session_id: str,
+        stream: str,
+        line: str,
+        logged_at: str | None = None,
+    ) -> None:
+        async with self.lock:
+            items = self.session_logs.setdefault(session_id, deque(maxlen=SESSION_LOG_LINE_LIMIT))
+            items.append(
+                {
+                    "time": logged_at or utcnow().isoformat(),
+                    "stream": stream,
+                    "line": line,
+                }
+            )
+
+    async def get_session_logs(self, session_id: str, limit: int = 200) -> list[dict[str, str]]:
+        async with self.lock:
+            items = list(self.session_logs.get(session_id, ()))
+        clamped_limit = max(1, min(limit, SESSION_LOG_LINE_LIMIT))
+        return items[-clamped_limit:]
 
 
 runtime = RuntimeRegistry()

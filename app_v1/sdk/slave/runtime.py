@@ -5,6 +5,7 @@ import asyncio
 import inspect
 import json
 import sys
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -324,13 +325,18 @@ async def handle_binary_frame(
 
 
 async def dispatch_call(channel: Any, app: SlaveApp, context: SlaveContext, call: PendingCall) -> None:
+    started_at = time.perf_counter()
+    log(f"call dispatch start: id={call.id} type={call.type} attachments={len(call.attachments)}")
     try:
         response = await app.dispatch(call.to_message(), context)
         if response is None:
             response = DataChannelMessage(id=call.id, type=f"{call.type}.result", payload=None)
         send_response(channel, response)
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        log(f"call dispatch complete: id={call.id} type={call.type} duration_ms={duration_ms}")
     except Exception as exc:
-        log(f"call error: {exc}")
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        log(f"call dispatch failed: id={call.id} type={call.type} duration_ms={duration_ms} error={exc}")
         send_error(channel, call.id, str(exc))
 
 

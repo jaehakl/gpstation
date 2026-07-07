@@ -1,17 +1,33 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SlaveSession, get_db
-from app.models import OkResponse, UserData
+from app.models import OkResponse, SessionLogResponse, UserData
 from app.service.realtime_service import safe_close_client, stop_launcher_session
 from app.service.session_service import SessionService
 from app.state import runtime
 from app.user_auth.utils.auth_wrapper import require_roles
 
 router = APIRouter(prefix="/slave-sessions", tags=["web-slave-sessions"])
+
+
+@router.get("/{session_id}/logs", response_model=SessionLogResponse)
+async def api_get_slave_session_logs(
+    session_id: str,
+    limit: int = Query(default=200, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    current_user: UserData = Depends(require_roles(["admin", "user"])),
+) -> SessionLogResponse:
+    stmt = select(SlaveSession).where(SlaveSession.id == session_id)
+    if current_user.role != "admin":
+        stmt = stmt.where(SlaveSession.user_id == current_user.id)
+    session = await db.scalar(stmt)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="SlaveSession not found")
+    return SessionLogResponse(items=await runtime.get_session_logs(session_id, limit))
 
 
 @router.post("/{session_id}/close", response_model=OkResponse)

@@ -26,6 +26,22 @@ def test_parse_rejects_extra_fields():
         raise AssertionError("ValidationError was not raised")
 
 
+def test_parse_session_log_message():
+    message = parse_control_message(
+        {
+            "type": "session.log",
+            "session_id": "session-1",
+            "time": "2026-07-07T00:00:00+00:00",
+            "stream": "stderr",
+            "line": "model loading",
+        }
+    )
+
+    assert message.type == "session.log"
+    assert message.stream == "stderr"
+    assert message.line == "model loading"
+
+
 def test_data_channel_echo_result_envelope():
     message = DataChannelMessage(
         id="msg-1",

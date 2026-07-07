@@ -1,0 +1,917 @@
+import {
+  Activity,
+  Brain,
+  Cable,
+  FileImage,
+  Hash,
+  ImageIcon,
+  ListChecks,
+  PlugZap,
+  RefreshCw,
+  Send,
+  Square,
+  Terminal,
+  Wifi,
+} from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  GpStationClient,
+  GpStationPeer,
+  LauncherSessionView,
+  ReceivedFile,
+  SessionDescriptor,
+} from '@gpstation/v1-master-js-sdk';
+
+const defaultApiBaseUrl = import.meta.env.VITE_GPSTATION_V1_API_URL || '';
+const defaultAccessToken = import.meta.env.VITE_GPSTATION_V1_ACCESS_TOKEN || '';
+const LLM_TIMEOUT_MS = 600_000;
+const EMBEDDING_TIMEOUT_MS = 600_000;
+const SDXL_TIMEOUT_MS = 600_000;
+
+type TabId = 'connection' | 'llm' | 'embeddings' | 'sdxl';
+
+type LogItem = {
+  id: number;
+  message: string;
+};
+
+type LlmResponse = {
+  answer: string;
+};
+
+type EmbeddingResponse = {
+  embedding: number[];
+  dimensions: number;
+};
+
+type SdxlImageMeta = {
+  attachment_id: string;
+  name: string;
+  format: string;
+  mimeType: string;
+  size: number;
+  seed: number;
+};
+
+type SdxlResponse = {
+  images: SdxlImageMeta[];
+  count: number;
+};
+
+type DisplayFile = ReceivedFile & {
+  url: string;
+  isImage: boolean;
+  meta?: SdxlImageMeta;
+};
+
+type SessionLogItem = {
+  time: string;
+  stream: string;
+  line: string;
+};
+
+const tabs: { id: TabId; label: string; icon: typeof Cable }[] = [
+  { id: 'connection', label: 'Connection', icon: Cable },
+  { id: 'llm', label: 'ai.llm', icon: Brain },
+  { id: 'embeddings', label: 'ai.embeddings', icon: Hash },
+  { id: 'sdxl', label: 'ai.sdxl.t2i', icon: ImageIcon },
+];
+
+export function App() {
+  const [apiBaseUrl, setApiBaseUrl] = useState(defaultApiBaseUrl);
+  const [token, setToken] = useState(defaultAccessToken);
+  const [launchers, setLaunchers] = useState<LauncherSessionView[]>([]);
+  const [selectedLauncherId, setSelectedLauncherId] = useState('');
+  const [selectedSlaveAppId, setSelectedSlaveAppId] = useState('ai');
+  const [session, setSession] = useState<SessionDescriptor | null>(null);
+  const [status, setStatus] = useState('idle');
+  const [activeTab, setActiveTab] = useState<TabId>('connection');
+  const [busy, setBusy] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [logs, setLogs] = useState<LogItem[]>([]);
+  const [subprocessLogs, setSubprocessLogs] = useState<SessionLogItem[]>([]);
+  const [subprocessLogsBusy, setSubprocessLogsBusy] = useState(false);
+  const [subprocessLogStatus, setSubprocessLogStatus] = useState('No session');
+
+  const [llmSystemPrompt, setLlmSystemPrompt] = useState('You are a concise assistant.');
+  const [llmPrompt, setLlmPrompt] = useState('Say hello from the AI slave.');
+  const [llmMaxTokens, setLlmMaxTokens] = useState('512');
+  const [llmTemperature, setLlmTemperature] = useState('0.5');
+  const [llmResult, setLlmResult] = useState<LlmResponse | null>(null);
+  const [llmRawJson, setLlmRawJson] = useState('');
+
+  const [embeddingText, setEmbeddingText] = useState('GP Station AI slave embedding test');
+  const [embeddingResult, setEmbeddingResult] = useState<EmbeddingResponse | null>(null);
+  const [embeddingRawJson, setEmbeddingRawJson] = useState('');
+
+  const [sdxlPrompts, setSdxlPrompts] = useState('a compact workstation on a clean desk');
+  const [sdxlNegativePrompts, setSdxlNegativePrompts] = useState('');
+  const [sdxlSeeds, setSdxlSeeds] = useState('123');
+  const [sdxlStep, setSdxlStep] = useState('30');
+  const [sdxlCfg, setSdxlCfg] = useState('7');
+  const [sdxlWidth, setSdxlWidth] = useState('1024');
+  const [sdxlHeight, setSdxlHeight] = useState('1024');
+  const [sdxlFormat, setSdxlFormat] = useState('png');
+  const [sdxlResult, setSdxlResult] = useState<SdxlResponse | null>(null);
+  const [sdxlRawJson, setSdxlRawJson] = useState('');
+  const [sdxlFiles, setSdxlFiles] = useState<DisplayFile[]>([]);
+
+  const peerRef = useRef<GpStationPeer | null>(null);
+  const logIdRef = useRef(0);
+  const sdxlFilesRef = useRef<DisplayFile[]>([]);
+
+  const client = useMemo(
+    () =>
+      new GpStationClient({
+        apiBaseUrl,
+        token,
+      }),
+    [apiBaseUrl, token],
+  );
+
+  const selectedLauncher = launchers.find((launcher) => launcher.id === selectedLauncherId);
+  const availableSlaveAppIds = selectedLauncher?.slave_app_ids ?? [];
+
+  const addLog = useCallback((message: string) => {
+    const id = logIdRef.current + 1;
+    logIdRef.current = id;
+    setLogs((items) => [{ id, message }, ...items].slice(0, 16));
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      peerRef.current?.close();
+      revokeFiles(sdxlFilesRef.current);
+    };
+  }, []);
+
+  const refreshSessionLogs = useCallback(
+    async (showBusy = true) => {
+      if (!session?.session_id) {
+        setSubprocessLogs([]);
+        setSubprocessLogStatus('No session');
+        return;
+      }
+      if (showBusy) {
+        setSubprocessLogsBusy(true);
+      }
+      try {
+        const items = await fetchSessionLogs(apiBaseUrl, token, session.session_id);
+        setSubprocessLogs(items);
+        setSubprocessLogStatus(`${items.length} line(s)`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setSubprocessLogStatus(message);
+        if (showBusy) {
+          addLog(`session log refresh failed: ${message}`);
+        }
+      } finally {
+        if (showBusy) {
+          setSubprocessLogsBusy(false);
+        }
+      }
+    },
+    [addLog, apiBaseUrl, session, token],
+  );
+
+  useEffect(() => {
+    if (!session?.session_id) {
+      return undefined;
+    }
+    const firstRefresh = window.setTimeout(() => {
+      void refreshSessionLogs(false);
+    }, 0);
+    const timer = window.setInterval(() => {
+      void refreshSessionLogs(false);
+    }, 3000);
+    return () => {
+      window.clearTimeout(firstRefresh);
+      window.clearInterval(timer);
+    };
+  }, [refreshSessionLogs, session?.session_id]);
+
+  function setNextSdxlFiles(files: DisplayFile[]) {
+    revokeFiles(sdxlFilesRef.current);
+    sdxlFilesRef.current = files;
+    setSdxlFiles(files);
+  }
+
+  async function refreshLaunchers() {
+    setBusy(true);
+    try {
+      const nextLaunchers = await client.listLaunchers();
+      setLaunchers(nextLaunchers);
+      const nextSelectedLauncher =
+        nextLaunchers.find((launcher) => launcher.id === selectedLauncherId) ??
+        nextLaunchers.find((launcher) => launcher.slave_app_ids.includes('ai')) ??
+        nextLaunchers[0];
+      if (nextSelectedLauncher) {
+        setSelectedLauncherId(nextSelectedLauncher.id);
+        setSelectedSlaveAppId(pickSlaveAppId(nextSelectedLauncher, selectedSlaveAppId));
+      }
+      setStatus('launchers refreshed');
+      addLog(`launchers: ${nextLaunchers.length}`);
+    } catch (error) {
+      handleError(error, 'launcher refresh failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function connect() {
+    if (!selectedLauncherId) {
+      setStatus('select launcher');
+      return;
+    }
+    if (!selectedSlaveAppId) {
+      setStatus('select slave app');
+      return;
+    }
+    setBusy(true);
+    peerRef.current?.close();
+    peerRef.current = null;
+    setConnected(false);
+    setNextSdxlFiles([]);
+    setSubprocessLogs([]);
+    setSubprocessLogStatus('Starting session');
+    try {
+      const descriptor = await client.createSession({
+        launcherSessionId: selectedLauncherId,
+        slaveAppId: selectedSlaveAppId,
+      });
+      setSession(descriptor);
+      setSubprocessLogStatus('Waiting for logs');
+      addLog(`session: ${descriptor.session_id}`);
+      const peer = await client.connectSession(descriptor, {
+        timeoutMs: 30_000,
+        onStatus: (nextStatus) => {
+          setStatus(nextStatus);
+          addLog(nextStatus);
+        },
+      });
+      peerRef.current = peer;
+      setConnected(true);
+      setStatus('connected');
+    } catch (error) {
+      handleError(error, 'connection failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function disconnect() {
+    peerRef.current?.close();
+    peerRef.current = null;
+    setConnected(false);
+    setStatus('disconnected');
+    setSubprocessLogStatus(session?.session_id ? 'Disconnected' : 'No session');
+    addLog('connection closed');
+  }
+
+  function selectLauncher(launcher: LauncherSessionView) {
+    setSelectedLauncherId(launcher.id);
+    setSelectedSlaveAppId(pickSlaveAppId(launcher, selectedSlaveAppId));
+  }
+
+  async function callLlm() {
+    const peer = requirePeer(peerRef.current);
+    const payload = {
+      system_prompt: llmSystemPrompt,
+      prompt: llmPrompt,
+      max_tokens: parseOptionalInt(llmMaxTokens, 'max tokens'),
+      temperature: parseOptionalFloat(llmTemperature, 'temperature'),
+    };
+    const startedAt = new Date();
+    setBusy(true);
+    addLog(`${formatClock(new Date())} ai.llm start`);
+    try {
+      const result = await peer.call<typeof payload, LlmResponse>('ai.llm', payload, { timeoutMs: LLM_TIMEOUT_MS });
+      setLlmResult(result.payload);
+      setLlmRawJson(formatJson(result.payload));
+      setStatus('ai.llm complete');
+      addLog(`${formatClock(new Date())} ai.llm complete (${formatDurationSince(startedAt)})`);
+    } catch (error) {
+      addLog(`${formatClock(new Date())} ai.llm failed (${formatDurationSince(startedAt)})`);
+      handleError(error, 'ai.llm failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function callEmbeddings() {
+    const peer = requirePeer(peerRef.current);
+    const payload = {
+      text: embeddingText,
+    };
+    const startedAt = new Date();
+    setBusy(true);
+    addLog(`${formatClock(new Date())} ai.embeddings start`);
+    try {
+      const result = await peer.call<typeof payload, EmbeddingResponse>('ai.embeddings', payload, {
+        timeoutMs: EMBEDDING_TIMEOUT_MS,
+      });
+      setEmbeddingResult(result.payload);
+      setEmbeddingRawJson(formatJson(result.payload));
+      setStatus('ai.embeddings complete');
+      addLog(`${formatClock(new Date())} ai.embeddings complete (${formatDurationSince(startedAt)})`);
+    } catch (error) {
+      addLog(`${formatClock(new Date())} ai.embeddings failed (${formatDurationSince(startedAt)})`);
+      handleError(error, 'ai.embeddings failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function callSdxl() {
+    const peer = requirePeer(peerRef.current);
+    const payload = buildSdxlPayload({
+      prompts: sdxlPrompts,
+      negativePrompts: sdxlNegativePrompts,
+      seeds: sdxlSeeds,
+      step: sdxlStep,
+      cfg: sdxlCfg,
+      width: sdxlWidth,
+      height: sdxlHeight,
+      format: sdxlFormat,
+    });
+    const startedAt = new Date();
+    setBusy(true);
+    setNextSdxlFiles([]);
+    addLog(`${formatClock(new Date())} ai.sdxl.t2i start`);
+    try {
+      const result = await peer.call<typeof payload, SdxlResponse>('ai.sdxl.t2i', payload, { timeoutMs: SDXL_TIMEOUT_MS });
+      const payloadImages = result.payload.images ?? [];
+      const metaByAttachmentId = new Map(payloadImages.map((image) => [image.attachment_id, image]));
+      const nextFiles = result.files.map((file) => ({
+        ...file,
+        url: URL.createObjectURL(file.blob),
+        isImage: Boolean(file.mimeType?.startsWith('image/')),
+        meta: metaByAttachmentId.get(file.id),
+      }));
+      setSdxlResult(result.payload);
+      setSdxlRawJson(formatJson(result.payload));
+      setNextSdxlFiles(nextFiles);
+      setStatus('ai.sdxl.t2i complete');
+      addLog(
+        `${formatClock(new Date())} ai.sdxl.t2i complete (${formatDurationSince(startedAt)}): ${nextFiles.length} file(s)`,
+      );
+    } catch (error) {
+      addLog(`${formatClock(new Date())} ai.sdxl.t2i failed (${formatDurationSince(startedAt)})`);
+      handleError(error, 'ai.sdxl.t2i failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handleError(error: unknown, nextStatus: string) {
+    const message = error instanceof Error ? error.message : String(error);
+    setStatus(nextStatus);
+    addLog(message);
+  }
+
+  return (
+    <main className="shell">
+      <section className="topbar">
+        <div>
+          <p className="eyebrow">GP Station v1</p>
+          <h1>AI Master Console</h1>
+        </div>
+        <div className={connected ? 'statusPill connected' : 'statusPill'}>
+          <Wifi size={16} aria-hidden="true" />
+          <span>{status}</span>
+        </div>
+      </section>
+
+      <section className="controlBand">
+        <label>
+          <span>Server</span>
+          <input value={apiBaseUrl} onChange={(event) => setApiBaseUrl(event.target.value)} />
+        </label>
+        <label>
+          <span>Token</span>
+          <input value={token} onChange={(event) => setToken(event.target.value)} />
+        </label>
+        <label>
+          <span>Launcher</span>
+          <select
+            value={selectedLauncherId}
+            onChange={(event) => {
+              const launcher = launchers.find((item) => item.id === event.target.value);
+              if (launcher) {
+                selectLauncher(launcher);
+              } else {
+                setSelectedLauncherId('');
+                setSelectedSlaveAppId('');
+              }
+            }}
+          >
+            <option value="">No launcher selected</option>
+            {launchers.map((launcher) => (
+              <option key={launcher.id} value={launcher.id}>
+                {launcher.launcher_name} | {launcher.status} | {launcher.id.slice(0, 8)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Slave App</span>
+          <select value={selectedSlaveAppId} onChange={(event) => setSelectedSlaveAppId(event.target.value)}>
+            {availableSlaveAppIds.map((slaveAppId) => (
+              <option key={slaveAppId} value={slaveAppId}>
+                {slaveAppId}
+              </option>
+            ))}
+            {availableSlaveAppIds.length === 0 && <option value="">No slave apps</option>}
+          </select>
+        </label>
+        <div className="buttonCluster">
+          <button type="button" onClick={refreshLaunchers} disabled={busy} title="Refresh launchers">
+            <RefreshCw size={17} aria-hidden="true" />
+            <span>Refresh</span>
+          </button>
+          <button type="button" onClick={connect} disabled={busy || !selectedLauncherId || !selectedSlaveAppId} title="Connect">
+            <PlugZap size={17} aria-hidden="true" />
+            <span>Connect</span>
+          </button>
+          <button type="button" onClick={disconnect} title="Close connection">
+            <Square size={17} aria-hidden="true" />
+            <span>Close</span>
+          </button>
+        </div>
+      </section>
+
+      <nav className="tabBar" aria-label="AI test sections">
+        {tabs.map((tab) => {
+          const Icon = tab.icon;
+          return (
+            <button
+              type="button"
+              key={tab.id}
+              className={activeTab === tab.id ? 'tabButton active' : 'tabButton'}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              <Icon size={17} aria-hidden="true" />
+              <span>{tab.label}</span>
+            </button>
+          );
+        })}
+      </nav>
+
+      {activeTab === 'connection' && (
+        <section className="tabGrid connectionGrid">
+          <div className="panel">
+            <div className="panelHeader">
+              <h2>Launchers</h2>
+              <span>{launchers.length}</span>
+            </div>
+            <div className="table">
+              <div className="tableHead">
+                <span>Name</span>
+                <span>Status</span>
+                <span>Apps</span>
+                <span>Sessions</span>
+              </div>
+              {launchers.map((launcher) => (
+                <button
+                  type="button"
+                  key={launcher.id}
+                  className={launcher.id === selectedLauncherId ? 'launcherRow selected' : 'launcherRow'}
+                  onClick={() => selectLauncher(launcher)}
+                >
+                  <span>{launcher.launcher_name}</span>
+                  <span>{launcher.status}</span>
+                  <span>{launcher.slave_app_ids.join(', ') || '-'}</span>
+                  <span>{launcher.active_session_count}</span>
+                </button>
+              ))}
+              {launchers.length === 0 && <p className="emptyText">No connected launchers.</p>}
+            </div>
+          </div>
+
+          <div className="sideStack">
+            <div className="panel">
+              <div className="panelHeader">
+                <h2>Session</h2>
+                <Activity size={17} aria-hidden="true" />
+              </div>
+              <dl className="details">
+                <div>
+                  <dt>Session ID</dt>
+                  <dd>{session?.session_id || '-'}</dd>
+                </div>
+                <div>
+                  <dt>Launcher ID</dt>
+                  <dd>{session?.launcher_session_id || selectedLauncherId || '-'}</dd>
+                </div>
+                <div>
+                  <dt>Slave App</dt>
+                  <dd>{session?.slave_app_id || selectedSlaveAppId || '-'}</dd>
+                </div>
+                <div>
+                  <dt>Expires</dt>
+                  <dd>{session?.expires_at || '-'}</dd>
+                </div>
+              </dl>
+            </div>
+
+            <div className="panel">
+              <div className="panelHeader">
+                <h2>Log</h2>
+                <ListChecks size={17} aria-hidden="true" />
+              </div>
+              <ol className="logList">
+                {logs.map((item) => (
+                  <li key={item.id}>{item.message}</li>
+                ))}
+                {logs.length === 0 && <li>Ready.</li>}
+              </ol>
+            </div>
+
+            <div className="panel subprocessPanel">
+              <div className="panelHeader">
+                <h2>Subprocess Logs</h2>
+                <div className="panelActions">
+                  <Terminal size={17} aria-hidden="true" />
+                  <span>{subprocessLogStatus}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void refreshSessionLogs(true);
+                    }}
+                    disabled={subprocessLogsBusy || !session?.session_id}
+                    title="Refresh subprocess logs"
+                  >
+                    <RefreshCw size={16} aria-hidden="true" />
+                    <span>Refresh</span>
+                  </button>
+                </div>
+              </div>
+              <div className="subprocessLogList">
+                {subprocessLogs.map((item, index) => (
+                  <div className="subprocessLogLine" key={`${item.time}-${index}`}>
+                    <span>
+                      {formatLogTime(item.time)} {item.stream}
+                    </span>
+                    <code>{item.line}</code>
+                  </div>
+                ))}
+                {subprocessLogs.length === 0 && <p className="emptyText">No subprocess logs yet.</p>}
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {activeTab === 'llm' && (
+        <section className="tabGrid workGrid">
+          <div className="panel formPanel">
+            <div className="panelHeader">
+              <h2>ai.llm</h2>
+              <Brain size={17} aria-hidden="true" />
+            </div>
+            <label>
+              <span>System Prompt</span>
+              <textarea value={llmSystemPrompt} onChange={(event) => setLlmSystemPrompt(event.target.value)} rows={5} />
+            </label>
+            <label>
+              <span>Prompt</span>
+              <textarea value={llmPrompt} onChange={(event) => setLlmPrompt(event.target.value)} rows={7} />
+            </label>
+            <div className="formGrid compact">
+              <label>
+                <span>Max Tokens</span>
+                <input value={llmMaxTokens} inputMode="numeric" onChange={(event) => setLlmMaxTokens(event.target.value)} />
+              </label>
+              <label>
+                <span>Temperature</span>
+                <input value={llmTemperature} inputMode="decimal" onChange={(event) => setLlmTemperature(event.target.value)} />
+              </label>
+            </div>
+            <button type="button" className="primaryButton" onClick={callLlm} disabled={busy || !connected}>
+              <Send size={17} aria-hidden="true" />
+              <span>Send</span>
+            </button>
+          </div>
+
+          <div className="panel resultPanel">
+            <div className="panelHeader">
+              <h2>Output</h2>
+              <span>{llmResult ? 'ready' : 'empty'}</span>
+            </div>
+            <pre className="answerBox">{llmResult?.answer || 'No answer yet.'}</pre>
+            <pre className="resultBox">{llmRawJson || 'No raw result yet.'}</pre>
+          </div>
+        </section>
+      )}
+
+      {activeTab === 'embeddings' && (
+        <section className="tabGrid workGrid">
+          <div className="panel formPanel">
+            <div className="panelHeader">
+              <h2>ai.embeddings</h2>
+              <Hash size={17} aria-hidden="true" />
+            </div>
+            <label>
+              <span>Text</span>
+              <textarea value={embeddingText} onChange={(event) => setEmbeddingText(event.target.value)} rows={10} />
+            </label>
+            <button type="button" className="primaryButton" onClick={callEmbeddings} disabled={busy || !connected}>
+              <Send size={17} aria-hidden="true" />
+              <span>Send</span>
+            </button>
+          </div>
+
+          <div className="panel resultPanel">
+            <div className="panelHeader">
+              <h2>Output</h2>
+              <span>{embeddingResult ? `${embeddingResult.dimensions} dims` : 'empty'}</span>
+            </div>
+            <div className="metricStrip">
+              <div>
+                <span>Dimensions</span>
+                <strong>{embeddingResult?.dimensions ?? '-'}</strong>
+              </div>
+              <div>
+                <span>Preview</span>
+                <strong>{embeddingResult ? vectorPreview(embeddingResult.embedding) : '-'}</strong>
+              </div>
+            </div>
+            <pre className="resultBox">{embeddingRawJson || 'No raw result yet.'}</pre>
+          </div>
+        </section>
+      )}
+
+      {activeTab === 'sdxl' && (
+        <section className="tabGrid sdxlGrid">
+          <div className="panel formPanel">
+            <div className="panelHeader">
+              <h2>ai.sdxl.t2i</h2>
+              <ImageIcon size={17} aria-hidden="true" />
+            </div>
+            <label>
+              <span>Prompts</span>
+              <textarea value={sdxlPrompts} onChange={(event) => setSdxlPrompts(event.target.value)} rows={5} />
+            </label>
+            <label>
+              <span>Negative Prompts</span>
+              <textarea value={sdxlNegativePrompts} onChange={(event) => setSdxlNegativePrompts(event.target.value)} rows={4} />
+            </label>
+            <div className="formGrid compact">
+              <label>
+                <span>Seeds</span>
+                <input value={sdxlSeeds} onChange={(event) => setSdxlSeeds(event.target.value)} />
+              </label>
+              <label>
+                <span>Format</span>
+                <select value={sdxlFormat} onChange={(event) => setSdxlFormat(event.target.value)}>
+                  <option value="png">png</option>
+                  <option value="jpg">jpg</option>
+                </select>
+              </label>
+              <label>
+                <span>Step</span>
+                <input value={sdxlStep} inputMode="numeric" onChange={(event) => setSdxlStep(event.target.value)} />
+              </label>
+              <label>
+                <span>CFG</span>
+                <input value={sdxlCfg} inputMode="decimal" onChange={(event) => setSdxlCfg(event.target.value)} />
+              </label>
+              <label>
+                <span>Width</span>
+                <input value={sdxlWidth} inputMode="numeric" onChange={(event) => setSdxlWidth(event.target.value)} />
+              </label>
+              <label>
+                <span>Height</span>
+                <input value={sdxlHeight} inputMode="numeric" onChange={(event) => setSdxlHeight(event.target.value)} />
+              </label>
+            </div>
+            <button type="button" className="primaryButton" onClick={callSdxl} disabled={busy || !connected}>
+              <Send size={17} aria-hidden="true" />
+              <span>Send</span>
+            </button>
+          </div>
+
+          <div className="panel resultPanel">
+            <div className="panelHeader">
+              <h2>Output</h2>
+              <span>{sdxlResult ? `${sdxlResult.count} image(s)` : 'empty'}</span>
+            </div>
+            <pre className="resultBox">{sdxlRawJson || 'No metadata yet.'}</pre>
+            <div className="imageResults">
+              {sdxlFiles.map((file) => (
+                <a key={file.id} className="imageResult" href={file.url} download={file.name || file.id}>
+                  {file.isImage ? <img src={file.url} alt={file.name || file.id} /> : <FileImage size={40} aria-hidden="true" />}
+                  <span>{file.meta?.name || file.name || file.id}</span>
+                  <span>
+                    {file.meta ? `seed ${file.meta.seed} | ` : ''}
+                    {formatBytes(file.size)}
+                  </span>
+                </a>
+              ))}
+              {sdxlFiles.length === 0 && <p className="emptyText">No image attachments yet.</p>}
+            </div>
+          </div>
+        </section>
+      )}
+    </main>
+  );
+}
+
+function pickSlaveAppId(launcher: LauncherSessionView, current: string): string {
+  if (launcher.slave_app_ids.includes(current)) {
+    return current;
+  }
+  if (launcher.slave_app_ids.includes('ai')) {
+    return 'ai';
+  }
+  return launcher.slave_app_ids[0] ?? '';
+}
+
+function requirePeer(peer: GpStationPeer | null): GpStationPeer {
+  if (!peer) {
+    throw new Error('not connected');
+  }
+  return peer;
+}
+
+async function fetchSessionLogs(apiBaseUrl: string, token: string, sessionId: string): Promise<SessionLogItem[]> {
+  const response = await fetch(`${trimApiBaseUrl(apiBaseUrl)}/v1/sessions/${encodeURIComponent(sessionId)}/logs?limit=200`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorResponse(response));
+  }
+  const payload = (await response.json()) as { items?: SessionLogItem[] };
+  return payload.items ?? [];
+}
+
+function trimApiBaseUrl(value: string): string {
+  return value.replace(/\/+$/, '');
+}
+
+async function readErrorResponse(response: Response): Promise<string> {
+  const text = await response.text();
+  if (!text) {
+    return `HTTP ${response.status}`;
+  }
+  try {
+    const payload = JSON.parse(text) as { detail?: unknown };
+    if (typeof payload.detail === 'string') {
+      return payload.detail;
+    }
+  } catch {
+    return text;
+  }
+  return text;
+}
+
+function parseOptionalInt(value: string, label: string): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed)) {
+    throw new Error(`${label} must be an integer`);
+  }
+  return parsed;
+}
+
+function parseRequiredInt(value: string, label: string): number {
+  const parsed = parseOptionalInt(value, label);
+  if (parsed === undefined) {
+    throw new Error(`${label} is required`);
+  }
+  return parsed;
+}
+
+function parseOptionalFloat(value: string, label: string): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${label} must be a number`);
+  }
+  return parsed;
+}
+
+function parseRequiredFloat(value: string, label: string): number {
+  const parsed = parseOptionalFloat(value, label);
+  if (parsed === undefined) {
+    throw new Error(`${label} is required`);
+  }
+  return parsed;
+}
+
+function parseLines(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function parseOptionalSeedList(value: string): (number | null)[] | undefined {
+  const items = value
+    .split(/[\r\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (items.length === 0) {
+    return undefined;
+  }
+  return items.map((item) => {
+    if (item.toLowerCase() === 'null') {
+      return null;
+    }
+    const parsed = Number(item);
+    if (!Number.isInteger(parsed)) {
+      throw new Error('seeds must be integers or null');
+    }
+    return parsed;
+  });
+}
+
+function buildSdxlPayload(input: {
+  prompts: string;
+  negativePrompts: string;
+  seeds: string;
+  step: string;
+  cfg: string;
+  width: string;
+  height: string;
+  format: string;
+}) {
+  const prompts = parseLines(input.prompts);
+  if (prompts.length === 0) {
+    throw new Error('prompts is required');
+  }
+  const negativePrompts = parseLines(input.negativePrompts);
+  const seeds = parseOptionalSeedList(input.seeds);
+  return {
+    prompts,
+    negative_prompts: negativePrompts.length > 0 ? negativePrompts : undefined,
+    seeds,
+    step: parseRequiredInt(input.step, 'step'),
+    cfg: parseRequiredFloat(input.cfg, 'cfg'),
+    width: parseRequiredInt(input.width, 'width'),
+    height: parseRequiredInt(input.height, 'height'),
+    format: input.format,
+  };
+}
+
+function formatJson(value: unknown): string {
+  return JSON.stringify(value, null, 2);
+}
+
+function formatClock(value: Date): string {
+  return value.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) {
+    return `${Math.round(ms)}ms`;
+  }
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function formatDurationSince(startedAt: Date): string {
+  return formatDuration(new Date().getTime() - startedAt.getTime());
+}
+
+function formatLogTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return formatClock(date);
+}
+
+function vectorPreview(values: number[]): string {
+  return values
+    .slice(0, 8)
+    .map((value) => Number(value).toFixed(4))
+    .join(', ');
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function revokeFiles(files: DisplayFile[]) {
+  for (const file of files) {
+    URL.revokeObjectURL(file.url);
+  }
+}

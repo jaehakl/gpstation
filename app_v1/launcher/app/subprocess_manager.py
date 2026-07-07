@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from collections import deque
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from app.settings import LauncherSettings
 from app.slave_registry import SlaveAppRegistry, load_default_registry
 
 SendControl = Callable[[dict[str, Any]], Awaitable[None]]
+SESSION_LOG_LINE_LIMIT = 500
 
 
 @dataclass
@@ -36,6 +39,7 @@ class SessionManager:
         self.send_control = send_control
         self.registry = registry or load_default_registry()
         self.sessions: dict[str, ManagedSession] = {}
+        self.session_logs: dict[str, deque[dict[str, str]]] = {}
 
     def active_session_ids(self) -> list[str]:
         return sorted(self.sessions.keys())
@@ -73,6 +77,7 @@ class SessionManager:
             )
             return
 
+        self.session_logs.setdefault(session_id, deque(maxlen=SESSION_LOG_LINE_LIMIT))
         process = await asyncio.create_subprocess_exec(
             *self.registry.subprocess_args(
                 session_id,
@@ -196,7 +201,31 @@ class SessionManager:
             line = await process.stderr.readline()
             if not line:
                 break
-            print(f"[{session_id}] {line.decode('utf-8', errors='replace').rstrip()}", flush=True)
+            await self.record_subprocess_log(
+                session_id,
+                "stderr",
+                line.decode("utf-8", errors="replace").rstrip(),
+            )
+
+    async def record_subprocess_log(self, session_id: str, stream: str, line: str) -> None:
+        logged_at = datetime.now(timezone.utc).isoformat()
+        items = self.session_logs.setdefault(session_id, deque(maxlen=SESSION_LOG_LINE_LIMIT))
+        items.append({"time": logged_at, "stream": stream, "line": line})
+        print(f"[{session_id}] {line}", flush=True)
+        await self.send_control(
+            {
+                "type": "session.log",
+                "session_id": session_id,
+                "time": logged_at,
+                "stream": stream,
+                "line": line,
+            }
+        )
+
+    def get_session_logs(self, session_id: str, limit: int = 200) -> list[dict[str, str]]:
+        items = list(self.session_logs.get(session_id, ()))
+        clamped_limit = max(1, min(limit, SESSION_LOG_LINE_LIMIT))
+        return items[-clamped_limit:]
 
     async def handle_subprocess_message(self, session_id: str, message: dict[str, Any]) -> None:
         message_type = message.get("type")
