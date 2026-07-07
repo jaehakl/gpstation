@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -14,6 +15,7 @@ from sdk.slave.runtime import (
     load_rtc_ice_servers,
     send_job_result,
     summarize_sdp_candidates,
+    wait_for_job_result_ack,
 )
 
 
@@ -108,6 +110,33 @@ def test_send_job_result_uses_job_result_envelope():
         "payload": {"text": "hello"},
         "attachments": [],
     }
+
+
+@pytest.mark.asyncio
+async def test_wait_for_job_result_ack_succeeds_when_ack_arrives():
+    ack_event = asyncio.Event()
+    closed_event = asyncio.Event()
+    task = asyncio.create_task(wait_for_job_result_ack("job-1", ack_event, closed_event, timeout_seconds=1))
+
+    await asyncio.sleep(0)
+    ack_event.set()
+
+    await task
+
+
+@pytest.mark.asyncio
+async def test_wait_for_job_result_ack_times_out():
+    with pytest.raises(RuntimeError, match="result delivery ack timeout"):
+        await wait_for_job_result_ack("job-1", asyncio.Event(), asyncio.Event(), timeout_seconds=0.01)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_job_result_ack_fails_when_channel_closes_first():
+    closed_event = asyncio.Event()
+    closed_event.set()
+
+    with pytest.raises(RuntimeError, match="closed before result delivery ack"):
+        await wait_for_job_result_ack("job-1", asyncio.Event(), closed_event, timeout_seconds=1)
 
 
 @pytest.mark.asyncio

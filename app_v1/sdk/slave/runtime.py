@@ -15,6 +15,7 @@ from sdk.protocol.constants import DATA_CHANNEL_LABEL
 from sdk.protocol.messages import DataChannelAttachment, DataChannelMessage
 
 CHUNK_SIZE = 16 * 1024
+JOB_RESULT_ACK_TIMEOUT_SECONDS = 5.0
 RTC_ICE_SERVERS_ENV = "GPSTATION_V1_RTC_ICE_SERVERS_JSON"
 DEFAULT_RTC_ICE_SERVERS = [{"urls": "stun:stun.l.google.com:19302"}]
 
@@ -234,6 +235,7 @@ async def run_worker_job(
 
         pc = RTCPeerConnection(rtc_configuration)
         ready_event = asyncio.Event()
+        result_ack_event = asyncio.Event()
         closed_event = asyncio.Event()
         channel_holder: dict[str, Any] = {}
 
@@ -250,9 +252,22 @@ async def run_worker_job(
                         if payload.get("kind") == "job.ready":
                             ready_event.set()
                             return
+                        if payload.get("kind") == "job.result.ack" and str(payload.get("id")) == job_id:
+                            result_ack_event.set()
+                            return
                     log(f"unsupported worker job datachannel message: {raw_message}")
                 except Exception as exc:
                     log(f"job datachannel message error: {exc}")
+
+            @channel.on("close")
+            def on_close() -> None:
+                log("job datachannel closed")
+                closed_event.set()
+
+            @channel.on("error")
+            def on_error(error: Exception | None = None) -> None:
+                log(f"job datachannel error: {error}")
+                closed_event.set()
 
         @pc.on("connectionstatechange")
         async def on_connectionstatechange() -> None:
@@ -294,6 +309,10 @@ async def run_worker_job(
         if response is None:
             response = DataChannelMessage(id=job_id, type=f"{handler_type}.result", payload=None)
         send_job_result(channel, job_id, response)
+        log(f"job result sent: id={job_id}")
+        log(f"job result ack wait: id={job_id} timeout_s={JOB_RESULT_ACK_TIMEOUT_SECONDS:g}")
+        await wait_for_job_result_ack(job_id, result_ack_event, closed_event)
+        log(f"job result ack received: id={job_id}")
         emit(
             {
                 "type": "job.result",
@@ -331,6 +350,29 @@ async def run_worker_job(
     finally:
         if pc is not None:
             await pc.close()
+
+
+async def wait_for_job_result_ack(
+    job_id: str,
+    ack_event: asyncio.Event,
+    closed_event: asyncio.Event,
+    timeout_seconds: float = JOB_RESULT_ACK_TIMEOUT_SECONDS,
+) -> None:
+    ack_task = asyncio.create_task(ack_event.wait())
+    closed_task = asyncio.create_task(closed_event.wait())
+    try:
+        done, pending = await asyncio.wait({ack_task, closed_task}, timeout=timeout_seconds, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        if not done:
+            raise RuntimeError(f"result delivery ack timeout: {job_id}")
+        if ack_task in done and ack_event.is_set():
+            return
+        raise RuntimeError(f"data channel closed before result delivery ack: {job_id}")
+    finally:
+        for task in (ack_task, closed_task):
+            if not task.done():
+                task.cancel()
 
 
 async def _run_app_stdio(

@@ -171,6 +171,7 @@ type IncomingFile = AttachmentMetadata & {
 };
 
 type PendingResponse = {
+  id?: string;
   payload: unknown;
   attachments: AttachmentMetadata[];
   files: Map<string, IncomingFile>;
@@ -283,7 +284,7 @@ export class GpStationClient {
     const timeoutMs = options.timeoutMs ?? 60000;
     const peerConnection = new RTCPeerConnection(options.rtcConfig ?? this.rtcConfig ?? { iceServers: DEFAULT_RTC_ICE_SERVERS });
     const dataChannel = peerConnection.createDataChannel('gpstation.v1', { ordered: true });
-    const jobPeer = new GpStationJobPeer(peerConnection, dataChannel);
+    const jobPeer = new GpStationJobPeer(peerConnection, dataChannel, diagnostic);
     let jobId: string | undefined;
     registerConnectionDiagnostics(peerConnection, dataChannel, diagnostic);
 
@@ -826,10 +827,13 @@ class GpStationJobPeer {
   private resolveResult?: (value: CallResult<unknown>) => void;
   private rejectResult?: (reason: Error) => void;
   private resultTimer?: ReturnType<typeof setTimeout>;
+  private settled = false;
+  private resultAcknowledged = false;
 
   constructor(
     private readonly peerConnection: RTCPeerConnection,
     private readonly dataChannel: RTCDataChannel,
+    private readonly diagnostic: (event: ConnectDiagnosticEvent) => void,
   ) {
     this.dataChannel.binaryType = 'arraybuffer';
     this.dataChannel.addEventListener('message', (event) => {
@@ -872,16 +876,16 @@ class GpStationJobPeer {
   private async handleDataMessage(rawData: unknown): Promise<void> {
     try {
       if (typeof rawData === 'string') {
-        this.handleControlMessage(JSON.parse(rawData) as CallResponseFrame | CallErrorFrame | { kind: string; id: string; type?: string; payload?: unknown; attachments?: AttachmentMetadata[] });
+        await this.handleControlMessage(JSON.parse(rawData) as CallResponseFrame | CallErrorFrame | { kind: string; id: string; type?: string; payload?: unknown; attachments?: AttachmentMetadata[] });
         return;
       }
-      this.handleBinaryMessage(await rawToUint8Array(rawData));
+      await this.handleBinaryMessage(await rawToUint8Array(rawData));
     } catch (error) {
       this.rejectPending(asError(error));
     }
   }
 
-  private handleControlMessage(message: CallResponseFrame | CallErrorFrame | { kind: string; id: string; type?: string; payload?: unknown; attachments?: AttachmentMetadata[] }): void {
+  private async handleControlMessage(message: CallResponseFrame | CallErrorFrame | { kind: string; id: string; type?: string; payload?: unknown; attachments?: AttachmentMetadata[] }): Promise<void> {
     if (message.kind === 'call.error' || message.kind === 'job.error') {
       this.rejectPending(new Error((message as CallErrorFrame).detail || 'job error'));
       return;
@@ -889,6 +893,10 @@ class GpStationJobPeer {
     if (message.kind !== 'job.result') {
       return;
     }
+    emitDiagnostic(this.peerConnection, this.dataChannel, this.diagnostic, {
+      stage: 'job-result',
+      message: 'received job result',
+    });
     const files = new Map<string, IncomingFile>();
     for (const attachment of message.attachments ?? []) {
       files.set(attachment.id, {
@@ -900,16 +908,17 @@ class GpStationJobPeer {
       });
     }
     this.response = {
+      id: message.id,
       payload: message.payload,
       attachments: message.attachments ?? [],
       files,
     };
     if (files.size === 0) {
-      this.resolvePending();
+      await this.resolvePending();
     }
   }
 
-  private handleBinaryMessage(frame: Uint8Array): void {
+  private async handleBinaryMessage(frame: Uint8Array): Promise<void> {
     const { header, body } = decodeBinaryFrame(frame);
     if (header.kind !== 'attachment.chunk' || !this.response) {
       return;
@@ -929,14 +938,21 @@ class GpStationJobPeer {
       throw new Error(`attachment size mismatch: ${header.attachmentId}`);
     }
     if ([...this.response.files.values()].every((item) => item.complete)) {
-      this.resolvePending();
+      await this.resolvePending();
     }
   }
 
-  private resolvePending(): void {
-    if (!this.response || !this.resolveResult) {
+  private async resolvePending(): Promise<void> {
+    if (this.settled || !this.response || !this.resolveResult) {
       return;
     }
+    try {
+      await this.acknowledgeResult();
+    } catch (error) {
+      this.rejectPending(asError(error));
+      return;
+    }
+    this.settled = true;
     if (this.resultTimer) {
       clearTimeout(this.resultTimer);
     }
@@ -953,6 +969,10 @@ class GpStationJobPeer {
   }
 
   private rejectPending(error: Error): void {
+    if (this.settled) {
+      return;
+    }
+    this.settled = true;
     if (this.resultTimer) {
       clearTimeout(this.resultTimer);
     }
@@ -965,6 +985,64 @@ class GpStationJobPeer {
     this.rejectResult = undefined;
     this.resultTimer = undefined;
     this.peerConnection.close();
+  }
+
+  private async acknowledgeResult(): Promise<void> {
+    if (this.resultAcknowledged) {
+      return;
+    }
+    const jobId = this.response?.id;
+    if (!jobId) {
+      throw new Error('job result did not include an id');
+    }
+    if (this.dataChannel.readyState !== 'open') {
+      throw new Error('data channel closed before job result ack');
+    }
+    this.dataChannel.send(JSON.stringify({ kind: 'job.result.ack', id: jobId }));
+    await this.waitForAckBufferedAmountLow();
+    this.resultAcknowledged = true;
+    emitDiagnostic(this.peerConnection, this.dataChannel, this.diagnostic, {
+      stage: 'job-result-ack',
+      message: 'sent job result ack',
+    });
+  }
+
+  private waitForAckBufferedAmountLow(): Promise<void> {
+    if (this.dataChannel.readyState !== 'open') {
+      return Promise.reject(new Error('data channel closed before job result ack'));
+    }
+    if (this.dataChannel.bufferedAmount === 0) {
+      return Promise.resolve();
+    }
+    this.dataChannel.bufferedAmountLowThreshold = 0;
+    return new Promise((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout>;
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.dataChannel.removeEventListener('bufferedamountlow', onLow);
+        this.dataChannel.removeEventListener('close', onClose);
+        this.dataChannel.removeEventListener('error', onError);
+      };
+      const onLow = () => {
+        cleanup();
+        resolve();
+      };
+      const onClose = () => {
+        cleanup();
+        reject(new Error('data channel closed before job result ack'));
+      };
+      const onError = () => {
+        cleanup();
+        reject(new Error('data channel error before job result ack'));
+      };
+      this.dataChannel.addEventListener('bufferedamountlow', onLow);
+      this.dataChannel.addEventListener('close', onClose);
+      this.dataChannel.addEventListener('error', onError);
+      timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('job result ack buffered amount timeout'));
+      }, 1000);
+    });
   }
 
   private connectionStateSummary(): string {
