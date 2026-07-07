@@ -144,10 +144,12 @@ def test_subprocess_env_includes_rtc_ice_servers_json():
     settings = LauncherSettings(
         access_token="test-token",
         rtc_ice_servers_json='[{"urls":"turn:turn.example.com:3478","username":"u","credential":"p"}]',
+        rtc_ice_gather_timeout_seconds="1.5",
     )
 
     env = subprocess_env(settings)
     assert env["GPSTATION_V1_RTC_ICE_SERVERS_JSON"] == settings.rtc_ice_servers_json
+    assert env["GPSTATION_V1_RTC_ICE_GATHER_TIMEOUT_SECONDS"] == "1.5"
     assert env["PYTHONIOENCODING"] == "utf-8"
     assert env["PYTHONUTF8"] == "1"
 

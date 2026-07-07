@@ -8,7 +8,7 @@ import json
 import os
 import sys
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -18,7 +18,10 @@ from sdk.protocol.messages import DataChannelAttachment, DataChannelMessage
 CHUNK_SIZE = 16 * 1024
 JOB_RESULT_ACK_TIMEOUT_SECONDS = 5.0
 RTC_ICE_SERVERS_ENV = "GPSTATION_V1_RTC_ICE_SERVERS_JSON"
+RTC_ICE_GATHER_TIMEOUT_ENV = "GPSTATION_V1_RTC_ICE_GATHER_TIMEOUT_SECONDS"
 DEFAULT_RTC_ICE_SERVERS = [{"urls": "stun:stun.l.google.com:19302"}]
+DEFAULT_STUN_ICE_GATHER_TIMEOUT_SECONDS = 1.0
+DEFAULT_TURN_ICE_GATHER_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -140,12 +143,17 @@ async def _run_worker_stdio(*, app: SlaveApp) -> None:
     try:
         from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
         from aiortc.sdp import candidate_from_sdp
+        from aioice.ice import Connection as AioIceConnection
     except Exception as exc:
         emit({"type": "error", "code": "aiortc_import_failed", "detail": str(exc)})
         return
 
     try:
-        rtc_configuration = build_rtc_configuration(RTCConfiguration, RTCIceServer)
+        ice_servers = load_rtc_ice_servers()
+        ice_gather_timeout_seconds = load_rtc_ice_gather_timeout_seconds(ice_servers)
+        configure_aioice_gather_timeout(AioIceConnection, ice_gather_timeout_seconds)
+        rtc_configuration = build_rtc_configuration(RTCConfiguration, RTCIceServer, ice_servers)
+        log(f"RTC ICE gather timeout: {ice_gather_timeout_seconds:g}s")
     except Exception as exc:
         emit({"type": "error", "code": "rtc_configuration_failed", "detail": str(exc)})
         return
@@ -206,6 +214,7 @@ async def _run_worker_stdio(*, app: SlaveApp) -> None:
                             rtc_configuration=rtc_configuration,
                             rtc_session_description=RTCSessionDescription,
                             candidate_from_sdp=candidate_from_sdp,
+                            ice_servers=ice_servers,
                         )
                     )
             except Exception as exc:
@@ -232,6 +241,7 @@ async def run_worker_job(
     rtc_configuration: Any,
     rtc_session_description: Any,
     candidate_from_sdp: Any,
+    ice_servers: list[dict[str, Any]],
 ) -> None:
     job_id = str(message["job_id"])
     handler_type = str(message["handler_type"])
@@ -310,15 +320,16 @@ async def run_worker_job(
         log(f"job answer created: id={job_id} duration_ms={elapsed_ms(answer_started_at)}")
         local_started_at = time.perf_counter()
         await pc.setLocalDescription(answer)
-        log(f"job local answer set: id={job_id} duration_ms={elapsed_ms(local_started_at)}")
-        gather_started_at = time.perf_counter()
-        log(f"job answer ICE gathering start: id={job_id}")
-        await wait_for_ice_gathering(pc)
-        log(
-            f"job answer ICE gathering complete: id={job_id} state={pc.iceGatheringState} "
-            f"duration_ms={elapsed_ms(gather_started_at)}"
-        )
-        log(f"job answer candidates: {format_candidate_summary(summarize_sdp_candidates(pc.localDescription.sdp))}")
+        log(f"job local answer set and ICE gathered: id={job_id} duration_ms={elapsed_ms(local_started_at)}")
+        log(f"job post-setLocal ICE state: id={job_id} state={pc.iceGatheringState}")
+        answer_summary = summarize_sdp_candidates(pc.localDescription.sdp)
+        log(f"job answer candidates: {format_candidate_summary(answer_summary)}")
+        has_stun_server = any(url.startswith(("stun:", "stuns:")) for url in iter_rtc_ice_server_urls(ice_servers))
+        if answer_summary["srflx"] == 0 and has_stun_server:
+            log(
+                f"job {job_id} warning: no srflx ICE candidates gathered; "
+                f"consider increasing {RTC_ICE_GATHER_TIMEOUT_ENV}"
+            )
         emit(
             {
                 "type": "job.answer",
@@ -434,12 +445,17 @@ async def _run_app_stdio(
     try:
         from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
         from aiortc.sdp import candidate_from_sdp
+        from aioice.ice import Connection as AioIceConnection
     except Exception as exc:
         emit({"type": "error", "code": "aiortc_import_failed", "detail": str(exc)})
         return
 
     try:
-        rtc_configuration = build_rtc_configuration(RTCConfiguration, RTCIceServer)
+        ice_servers = load_rtc_ice_servers()
+        ice_gather_timeout_seconds = load_rtc_ice_gather_timeout_seconds(ice_servers)
+        configure_aioice_gather_timeout(AioIceConnection, ice_gather_timeout_seconds)
+        rtc_configuration = build_rtc_configuration(RTCConfiguration, RTCIceServer, ice_servers)
+        log(f"RTC ICE gather timeout: {ice_gather_timeout_seconds:g}s")
     except Exception as exc:
         emit({"type": "error", "code": "rtc_configuration_failed", "detail": str(exc)})
         return
@@ -494,7 +510,7 @@ async def _run_app_stdio(
             if message.get("type") == "stop":
                 break
             if message.get("type") == "signal":
-                await handle_signal(pc, message["signal"], RTCSessionDescription, candidate_from_sdp)
+                await handle_signal(pc, message["signal"], RTCSessionDescription, candidate_from_sdp, ice_servers)
     except Exception as exc:
         emit({"type": "error", "code": "runtime_error", "detail": str(exc)})
     finally:
@@ -507,6 +523,7 @@ async def handle_signal(
     signal: dict[str, Any],
     rtc_session_description: Any,
     candidate_from_sdp: Any,
+    ice_servers: list[dict[str, Any]],
 ) -> None:
     signal_type = signal.get("type")
     if signal_type == "offer":
@@ -519,12 +536,16 @@ async def handle_signal(
         log(f"answer created duration_ms={elapsed_ms(answer_started_at)}")
         local_started_at = time.perf_counter()
         await pc.setLocalDescription(answer)
-        log(f"local answer set duration_ms={elapsed_ms(local_started_at)}")
-        gather_started_at = time.perf_counter()
-        log("answer ICE gathering start")
-        await wait_for_ice_gathering(pc)
-        log(f"answer ICE gathering complete state={pc.iceGatheringState} duration_ms={elapsed_ms(gather_started_at)}")
-        log(f"created answer candidates: {format_candidate_summary(summarize_sdp_candidates(pc.localDescription.sdp))}")
+        log(f"local answer set and ICE gathered duration_ms={elapsed_ms(local_started_at)}")
+        log(f"post-setLocal ICE state={pc.iceGatheringState}")
+        answer_summary = summarize_sdp_candidates(pc.localDescription.sdp)
+        log(f"created answer candidates: {format_candidate_summary(answer_summary)}")
+        has_stun_server = any(url.startswith(("stun:", "stuns:")) for url in iter_rtc_ice_server_urls(ice_servers))
+        if answer_summary["srflx"] == 0 and has_stun_server:
+            log(
+                f"session warning: no srflx ICE candidates gathered; "
+                f"consider increasing {RTC_ICE_GATHER_TIMEOUT_ENV}"
+            )
         emit(
             {
                 "type": "signal",
@@ -577,11 +598,16 @@ async def maybe_await(value: Any) -> Any:
     return value
 
 
-def build_rtc_configuration(rtc_configuration_cls: Any, rtc_ice_server_cls: Any) -> Any:
+def build_rtc_configuration(
+    rtc_configuration_cls: Any,
+    rtc_ice_server_cls: Any,
+    ice_servers: list[dict[str, Any]] | None = None,
+) -> Any:
+    servers = ice_servers if ice_servers is not None else load_rtc_ice_servers()
     return rtc_configuration_cls(
         iceServers=[
             rtc_ice_server_cls(**ice_server_kwargs(item))
-            for item in load_rtc_ice_servers()
+            for item in servers
         ]
     )
 
@@ -595,6 +621,35 @@ def load_rtc_ice_servers() -> list[dict[str, Any]]:
     except json.JSONDecodeError as exc:
         raise ValueError(f"{RTC_ICE_SERVERS_ENV} must be valid JSON: {exc.msg}") from exc
     return validate_rtc_ice_servers(parsed)
+
+
+def load_rtc_ice_gather_timeout_seconds(ice_servers: list[dict[str, Any]]) -> float:
+    raw_value = os.environ.get(RTC_ICE_GATHER_TIMEOUT_ENV, "").strip()
+    if raw_value:
+        try:
+            timeout_seconds = float(raw_value)
+        except ValueError as exc:
+            raise ValueError(f"{RTC_ICE_GATHER_TIMEOUT_ENV} must be a positive number") from exc
+        if timeout_seconds <= 0:
+            raise ValueError(f"{RTC_ICE_GATHER_TIMEOUT_ENV} must be a positive number")
+        return timeout_seconds
+    if any(url.startswith(("turn:", "turns:")) for url in iter_rtc_ice_server_urls(ice_servers)):
+        return DEFAULT_TURN_ICE_GATHER_TIMEOUT_SECONDS
+    return DEFAULT_STUN_ICE_GATHER_TIMEOUT_SECONDS
+
+
+def configure_aioice_gather_timeout(aioice_connection_cls: Any, timeout_seconds: float) -> None:
+    original = getattr(aioice_connection_cls, "_gpstation_original_get_component_candidates", None)
+    if original is None:
+        original = aioice_connection_cls.get_component_candidates
+        setattr(aioice_connection_cls, "_gpstation_original_get_component_candidates", original)
+
+    async def get_component_candidates(self: Any, component: int, addresses: list[str], timeout: float = 5) -> Any:
+        effective_timeout = timeout_seconds if timeout == DEFAULT_TURN_ICE_GATHER_TIMEOUT_SECONDS else timeout
+        return await original(self, component=component, addresses=addresses, timeout=effective_timeout)
+
+    aioice_connection_cls.get_component_candidates = get_component_candidates
+    setattr(aioice_connection_cls, "_gpstation_ice_gather_timeout_seconds", timeout_seconds)
 
 
 def validate_rtc_ice_servers(value: Any) -> list[dict[str, Any]]:
@@ -625,6 +680,15 @@ def ice_server_kwargs(server: dict[str, Any]) -> dict[str, Any]:
 
 def is_string_list(value: Any) -> bool:
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def iter_rtc_ice_server_urls(ice_servers: list[dict[str, Any]]) -> Iterator[str]:
+    for server in ice_servers:
+        urls = server.get("urls")
+        items = urls if isinstance(urls, list) else [urls]
+        for item in items:
+            if isinstance(item, str):
+                yield item.lower()
 
 
 def summarize_sdp_candidates(sdp: str) -> dict[str, int]:

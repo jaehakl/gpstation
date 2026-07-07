@@ -27,6 +27,7 @@ class LauncherSettings(BaseSettings):
     heartbeat_interval_seconds: float = Field(default=5.0, gt=0)
     session_ready_timeout_seconds: float = Field(default=10.0, gt=0)
     rtc_ice_servers_json: str = DEFAULT_RTC_ICE_SERVERS_JSON
+    rtc_ice_gather_timeout_seconds: str = ""
 
     @field_validator("api_url")
     @classmethod
@@ -37,6 +38,11 @@ class LauncherSettings(BaseSettings):
     @classmethod
     def strip_rtc_ice_servers_json(cls, value: str) -> str:
         return value.strip() or DEFAULT_RTC_ICE_SERVERS_JSON
+
+    @field_validator("rtc_ice_gather_timeout_seconds")
+    @classmethod
+    def strip_rtc_ice_gather_timeout_seconds(cls, value: str) -> str:
+        return value.strip()
 
     @property
     def control_websocket_url(self) -> str:

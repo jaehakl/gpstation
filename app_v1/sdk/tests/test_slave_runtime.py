@@ -12,10 +12,12 @@ from sdk.protocol.constants import DATA_CHANNEL_LABEL
 from sdk.slave import DataChannelAttachment, DataChannelMessage, SlaveApp, SlaveContext
 from sdk.slave.runtime import (
     CHUNK_SIZE,
+    configure_aioice_gather_timeout,
     decode_binary_frame,
     encode_binary_frame,
     handle_datachannel_message,
     emit,
+    load_rtc_ice_gather_timeout_seconds,
     load_rtc_ice_servers,
     parse_job_ready_message,
     read_stdin_line,
@@ -61,6 +63,14 @@ class FakeWarmPeerConnection:
 
     async def close(self) -> None:
         FakeWarmPeerConnection.closed = True
+
+
+class FakeAioIceConnection:
+    observed_timeouts: list[float] = []
+
+    async def get_component_candidates(self, component: int, addresses: list[str], timeout: float = 5):
+        FakeAioIceConnection.observed_timeouts.append(timeout)
+        return []
 
 
 def test_handler_decorators_preserve_registration_order():
@@ -109,6 +119,50 @@ def test_load_rtc_ice_servers_rejects_invalid_json(monkeypatch):
 
     with pytest.raises(ValueError, match="valid JSON"):
         load_rtc_ice_servers()
+
+
+def test_load_rtc_ice_gather_timeout_defaults_to_one_second_for_stun_only(monkeypatch):
+    monkeypatch.delenv("GPSTATION_V1_RTC_ICE_GATHER_TIMEOUT_SECONDS", raising=False)
+
+    timeout = load_rtc_ice_gather_timeout_seconds([{"urls": "stun:stun.example.com:3478"}])
+
+    assert timeout == 1.0
+
+
+def test_load_rtc_ice_gather_timeout_defaults_to_five_seconds_for_turn(monkeypatch):
+    monkeypatch.delenv("GPSTATION_V1_RTC_ICE_GATHER_TIMEOUT_SECONDS", raising=False)
+
+    timeout = load_rtc_ice_gather_timeout_seconds(
+        [{"urls": ["stun:stun.example.com:3478", "turn:turn.example.com:3478"]}]
+    )
+
+    assert timeout == 5.0
+
+
+def test_load_rtc_ice_gather_timeout_uses_explicit_env(monkeypatch):
+    monkeypatch.setenv("GPSTATION_V1_RTC_ICE_GATHER_TIMEOUT_SECONDS", "2.5")
+
+    timeout = load_rtc_ice_gather_timeout_seconds([{"urls": "turn:turn.example.com:3478"}])
+
+    assert timeout == 2.5
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "abc"])
+def test_load_rtc_ice_gather_timeout_rejects_invalid_env(monkeypatch, value):
+    monkeypatch.setenv("GPSTATION_V1_RTC_ICE_GATHER_TIMEOUT_SECONDS", value)
+
+    with pytest.raises(ValueError, match="positive number"):
+        load_rtc_ice_gather_timeout_seconds([{"urls": "stun:stun.example.com:3478"}])
+
+
+@pytest.mark.asyncio
+async def test_configure_aioice_gather_timeout_patches_default_timeout():
+    FakeAioIceConnection.observed_timeouts = []
+
+    configure_aioice_gather_timeout(FakeAioIceConnection, 1.25)
+    await FakeAioIceConnection().get_component_candidates(component=1, addresses=["10.0.0.2"])
+
+    assert FakeAioIceConnection.observed_timeouts == [1.25]
 
 
 def test_summarize_sdp_candidates_counts_candidate_types():
