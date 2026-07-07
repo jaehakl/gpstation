@@ -119,7 +119,16 @@ limit_req_zone $binary_remote_addr zone=req_per_ip:20m rate=17r/s;
 limit_conn_zone $binary_remote_addr zone=conn_per_ip:20m;
 ```
 
-Create a temporary HTTP-only site so Certbot can issue the first certificate:
+Do not install `deployment/app.conf` yet on a fresh server. That final config references these files:
+
+```text
+/etc/letsencrypt/live/gps.qutat.com/fullchain.pem
+/etc/letsencrypt/live/gps.qutat.com/privkey.pem
+```
+
+Those files do not exist until the first Certbot issuance succeeds, so `nginx -t` will fail if the final config is enabled too early.
+
+Create a temporary HTTP-only site first so Certbot can issue the initial certificate:
 
 ```bash
 sudo tee /etc/nginx/sites-available/gpstation-v1-bootstrap.conf >/dev/null <<'EOF'
@@ -140,7 +149,7 @@ sudo systemctl reload nginx
 sudo certbot --nginx -d gps.qutat.com
 ```
 
-Replace the bootstrap site with the final GPStation config:
+After Certbot succeeds and the certificate files exist, replace the bootstrap site with the final GPStation config:
 
 ```bash
 sudo cp /home/ubuntu/gpstation/deployment/app.conf /etc/nginx/sites-available/gpstation-v1.conf
