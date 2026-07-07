@@ -1,7 +1,5 @@
-'use client';
-
-import { useRouter } from 'next/navigation';
 import { useEffect, type ReactNode } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { useAuthStore } from '../stores/authStore';
 
@@ -10,16 +8,16 @@ type AdminGateProps = {
 };
 
 export function AdminGate({ children }: AdminGateProps) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const user = useAuthStore((state) => state.user);
   const authReady = useAuthStore((state) => state.authReady);
   const isAdmin = user?.role === 'admin' || user?.roles.includes('admin');
 
   useEffect(() => {
     if (authReady && !isAdmin) {
-      router.replace('/');
+      navigate('/', { replace: true });
     }
-  }, [authReady, isAdmin, router]);
+  }, [authReady, isAdmin, navigate]);
 
   if (!authReady) {
     return <div className="centerState">사용자 정보를 확인 중입니다.</div>;

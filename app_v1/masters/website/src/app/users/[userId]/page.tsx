@@ -1,9 +1,6 @@
-'use client';
-
-import Link from 'next/link';
-import { useParams, useRouter } from 'next/navigation';
 import { Clipboard, KeyRound, RefreshCw, Save, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { dbTables } from '../../../api/api';
 import type { AccessKeyScope, CrudAccessKeyRow, CrudLauncherRow, CrudSlaveSessionRow, CrudUserRow, UserRole } from '../../../api/types';
@@ -21,13 +18,12 @@ type UserFormState = {
 const roleOptions: UserRole[] = ['admin', 'user', 'unauthorized'];
 
 export default function UserDetailPage() {
-  const params = useParams<{ userId?: string | string[] }>();
-  const router = useRouter();
+  const params = useParams<{ userId: string }>();
+  const navigate = useNavigate();
   const currentUser = useAuthStore((state) => state.user);
   const authReady = useAuthStore((state) => state.authReady);
   const refreshUser = useAuthStore((state) => state.refreshUser);
-  const userIdParam = params.userId;
-  const userId = Array.isArray(userIdParam) ? userIdParam[0] : userIdParam;
+  const userId = params.userId;
   const [loadedUser, setLoadedUser] = useState<CrudUserRow | null>(null);
   const [form, setForm] = useState<UserFormState | null>(null);
   const [launchers, setLaunchers] = useState<CrudLauncherRow[]>([]);
@@ -177,9 +173,9 @@ export default function UserDetailPage() {
       if (isSelf) {
         await dbTables.auth.logout();
         await refreshUser();
-        router.push('/login');
+        navigate('/login');
       } else {
-        router.push('/users');
+        navigate('/users');
       }
     } catch (deleteError) {
       setError(errorMessage(deleteError, '계정을 삭제하지 못했습니다.'));
@@ -366,7 +362,7 @@ export default function UserDetailPage() {
             admin은 모든 회원을 조회하고 편집할 수 있습니다. user는 자신의 계정만 조회하고 삭제할 수 있습니다.
           </p>
           {isAdmin ? (
-            <Link href="/users" className="button fullButton" style={{ marginTop: 14 }}>
+            <Link to="/users" className="button fullButton" style={{ marginTop: 14 }}>
               회원 목록
             </Link>
           ) : null}
@@ -422,7 +418,7 @@ function NeedLogin() {
   return (
     <div className="loginBox panel">
       <h1>로그인이 필요합니다.</h1>
-      <Link href="/login" className="button primaryButton fullButton" style={{ marginTop: 16 }}>
+      <Link to="/login" className="button primaryButton fullButton" style={{ marginTop: 16 }}>
         로그인으로 이동
       </Link>
     </div>
@@ -436,7 +432,7 @@ function Forbidden({ currentUserId }: { currentUserId: string }) {
       <p className="message warn" style={{ marginTop: 16 }}>
         자신의 계정 정보만 확인할 수 있습니다.
       </p>
-      <Link href={`/users/${currentUserId}`} className="button fullButton" style={{ marginTop: 14 }}>
+      <Link to={`/users/${currentUserId}`} className="button fullButton" style={{ marginTop: 14 }}>
         내 계정으로 이동
       </Link>
     </div>

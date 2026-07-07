@@ -1,9 +1,6 @@
-'use client';
-
-import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { Eye, RefreshCw, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 
 import { dbTables } from '../../api/api';
 import type { CrudUserRow } from '../../api/types';
@@ -22,7 +19,7 @@ export default function UsersPage() {
 }
 
 function UsersPageContent() {
-  const router = useRouter();
+  const navigate = useNavigate();
   const currentUser = useAuthStore((state) => state.user);
   const refreshUser = useAuthStore((state) => state.refreshUser);
   const [users, setUsers] = useState<CrudUserRow[]>([]);
@@ -61,7 +58,7 @@ function UsersPageContent() {
       if (currentUser?.id === userId) {
         await dbTables.auth.logout();
         await refreshUser();
-        router.push('/login');
+        navigate('/login');
       }
       setUsers((items) => items.filter((item) => item.id !== userId));
     } catch (deleteError) {
@@ -123,7 +120,7 @@ function UsersPageContent() {
                     <td>{formatDate(item.created_at)}</td>
                     <td>
                       <div className="rowActions">
-                        <Link href={`/users/${item.id}`} className="button smallButton">
+                        <Link to={`/users/${item.id}`} className="button smallButton">
                           <Eye size={15} aria-hidden="true" />
                           상세
                         </Link>

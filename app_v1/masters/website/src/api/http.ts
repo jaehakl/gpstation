@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const apiBaseUrl = process.env.NEXT_PUBLIC_GPSTATION_V1_API_URL || '';
+const apiBaseUrl = import.meta.env.VITE_GPSTATION_V1_API_URL || '';
 export const API_URL = apiBaseUrl.replace(/\/+$/, '');
 
 type HttpMethod = 'get' | 'post' | 'patch' | 'delete';

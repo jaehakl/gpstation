@@ -1,8 +1,6 @@
-'use client';
-
-import Link from 'next/link';
 import { KeyRound, ListChecks, Monitor, RefreshCw, Users } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { dbTables } from '../api/api';
 import type { CrudLauncherRow, CrudSlaveSessionRow, DashboardSummary } from '../api/types';
@@ -61,7 +59,7 @@ export default function DashboardPage() {
         <p className="message warn" style={{ marginTop: 16 }}>
           로그인하면 계정, Access Token, Launcher, SlaveSession 상태를 관리할 수 있습니다.
         </p>
-        <Link href="/login" className="button primaryButton fullButton" style={{ marginTop: 14 }}>
+        <Link to="/login" className="button primaryButton fullButton" style={{ marginTop: 14 }}>
           <KeyRound size={16} aria-hidden="true" />
           로그인으로 이동
         </Link>
@@ -116,7 +114,7 @@ export default function DashboardPage() {
         <section className="panel">
           <div className="toolbar">
             <h2>최근 Launcher</h2>
-            <Link href="/launchers" className="button smallButton">
+            <Link to="/launchers" className="button smallButton">
               전체 보기
             </Link>
           </div>
@@ -154,7 +152,7 @@ export default function DashboardPage() {
         <section className="panel">
           <div className="toolbar">
             <h2>최근 SlaveSession</h2>
-            <Link href="/slave-sessions" className="button smallButton">
+            <Link to="/slave-sessions" className="button smallButton">
               전체 보기
             </Link>
           </div>

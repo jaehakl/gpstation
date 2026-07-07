@@ -1,9 +1,6 @@
-'use client';
-
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
 import { KeyRound, LayoutDashboard, ListChecks, LogIn, LogOut, Monitor, User, Users } from 'lucide-react';
 import { type ReactNode } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 
 import { useAuthStore, useBootstrapAuth } from '../stores/authStore';
 
@@ -21,7 +18,7 @@ const navItems = [
 export function AppShell({ children }: AppShellProps) {
   useBootstrapAuth();
 
-  const pathname = usePathname() ?? '';
+  const { pathname } = useLocation();
   const user = useAuthStore((state) => state.user);
   const authReady = useAuthStore((state) => state.authReady);
 
@@ -34,7 +31,7 @@ export function AppShell({ children }: AppShellProps) {
       ) : null}
       <div className="appMain">
         <header className="topHeader">
-          <Link href="/" className="brand">
+          <Link to="/" className="brand">
             <KeyRound size={18} aria-hidden="true" />
             <span>GP Station v1</span>
           </Link>
@@ -57,7 +54,7 @@ function HeaderAction() {
 
   if (!user || user.role === 'unauthorized') {
     return (
-      <Link href="/login" className="button smallButton">
+      <Link to="/login" className="button smallButton">
         <LogIn size={16} aria-hidden="true" />
         로그인
       </Link>
@@ -102,13 +99,13 @@ function Sidebar({ pathname }: { pathname: string }) {
             const Icon = item.icon;
             const active = pathname === item.href || (item.href !== '/' && pathname.startsWith(`${item.href}/`));
             return (
-              <Link key={item.href} href={item.href} className={active ? 'navLink active' : 'navLink'}>
+              <Link key={item.href} to={item.href} className={active ? 'navLink active' : 'navLink'}>
                 <Icon size={17} aria-hidden="true" />
                 {item.label}
               </Link>
             );
           })}
-        <Link href={accountPath} className={pathname === accountPath ? 'navLink active' : 'navLink'}>
+        <Link to={accountPath} className={pathname === accountPath ? 'navLink active' : 'navLink'}>
           <User size={17} aria-hidden="true" />
           내 계정
         </Link>

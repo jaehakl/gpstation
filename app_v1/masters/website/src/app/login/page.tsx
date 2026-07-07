@@ -1,29 +1,11 @@
-'use client';
-
-import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
 import { LogIn, LogOut } from 'lucide-react';
-import { Suspense } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 
 import { useAuthStore } from '../../stores/authStore';
 import { displayUserName } from '../format';
 
 export default function LoginPage() {
-  return (
-    <Suspense fallback={<LoginFallback />}>
-      <LoginContent />
-    </Suspense>
-  );
-}
-
-function LoginFallback() {
-  return (
-    <div className="loginBox panel">
-      <p className="eyebrow">GP Station v1</p>
-      <h1>로그인</h1>
-      <p className="message warn" style={{ marginTop: 16 }}>사용자 정보를 확인 중입니다.</p>
-    </div>
-  );
+  return <LoginContent />;
 }
 
 function LoginContent() {
@@ -31,7 +13,7 @@ function LoginContent() {
   const authReady = useAuthStore((state) => state.authReady);
   const startLogin = useAuthStore((state) => state.startLogin);
   const logoutUser = useAuthStore((state) => state.logoutUser);
-  const searchParams = useSearchParams();
+  const [searchParams] = useSearchParams();
   const approvalRequired = searchParams.get('approval_required') === '1';
 
   return (
@@ -60,7 +42,7 @@ function LoginContent() {
             <LogOut size={16} aria-hidden="true" />
             로그아웃
           </button>
-          <Link href={`/users/${user.id}`} className="button primaryButton fullButton">
+          <Link to={`/users/${user.id}`} className="button primaryButton fullButton">
             내 계정으로 이동
           </Link>
         </div>

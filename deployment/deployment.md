@@ -1,10 +1,11 @@
 # GPStation app_v1 deployment
 
-This guide deploys `app_v1/server` and `app_v1/masters/website` to:
+This guide deploys `app_v1/server` and the Vite static website at `app_v1/masters/website` to:
 
 - Public URL: `https://gps.qutat.com`
 - FastAPI server: `127.0.0.1:8000`
-- Next website: `127.0.0.1:3000`
+- Website dev/preview port: `127.0.0.1:3000`
+- Production website serving: Nginx static files from `app_v1/masters/website/dist`
 - Repository path: `/home/ubuntu/gpstation`
 
 ## 1. DNS and firewall
@@ -15,7 +16,7 @@ Create an `A` record:
 gps.qutat.com -> <server static IP>
 ```
 
-Open only `22`, `80`, and `443` to the internet. Ports `8000` and `3000` must stay local behind Nginx.
+Open only `22`, `80`, and `443` to the internet. Port `8000` must stay local behind Nginx. Port `3000` is only for local development or temporary preview.
 
 ## 2. Server packages
 
@@ -60,7 +61,9 @@ npm ci
 npm run build
 ```
 
-## 5. systemd services
+`npm run build` creates `app_v1/masters/website/dist`. Nginx serves that directory directly in production.
+
+## 5. systemd service
 
 Create `/etc/systemd/system/gpstation-v1-server.service`:
 
@@ -81,34 +84,14 @@ RestartSec=3
 WantedBy=multi-user.target
 ```
 
-Create `/etc/systemd/system/gpstation-v1-website.service`:
-
-```ini
-[Unit]
-Description=GPStation v1 Next website
-After=network.target
-
-[Service]
-User=ubuntu
-WorkingDirectory=/home/ubuntu/gpstation/app_v1/masters/website
-EnvironmentFile=/home/ubuntu/gpstation/app_v1/masters/website/.env
-Environment=HOME=/home/ubuntu
-Environment=NODE_ENV=production
-ExecStart=/bin/bash -lc 'source /home/ubuntu/.nvm/nvm.sh && npm start'
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable services:
+Enable the server service:
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now gpstation-v1-server
-sudo systemctl enable --now gpstation-v1-website
 ```
+
+No website systemd service is needed. The website is a static Vite build served by Nginx.
 
 ## 6. Nginx and HTTPS
 
@@ -128,7 +111,7 @@ Do not install `deployment/app.conf` yet on a fresh server. That final config re
 
 Those files do not exist until the first Certbot issuance succeeds, so `nginx -t` will fail if the final config is enabled too early.
 
-Create a temporary HTTP-only site first so Certbot can issue the initial certificate:
+Create a temporary HTTP-only site first:
 
 ```bash
 sudo tee /etc/nginx/sites-available/gpstation-v1-bootstrap.conf >/dev/null <<'EOF'
@@ -159,7 +142,7 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-The final Nginx config uses a separate access log for `/v1/sessions/<id>/signal` that records `$uri` instead of `$request_uri`, so short-lived signaling tokens in query strings are not written to that log.
+The final Nginx config serves the website from `app_v1/masters/website/dist`, proxies `/web/`, `/crud/`, `/v1/`, and `/health` to FastAPI, and logs `/v1/sessions/<id>/signal` without query strings.
 
 Check renewal:
 
@@ -180,5 +163,4 @@ Smoke checks:
 curl -I https://gps.qutat.com/
 curl -I https://gps.qutat.com/health
 sudo systemctl status gpstation-v1-server --no-pager
-sudo systemctl status gpstation-v1-website --no-pager
 ```

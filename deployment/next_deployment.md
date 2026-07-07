@@ -1,21 +1,27 @@
-# Next deployment notes for GPStation app_v1
+# Website deployment notes for GPStation app_v1
 
-`app_v1/masters/website` is a Next.js server app. Do not copy `.next/` to `/var/www`; build it in place and run it with `next start`.
+`app_v1/masters/website` is a Vite React SPA. Production does not run a website Node service.
 
-Production settings:
-
-- Public host: `https://gps.qutat.com`
-- Internal Next port: `3000`
-- Internal FastAPI port: `8000`
-- Browser API base: `NEXT_PUBLIC_GPSTATION_V1_API_URL=https://gps.qutat.com`
-
-Commands:
+## Build
 
 ```bash
 cd /home/ubuntu/gpstation/app_v1/masters/website
 npm ci
 npm run build
-npm start
 ```
 
-The website service should be managed by systemd as `gpstation-v1-website`; see `deployment/deployment.md`.
+The build output is:
+
+```text
+/home/ubuntu/gpstation/app_v1/masters/website/dist
+```
+
+Nginx serves that directory directly and falls back to `/index.html` for SPA routes such as `/users/<user_id>`.
+
+## Env
+
+```text
+VITE_GPSTATION_V1_API_URL=https://gps.qutat.com
+```
+
+The FastAPI server remains on `127.0.0.1:8000`, with `/web/`, `/crud/`, `/v1/`, and `/health` proxied by Nginx.
