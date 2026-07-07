@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import inspect
 import json
+import os
 import sys
 import time
 from collections.abc import Awaitable, Callable
@@ -14,6 +15,8 @@ from sdk.protocol.constants import DATA_CHANNEL_LABEL
 from sdk.protocol.messages import DataChannelAttachment, DataChannelMessage
 
 CHUNK_SIZE = 16 * 1024
+RTC_ICE_SERVERS_ENV = "GPSTATION_V1_RTC_ICE_SERVERS_JSON"
+DEFAULT_RTC_ICE_SERVERS = [{"urls": "stun:stun.l.google.com:19302"}]
 
 
 @dataclass(frozen=True)
@@ -134,10 +137,16 @@ async def _run_app_stdio(
 ) -> None:
     context = SlaveContext(session_id=session_id, ttl_seconds=ttl_seconds)
     try:
-        from aiortc import RTCPeerConnection, RTCSessionDescription
+        from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
         from aiortc.sdp import candidate_from_sdp
     except Exception as exc:
         emit({"type": "error", "code": "aiortc_import_failed", "detail": str(exc)})
+        return
+
+    try:
+        rtc_configuration = build_rtc_configuration(RTCConfiguration, RTCIceServer)
+    except Exception as exc:
+        emit({"type": "error", "code": "rtc_configuration_failed", "detail": str(exc)})
         return
 
     try:
@@ -146,7 +155,7 @@ async def _run_app_stdio(
         emit({"type": "error", "code": "initialize_failed", "detail": str(exc)})
         return
 
-    pc = RTCPeerConnection()
+    pc = RTCPeerConnection(rtc_configuration)
     closed = asyncio.Event()
     pending_calls: dict[str, PendingCall] = {}
 
@@ -161,8 +170,17 @@ async def _run_app_stdio(
 
     @pc.on("connectionstatechange")
     async def on_connectionstatechange() -> None:
+        log(f"peer connection state: {pc.connectionState}")
         if pc.connectionState in {"closed", "failed", "disconnected"}:
             closed.set()
+
+    @pc.on("iceconnectionstatechange")
+    def on_iceconnectionstatechange() -> None:
+        log(f"ICE connection state: {pc.iceConnectionState}")
+
+    @pc.on("icegatheringstatechange")
+    def on_icegatheringstatechange_log() -> None:
+        log(f"ICE gathering state: {pc.iceGatheringState}")
 
     emit({"type": "ready", "session_id": session_id})
 
@@ -191,10 +209,12 @@ async def handle_signal(
 ) -> None:
     signal_type = signal.get("type")
     if signal_type == "offer":
+        log(f"received offer candidates: {format_candidate_summary(summarize_sdp_candidates(signal['sdp']))}")
         await pc.setRemoteDescription(rtc_session_description(sdp=signal["sdp"], type="offer"))
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
         await wait_for_ice_gathering(pc)
+        log(f"created answer candidates: {format_candidate_summary(summarize_sdp_candidates(pc.localDescription.sdp))}")
         emit(
             {
                 "type": "signal",
@@ -209,6 +229,7 @@ async def handle_signal(
         candidate_text = signal.get("candidate")
         if not candidate_text:
             await pc.addIceCandidate(None)
+            log("received end-of-candidates")
             return
         if candidate_text.startswith("candidate:"):
             candidate_text = candidate_text.removeprefix("candidate:")
@@ -216,6 +237,79 @@ async def handle_signal(
         candidate.sdpMid = signal.get("sdpMid")
         candidate.sdpMLineIndex = signal.get("sdpMLineIndex")
         await pc.addIceCandidate(candidate)
+        log("received remote ICE candidate")
+
+
+def build_rtc_configuration(rtc_configuration_cls: Any, rtc_ice_server_cls: Any) -> Any:
+    return rtc_configuration_cls(
+        iceServers=[
+            rtc_ice_server_cls(**ice_server_kwargs(item))
+            for item in load_rtc_ice_servers()
+        ]
+    )
+
+
+def load_rtc_ice_servers() -> list[dict[str, Any]]:
+    raw_value = os.environ.get(RTC_ICE_SERVERS_ENV, "").strip()
+    if not raw_value:
+        return [dict(item) for item in DEFAULT_RTC_ICE_SERVERS]
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{RTC_ICE_SERVERS_ENV} must be valid JSON: {exc.msg}") from exc
+    return validate_rtc_ice_servers(parsed)
+
+
+def validate_rtc_ice_servers(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise ValueError(f"{RTC_ICE_SERVERS_ENV} must be a JSON array")
+    servers: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(f"{RTC_ICE_SERVERS_ENV}[{index}] must be an object")
+        urls = item.get("urls")
+        if not (isinstance(urls, str) or is_string_list(urls)):
+            raise ValueError(f"{RTC_ICE_SERVERS_ENV}[{index}].urls must be a string or string array")
+        server = {"urls": urls}
+        for key in ("username", "credential", "credentialType"):
+            optional_value = item.get(key)
+            if optional_value is None:
+                continue
+            if not isinstance(optional_value, str):
+                raise ValueError(f"{RTC_ICE_SERVERS_ENV}[{index}].{key} must be a string")
+            server[key] = optional_value
+        servers.append(server)
+    return servers
+
+
+def ice_server_kwargs(server: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in server.items() if key in {"urls", "username", "credential", "credentialType"}}
+
+
+def is_string_list(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def summarize_sdp_candidates(sdp: str) -> dict[str, int]:
+    summary = {"host": 0, "srflx": 0, "relay": 0, "prflx": 0, "unknown": 0, "total": 0}
+    for line in sdp.splitlines():
+        if not line.startswith("a=candidate:"):
+            continue
+        summary["total"] += 1
+        parts = line.split()
+        candidate_type = parts[parts.index("typ") + 1] if "typ" in parts and parts.index("typ") + 1 < len(parts) else "unknown"
+        if candidate_type in {"host", "srflx", "relay", "prflx"}:
+            summary[candidate_type] += 1
+        else:
+            summary["unknown"] += 1
+    return summary
+
+
+def format_candidate_summary(summary: dict[str, int]) -> str:
+    return (
+        f"total={summary['total']} host={summary['host']} srflx={summary['srflx']} "
+        f"relay={summary['relay']} prflx={summary['prflx']} unknown={summary['unknown']}"
+    )
 
 
 async def wait_for_ice_gathering(pc: Any) -> None:

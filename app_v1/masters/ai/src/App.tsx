@@ -17,6 +17,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   GpStationClient,
   GpStationPeer,
+  parseRtcIceServersJson,
+} from '@gpstation/v1-master-js-sdk';
+import type {
+  CandidateSummary,
+  ConnectDiagnosticEvent,
   LauncherSessionView,
   ReceivedFile,
   SessionDescriptor,
@@ -24,6 +29,7 @@ import {
 
 const defaultApiBaseUrl = import.meta.env.VITE_GPSTATION_V1_API_URL || '';
 const defaultAccessToken = import.meta.env.VITE_GPSTATION_V1_ACCESS_TOKEN || '';
+const defaultRtcIceServersJson = import.meta.env.VITE_GPSTATION_V1_RTC_ICE_SERVERS_JSON || '';
 const LLM_TIMEOUT_MS = 600_000;
 const EMBEDDING_TIMEOUT_MS = 600_000;
 const SDXL_TIMEOUT_MS = 600_000;
@@ -70,6 +76,11 @@ type SessionLogItem = {
   line: string;
 };
 
+type DiagnosticLogItem = ConnectDiagnosticEvent & {
+  id: number;
+  time: string;
+};
+
 const tabs: { id: TabId; label: string; icon: typeof Cable }[] = [
   { id: 'connection', label: 'Connection', icon: Cable },
   { id: 'llm', label: 'ai.llm', icon: Brain },
@@ -80,6 +91,7 @@ const tabs: { id: TabId; label: string; icon: typeof Cable }[] = [
 export function App() {
   const [apiBaseUrl, setApiBaseUrl] = useState(defaultApiBaseUrl);
   const [token, setToken] = useState(defaultAccessToken);
+  const [rtcIceServersJson, setRtcIceServersJson] = useState(defaultRtcIceServersJson);
   const [launchers, setLaunchers] = useState<LauncherSessionView[]>([]);
   const [selectedLauncherId, setSelectedLauncherId] = useState('');
   const [selectedSlaveAppId, setSelectedSlaveAppId] = useState('ai');
@@ -89,6 +101,9 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [connected, setConnected] = useState(false);
   const [logs, setLogs] = useState<LogItem[]>([]);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticLogItem[]>([]);
+  const [localSdp, setLocalSdp] = useState('');
+  const [remoteSdp, setRemoteSdp] = useState('');
   const [subprocessLogs, setSubprocessLogs] = useState<SessionLogItem[]>([]);
   const [subprocessLogsBusy, setSubprocessLogsBusy] = useState(false);
   const [subprocessLogStatus, setSubprocessLogStatus] = useState('No session');
@@ -118,6 +133,7 @@ export function App() {
 
   const peerRef = useRef<GpStationPeer | null>(null);
   const logIdRef = useRef(0);
+  const diagnosticIdRef = useRef(0);
   const sdxlFilesRef = useRef<DisplayFile[]>([]);
 
   const client = useMemo(
@@ -136,6 +152,18 @@ export function App() {
     const id = logIdRef.current + 1;
     logIdRef.current = id;
     setLogs((items) => [{ id, message }, ...items].slice(0, 16));
+  }, []);
+
+  const addDiagnostic = useCallback((event: ConnectDiagnosticEvent) => {
+    const id = diagnosticIdRef.current + 1;
+    diagnosticIdRef.current = id;
+    if (event.localSdp) {
+      setLocalSdp(event.localSdp);
+    }
+    if (event.remoteSdp) {
+      setRemoteSdp(event.remoteSdp);
+    }
+    setDiagnostics((items) => [{ ...event, id, time: formatClock(new Date()) }, ...items].slice(0, 24));
   }, []);
 
   useEffect(() => {
@@ -232,9 +260,17 @@ export function App() {
     peerRef.current = null;
     setConnected(false);
     setNextSdxlFiles([]);
+    setDiagnostics([]);
+    setLocalSdp('');
+    setRemoteSdp('');
     setSubprocessLogs([]);
     setSubprocessLogStatus('Starting session');
     try {
+      const connectClient = new GpStationClient({
+        apiBaseUrl,
+        token,
+        rtcConfig: parseRtcConfigInput(rtcIceServersJson),
+      });
       const descriptor = await client.createSession({
         launcherSessionId: selectedLauncherId,
         slaveAppId: selectedSlaveAppId,
@@ -242,12 +278,13 @@ export function App() {
       setSession(descriptor);
       setSubprocessLogStatus('Waiting for logs');
       addLog(`session: ${descriptor.session_id}`);
-      const peer = await client.connectSession(descriptor, {
+      const peer = await connectClient.connectSession(descriptor, {
         timeoutMs: 30_000,
         onStatus: (nextStatus) => {
           setStatus(nextStatus);
           addLog(nextStatus);
         },
+        onDiagnostic: addDiagnostic,
       });
       peerRef.current = peer;
       setConnected(true);
@@ -392,6 +429,16 @@ export function App() {
           <input value={token} onChange={(event) => setToken(event.target.value)} />
         </label>
         <label>
+          <span>ICE Servers JSON</span>
+          <textarea
+            className="compactTextarea"
+            value={rtcIceServersJson}
+            onChange={(event) => setRtcIceServersJson(event.target.value)}
+            rows={3}
+            placeholder='[{"urls":"stun:stun.l.google.com:19302"}]'
+          />
+        </label>
+        <label>
           <span>Launcher</span>
           <select
             value={selectedLauncherId}
@@ -525,6 +572,32 @@ export function App() {
                 ))}
                 {logs.length === 0 && <li>Ready.</li>}
               </ol>
+            </div>
+
+            <div className="panel diagnosticPanel">
+              <div className="panelHeader">
+                <h2>WebRTC Diagnostics</h2>
+                <Cable size={17} aria-hidden="true" />
+              </div>
+              <ol className="logList diagnosticList">
+                {diagnostics.map((item) => (
+                  <li key={item.id}>
+                    <strong>{item.time}</strong> {item.message}
+                    <span>{formatDiagnosticState(item)}</span>
+                    {item.localCandidateSummary && <span>local: {formatCandidateSummary(item.localCandidateSummary)}</span>}
+                    {item.remoteCandidateSummary && <span>remote: {formatCandidateSummary(item.remoteCandidateSummary)}</span>}
+                  </li>
+                ))}
+                {diagnostics.length === 0 && <li>No WebRTC diagnostics yet.</li>}
+              </ol>
+              <details className="sdpDetails">
+                <summary>Local offer SDP</summary>
+                <pre className="sdpBox">{localSdp || 'No local offer yet.'}</pre>
+              </details>
+              <details className="sdpDetails">
+                <summary>Remote answer SDP</summary>
+                <pre className="sdpBox">{remoteSdp || 'No remote answer yet.'}</pre>
+              </details>
             </div>
 
             <div className="panel subprocessPanel">
@@ -727,6 +800,11 @@ function pickSlaveAppId(launcher: LauncherSessionView, current: string): string 
   return launcher.slave_app_ids[0] ?? '';
 }
 
+function parseRtcConfigInput(value: string): RTCConfiguration | undefined {
+  const trimmed = value.trim();
+  return trimmed ? { iceServers: parseRtcIceServersJson(trimmed) } : undefined;
+}
+
 function requirePeer(peer: GpStationPeer | null): GpStationPeer {
   if (!peer) {
     throw new Error('not connected');
@@ -891,6 +969,20 @@ function formatLogTime(value: string): string {
     return value;
   }
   return formatClock(date);
+}
+
+function formatCandidateSummary(summary: CandidateSummary): string {
+  return `total=${summary.total} host=${summary.host} srflx=${summary.srflx} relay=${summary.relay} prflx=${summary.prflx} unknown=${summary.unknown}`;
+}
+
+function formatDiagnosticState(event: ConnectDiagnosticEvent): string {
+  return [
+    `signaling=${event.signalingState ?? '-'}`,
+    `iceGathering=${event.iceGatheringState ?? '-'}`,
+    `iceConnection=${event.iceConnectionState ?? '-'}`,
+    `connection=${event.connectionState ?? '-'}`,
+    `dataChannel=${event.dataChannelState ?? '-'}`,
+  ].join(' / ');
 }
 
 function vectorPreview(values: number[]): string {

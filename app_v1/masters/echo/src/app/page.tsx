@@ -5,13 +5,19 @@ import { useMemo, useRef, useState } from 'react';
 import {
   GpStationClient,
   GpStationPeer,
+  parseRtcIceServersJson,
+} from '@gpstation/v1-master-js-sdk';
+import type {
+  CandidateSummary,
+  ConnectDiagnosticEvent,
+  LauncherSessionView,
   ReceivedFile,
   SessionDescriptor,
-  LauncherSessionView,
 } from '@gpstation/v1-master-js-sdk';
 
 const defaultApiBaseUrl = process.env.NEXT_PUBLIC_GPSTATION_V1_API_URL || '';
 const defaultAccessToken = process.env.NEXT_PUBLIC_GPSTATION_V1_ACCESS_TOKEN || '';
+const defaultRtcIceServersJson = process.env.NEXT_PUBLIC_GPSTATION_V1_RTC_ICE_SERVERS_JSON || '';
 
 type LogItem = {
   id: number;
@@ -23,9 +29,15 @@ type DisplayFile = ReceivedFile & {
   isImage: boolean;
 };
 
+type DiagnosticLogItem = ConnectDiagnosticEvent & {
+  id: number;
+  time: string;
+};
+
 export default function Home() {
   const [apiBaseUrl, setApiBaseUrl] = useState(defaultApiBaseUrl);
   const [token, setToken] = useState(defaultAccessToken);
+  const [rtcIceServersJson, setRtcIceServersJson] = useState(defaultRtcIceServersJson);
   const [launchers, setLaunchers] = useState<LauncherSessionView[]>([]);
   const [selectedLauncherId, setSelectedLauncherId] = useState('');
   const [selectedSlaveAppId, setSelectedSlaveAppId] = useState('echo');
@@ -37,10 +49,14 @@ export default function Home() {
   const [resultJson, setResultJson] = useState('');
   const [resultFiles, setResultFiles] = useState<DisplayFile[]>([]);
   const [logs, setLogs] = useState<LogItem[]>([]);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticLogItem[]>([]);
+  const [localSdp, setLocalSdp] = useState('');
+  const [remoteSdp, setRemoteSdp] = useState('');
   const [busy, setBusy] = useState(false);
   const [connected, setConnected] = useState(false);
   const peerRef = useRef<GpStationPeer | null>(null);
   const logIdRef = useRef(0);
+  const diagnosticIdRef = useRef(0);
 
   const client = useMemo(
     () =>
@@ -57,6 +73,18 @@ export default function Home() {
     const id = logIdRef.current + 1;
     logIdRef.current = id;
     setLogs((items) => [{ id, message }, ...items].slice(0, 12));
+  }
+
+  function addDiagnostic(event: ConnectDiagnosticEvent) {
+    const id = diagnosticIdRef.current + 1;
+    diagnosticIdRef.current = id;
+    if (event.localSdp) {
+      setLocalSdp(event.localSdp);
+    }
+    if (event.remoteSdp) {
+      setRemoteSdp(event.remoteSdp);
+    }
+    setDiagnostics((items) => [{ ...event, id, time: formatClock(new Date()) }, ...items].slice(0, 24));
   }
 
   function clearResultFiles() {
@@ -101,18 +129,27 @@ export default function Home() {
     peerRef.current?.close();
     peerRef.current = null;
     setConnected(false);
+    setDiagnostics([]);
+    setLocalSdp('');
+    setRemoteSdp('');
     try {
+      const connectClient = new GpStationClient({
+        apiBaseUrl,
+        token,
+        rtcConfig: parseRtcConfigInput(rtcIceServersJson),
+      });
       const descriptor = await client.createSession({
         launcherSessionId: selectedLauncherId,
         slaveAppId: selectedSlaveAppId,
       });
       setSession(descriptor);
       addLog(`session: ${descriptor.session_id}`);
-      const peer = await client.connectSession(descriptor, {
+      const peer = await connectClient.connectSession(descriptor, {
         onStatus: (nextStatus) => {
           setStatus(nextStatus);
           addLog(nextStatus);
         },
+        onDiagnostic: addDiagnostic,
       });
       peerRef.current = peer;
       setConnected(true);
@@ -197,6 +234,16 @@ export default function Home() {
           <label>
             <span>Token</span>
             <input value={token} onChange={(event) => setToken(event.target.value)} />
+          </label>
+          <label>
+            <span>ICE servers JSON</span>
+            <textarea
+              className="compactTextarea"
+              value={rtcIceServersJson}
+              onChange={(event) => setRtcIceServersJson(event.target.value)}
+              rows={3}
+              placeholder='[{"urls":"stun:stun.l.google.com:19302"}]'
+            />
           </label>
           <div className="buttonRow">
             <button type="button" onClick={refreshLaunchers} disabled={busy} title="Refresh launchers">
@@ -339,9 +386,37 @@ export default function Home() {
             {logs.length === 0 && <li>Ready.</li>}
           </ol>
         </div>
+
+        <div className="panel diagnosticPanel">
+          <h2>WebRTC Diagnostics</h2>
+          <ol className="logList diagnosticList">
+            {diagnostics.map((item) => (
+              <li key={item.id}>
+                <strong>{item.time}</strong> {item.message}
+                <span>{formatDiagnosticState(item)}</span>
+                {item.localCandidateSummary && <span>local: {formatCandidateSummary(item.localCandidateSummary)}</span>}
+                {item.remoteCandidateSummary && <span>remote: {formatCandidateSummary(item.remoteCandidateSummary)}</span>}
+              </li>
+            ))}
+            {diagnostics.length === 0 && <li>No WebRTC diagnostics yet.</li>}
+          </ol>
+          <details className="sdpDetails">
+            <summary>Local offer SDP</summary>
+            <pre className="sdpBox">{localSdp || 'No local offer yet.'}</pre>
+          </details>
+          <details className="sdpDetails">
+            <summary>Remote answer SDP</summary>
+            <pre className="sdpBox">{remoteSdp || 'No remote answer yet.'}</pre>
+          </details>
+        </div>
       </section>
     </main>
   );
+}
+
+function parseRtcConfigInput(value: string): RTCConfiguration | undefined {
+  const trimmed = value.trim();
+  return trimmed ? { iceServers: parseRtcIceServersJson(trimmed) } : undefined;
 }
 
 function pickSlaveAppId(launcher: LauncherSessionView, current: string): string {
@@ -362,4 +437,26 @@ function formatBytes(size: number): string {
     return `${(size / 1024).toFixed(1)} KB`;
   }
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function formatClock(value: Date): string {
+  return value.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function formatCandidateSummary(summary: CandidateSummary): string {
+  return `total=${summary.total} host=${summary.host} srflx=${summary.srflx} relay=${summary.relay} prflx=${summary.prflx} unknown=${summary.unknown}`;
+}
+
+function formatDiagnosticState(event: ConnectDiagnosticEvent): string {
+  return [
+    `signaling=${event.signalingState ?? '-'}`,
+    `iceGathering=${event.iceGatheringState ?? '-'}`,
+    `iceConnection=${event.iceConnectionState ?? '-'}`,
+    `connection=${event.connectionState ?? '-'}`,
+    `dataChannel=${event.dataChannelState ?? '-'}`,
+  ].join(' / ');
 }

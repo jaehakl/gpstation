@@ -85,6 +85,29 @@ export type CallResult<T = unknown> = {
   files: ReceivedFile[];
 };
 
+export type CandidateSummary = {
+  host: number;
+  srflx: number;
+  relay: number;
+  prflx: number;
+  unknown: number;
+  total: number;
+};
+
+export type ConnectDiagnosticEvent = {
+  stage: string;
+  message: string;
+  signalingState?: RTCSignalingState;
+  iceGatheringState?: RTCIceGatheringState;
+  iceConnectionState?: RTCIceConnectionState;
+  connectionState?: RTCPeerConnectionState;
+  dataChannelState?: RTCDataChannelState;
+  localCandidateSummary?: CandidateSummary;
+  remoteCandidateSummary?: CandidateSummary;
+  localSdp?: string;
+  remoteSdp?: string;
+};
+
 export type GpStationClientOptions = {
   apiBaseUrl: string;
   token: string;
@@ -100,6 +123,7 @@ export type CreateSessionOptions = {
 export type ConnectOptions = {
   timeoutMs?: number;
   onStatus?: (status: string) => void;
+  onDiagnostic?: (event: ConnectDiagnosticEvent) => void;
 };
 
 type NormalizedFile = AttachmentMetadata & {
@@ -129,6 +153,7 @@ type PendingCall = {
 const DEFAULT_CHUNK_SIZE = 16 * 1024;
 const BUFFERED_AMOUNT_HIGH_WATER_MARK = 512 * 1024;
 const BUFFERED_AMOUNT_LOW_WATER_MARK = 128 * 1024;
+export const DEFAULT_RTC_ICE_SERVERS: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -163,16 +188,22 @@ export class GpStationClient {
     options: ConnectOptions = {},
   ): Promise<GpStationPeer> {
     const status = options.onStatus ?? (() => undefined);
+    const diagnostic = options.onDiagnostic ?? (() => undefined);
     const timeoutMs = options.timeoutMs ?? 15000;
-    const peerConnection = new RTCPeerConnection(this.rtcConfig);
+    const peerConnection = new RTCPeerConnection(this.rtcConfig ?? { iceServers: DEFAULT_RTC_ICE_SERVERS });
     const dataChannel = peerConnection.createDataChannel('gpstation.v1', { ordered: true });
     const socket = new WebSocket(descriptor.signaling_url);
     const peer = new GpStationPeer(peerConnection, dataChannel, socket);
+    registerConnectionDiagnostics(peerConnection, dataChannel, diagnostic);
+    emitDiagnostic(peerConnection, dataChannel, diagnostic, {
+      stage: 'peer-created',
+      message: 'created RTCPeerConnection',
+    });
 
     status('opening signaling socket');
     await waitForSocketOpen(socket, timeoutMs);
     socket.addEventListener('message', (event) => {
-      void handleSignalMessage(peerConnection, event.data, status);
+      void handleSignalMessage(peerConnection, dataChannel, event.data, status, diagnostic);
     });
 
     status('creating offer');
@@ -183,6 +214,12 @@ export class GpStationClient {
     if (!peerConnection.localDescription) {
       throw new Error('localDescription was not created');
     }
+    emitDiagnostic(peerConnection, dataChannel, diagnostic, {
+      stage: 'local-offer',
+      message: 'created local offer',
+      localCandidateSummary: summarizeSdpCandidates(peerConnection.localDescription.sdp),
+      localSdp: peerConnection.localDescription.sdp,
+    });
 
     socket.send(
       JSON.stringify({
@@ -195,6 +232,10 @@ export class GpStationClient {
 
     status('waiting for data channel');
     await peer.waitUntilOpen(timeoutMs);
+    emitDiagnostic(peerConnection, dataChannel, diagnostic, {
+      stage: 'connected',
+      message: 'data channel opened',
+    });
     status('connected');
     return peer;
   }
@@ -237,7 +278,10 @@ export class GpStationPeer {
       return Promise.resolve();
     }
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('data channel open timeout')), timeoutMs);
+      const timer = setTimeout(
+        () => reject(new Error(`data channel open timeout (${this.connectionStateSummary()})`)),
+        timeoutMs,
+      );
       this.dataChannel.addEventListener(
         'open',
         () => {
@@ -247,6 +291,16 @@ export class GpStationPeer {
         { once: true },
       );
     });
+  }
+
+  private connectionStateSummary(): string {
+    return [
+      `signaling=${this.peerConnection.signalingState}`,
+      `iceGathering=${this.peerConnection.iceGatheringState}`,
+      `iceConnection=${this.peerConnection.iceConnectionState}`,
+      `connection=${this.peerConnection.connectionState}`,
+      `dataChannel=${this.dataChannel.readyState}`,
+    ].join(', ');
   }
 
   async call<TPayload = unknown, TResult = unknown>(
@@ -615,8 +669,10 @@ function asError(error: unknown): Error {
 
 async function handleSignalMessage(
   peerConnection: RTCPeerConnection,
+  dataChannel: RTCDataChannel,
   rawData: string,
   status: (status: string) => void,
+  diagnostic: (event: ConnectDiagnosticEvent) => void,
 ): Promise<void> {
   const payload = JSON.parse(rawData) as { signal?: SignalPayload; type?: string; detail?: string };
   if (payload.type === 'session.error') {
@@ -628,11 +684,125 @@ async function handleSignalMessage(
   if (payload.signal.type === 'answer') {
     status('received answer');
     await peerConnection.setRemoteDescription({ type: 'answer', sdp: payload.signal.sdp });
+    emitDiagnostic(peerConnection, dataChannel, diagnostic, {
+      stage: 'remote-answer',
+      message: 'received remote answer',
+      remoteCandidateSummary: summarizeSdpCandidates(payload.signal.sdp),
+      remoteSdp: payload.signal.sdp,
+    });
     return;
   }
   if (payload.signal.type === 'ice') {
     await peerConnection.addIceCandidate(payload.signal.candidate ? payload.signal : null);
+    emitDiagnostic(peerConnection, dataChannel, diagnostic, {
+      stage: 'remote-ice',
+      message: payload.signal.candidate ? 'received remote ICE candidate' : 'received end-of-candidates',
+    });
   }
+}
+
+export function parseRtcIceServersJson(value: string): RTCIceServer[] {
+  const parsed = JSON.parse(value) as unknown;
+  if (!Array.isArray(parsed)) {
+    throw new Error('RTC ICE servers JSON must be an array');
+  }
+  for (const item of parsed) {
+    if (!isRtcIceServer(item)) {
+      throw new Error('RTC ICE servers JSON must contain objects with urls');
+    }
+  }
+  return parsed;
+}
+
+export function summarizeSdpCandidates(sdp: string): CandidateSummary {
+  const summary: CandidateSummary = { host: 0, srflx: 0, relay: 0, prflx: 0, unknown: 0, total: 0 };
+  for (const line of sdp.split(/\r?\n/)) {
+    if (!line.startsWith('a=candidate:')) {
+      continue;
+    }
+    summary.total += 1;
+    const match = /\btyp\s+(\S+)/.exec(line);
+    const type = match?.[1];
+    if (type === 'host' || type === 'srflx' || type === 'relay' || type === 'prflx') {
+      summary[type] += 1;
+    } else {
+      summary.unknown += 1;
+    }
+  }
+  return summary;
+}
+
+function isRtcIceServer(value: unknown): value is RTCIceServer {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const urls = (value as { urls?: unknown }).urls;
+  return typeof urls === 'string' || (Array.isArray(urls) && urls.every((item) => typeof item === 'string'));
+}
+
+function registerConnectionDiagnostics(
+  peerConnection: RTCPeerConnection,
+  dataChannel: RTCDataChannel,
+  diagnostic: (event: ConnectDiagnosticEvent) => void,
+): void {
+  peerConnection.addEventListener('signalingstatechange', () => {
+    emitDiagnostic(peerConnection, dataChannel, diagnostic, {
+      stage: 'signaling-state',
+      message: `signaling state: ${peerConnection.signalingState}`,
+    });
+  });
+  peerConnection.addEventListener('icegatheringstatechange', () => {
+    emitDiagnostic(peerConnection, dataChannel, diagnostic, {
+      stage: 'ice-gathering-state',
+      message: `ICE gathering state: ${peerConnection.iceGatheringState}`,
+    });
+  });
+  peerConnection.addEventListener('iceconnectionstatechange', () => {
+    emitDiagnostic(peerConnection, dataChannel, diagnostic, {
+      stage: 'ice-connection-state',
+      message: `ICE connection state: ${peerConnection.iceConnectionState}`,
+    });
+  });
+  peerConnection.addEventListener('connectionstatechange', () => {
+    emitDiagnostic(peerConnection, dataChannel, diagnostic, {
+      stage: 'connection-state',
+      message: `peer connection state: ${peerConnection.connectionState}`,
+    });
+  });
+  dataChannel.addEventListener('open', () => {
+    emitDiagnostic(peerConnection, dataChannel, diagnostic, {
+      stage: 'data-channel-state',
+      message: 'data channel state: open',
+    });
+  });
+  dataChannel.addEventListener('close', () => {
+    emitDiagnostic(peerConnection, dataChannel, diagnostic, {
+      stage: 'data-channel-state',
+      message: 'data channel state: closed',
+    });
+  });
+  dataChannel.addEventListener('error', () => {
+    emitDiagnostic(peerConnection, dataChannel, diagnostic, {
+      stage: 'data-channel-state',
+      message: 'data channel state: error',
+    });
+  });
+}
+
+function emitDiagnostic(
+  peerConnection: RTCPeerConnection,
+  dataChannel: RTCDataChannel,
+  diagnostic: (event: ConnectDiagnosticEvent) => void,
+  event: ConnectDiagnosticEvent,
+): void {
+  diagnostic({
+    signalingState: peerConnection.signalingState,
+    iceGatheringState: peerConnection.iceGatheringState,
+    iceConnectionState: peerConnection.iceConnectionState,
+    connectionState: peerConnection.connectionState,
+    dataChannelState: dataChannel.readyState,
+    ...event,
+  });
 }
 
 function waitForSocketOpen(socket: WebSocket, timeoutMs: number): Promise<void> {

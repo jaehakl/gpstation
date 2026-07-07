@@ -89,7 +89,7 @@ class SessionManager:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=subprocess_env(),
+            env=subprocess_env(self.settings),
             cwd=slave_app.project_dir,
         )
         ready_event = asyncio.Event()
@@ -280,5 +280,7 @@ def json_line(message: dict[str, Any]) -> bytes:
     return (json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8")
 
 
-def subprocess_env() -> dict[str, str]:
-    return os.environ.copy()
+def subprocess_env(settings: LauncherSettings) -> dict[str, str]:
+    env = os.environ.copy()
+    env["GPSTATION_V1_RTC_ICE_SERVERS_JSON"] = settings.rtc_ice_servers_json
+    return env

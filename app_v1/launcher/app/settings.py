@@ -10,6 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = APP_ROOT / ".env"
+DEFAULT_RTC_ICE_SERVERS_JSON = '[{"urls":"stun:stun.l.google.com:19302"}]'
 
 
 class LauncherSettings(BaseSettings):
@@ -25,11 +26,17 @@ class LauncherSettings(BaseSettings):
     launcher_name: str = Field(default_factory=gethostname)
     heartbeat_interval_seconds: float = Field(default=5.0, gt=0)
     session_ready_timeout_seconds: float = Field(default=10.0, gt=0)
+    rtc_ice_servers_json: str = DEFAULT_RTC_ICE_SERVERS_JSON
 
     @field_validator("api_url")
     @classmethod
     def strip_api_url(cls, value: str) -> str:
         return value.rstrip("/")
+
+    @field_validator("rtc_ice_servers_json")
+    @classmethod
+    def strip_rtc_ice_servers_json(cls, value: str) -> str:
+        return value.strip() or DEFAULT_RTC_ICE_SERVERS_JSON
 
     @property
     def control_websocket_url(self) -> str:

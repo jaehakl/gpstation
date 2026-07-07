@@ -5,7 +5,7 @@ import pytest
 from app.control import handle_server_message, launcher_hello_payload
 from app.settings import LauncherSettings
 from app.slave_registry import SlaveApp, SlaveAppRegistry, load_registry
-from app.subprocess_manager import SESSION_LOG_LINE_LIMIT, SessionManager
+from app.subprocess_manager import SESSION_LOG_LINE_LIMIT, SessionManager, subprocess_env
 
 
 def write_manifest(root, folder_name: str, slave_app_id: str, **extra) -> None:
@@ -125,6 +125,15 @@ def test_session_manager_uses_global_timeout_without_slave_override(tmp_path):
     )
 
     assert manager.ready_timeout_seconds_for("echo") == 10
+
+
+def test_subprocess_env_includes_rtc_ice_servers_json():
+    settings = LauncherSettings(
+        access_token="test-token",
+        rtc_ice_servers_json='[{"urls":"turn:turn.example.com:3478","username":"u","credential":"p"}]',
+    )
+
+    assert subprocess_env(settings)["GPSTATION_V1_RTC_ICE_SERVERS_JSON"] == settings.rtc_ice_servers_json
 
 
 def test_registry_rejects_unknown_launch_app(tmp_path):

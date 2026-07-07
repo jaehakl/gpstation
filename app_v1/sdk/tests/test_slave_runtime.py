@@ -6,7 +6,14 @@ import pytest
 
 from sdk.protocol.constants import DATA_CHANNEL_LABEL
 from sdk.slave import DataChannelAttachment, DataChannelMessage, SlaveApp, SlaveContext
-from sdk.slave.runtime import CHUNK_SIZE, decode_binary_frame, encode_binary_frame, handle_datachannel_message
+from sdk.slave.runtime import (
+    CHUNK_SIZE,
+    decode_binary_frame,
+    encode_binary_frame,
+    handle_datachannel_message,
+    load_rtc_ice_servers,
+    summarize_sdp_candidates,
+)
 
 
 class DummyChannel:
@@ -31,6 +38,57 @@ def test_handler_decorators_preserve_registration_order():
         return None
 
     assert [handler.message_type for handler in app.handlers] == ["first", "second"]
+
+
+def test_load_rtc_ice_servers_uses_default_stun(monkeypatch):
+    monkeypatch.delenv("GPSTATION_V1_RTC_ICE_SERVERS_JSON", raising=False)
+
+    assert load_rtc_ice_servers() == [{"urls": "stun:stun.l.google.com:19302"}]
+
+
+def test_load_rtc_ice_servers_accepts_turn_credentials(monkeypatch):
+    monkeypatch.setenv(
+        "GPSTATION_V1_RTC_ICE_SERVERS_JSON",
+        json.dumps(
+            [
+                {"urls": ["stun:stun.example.com:3478"]},
+                {
+                    "urls": "turn:turn.example.com:3478",
+                    "username": "user",
+                    "credential": "password",
+                },
+            ]
+        ),
+    )
+
+    assert load_rtc_ice_servers() == [
+        {"urls": ["stun:stun.example.com:3478"]},
+        {"urls": "turn:turn.example.com:3478", "username": "user", "credential": "password"},
+    ]
+
+
+def test_load_rtc_ice_servers_rejects_invalid_json(monkeypatch):
+    monkeypatch.setenv("GPSTATION_V1_RTC_ICE_SERVERS_JSON", "{not-json")
+
+    with pytest.raises(ValueError, match="valid JSON"):
+        load_rtc_ice_servers()
+
+
+def test_summarize_sdp_candidates_counts_candidate_types():
+    summary = summarize_sdp_candidates(
+        "\r\n".join(
+            [
+                "v=0",
+                "a=candidate:1 1 udp 1 10.0.0.2 5000 typ host",
+                "a=candidate:2 1 udp 1 203.0.113.2 5001 typ srflx",
+                "a=candidate:3 1 udp 1 198.51.100.2 5002 typ relay",
+                "a=candidate:4 1 udp 1 198.51.100.3 5003 typ prflx",
+                "a=candidate:5 1 udp 1 198.51.100.4 5004",
+            ]
+        )
+    )
+
+    assert summary == {"host": 1, "srflx": 1, "relay": 1, "prflx": 1, "unknown": 1, "total": 5}
 
 
 @pytest.mark.asyncio

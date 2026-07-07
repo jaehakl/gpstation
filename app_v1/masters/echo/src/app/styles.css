@@ -68,6 +68,10 @@ textarea {
   resize: vertical;
 }
 
+.compactTextarea {
+  min-height: 78px;
+}
+
 .shell {
   margin: 0 auto;
   max-width: 1180px;
@@ -285,6 +289,44 @@ dt {
   gap: 8px;
   margin: 0;
   padding-left: 18px;
+}
+
+.diagnosticPanel {
+  grid-column: 1 / -1;
+}
+
+.diagnosticList li {
+  display: grid;
+  gap: 4px;
+}
+
+.diagnosticList strong {
+  color: var(--text);
+}
+
+.diagnosticList span {
+  overflow-wrap: anywhere;
+}
+
+.sdpDetails {
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.sdpDetails summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.sdpBox {
+  background: #11181f;
+  border-radius: 8px;
+  color: #d9f7e8;
+  max-height: 260px;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
 }
 
 @media (max-width: 880px) {

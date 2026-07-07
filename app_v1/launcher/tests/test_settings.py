@@ -15,6 +15,7 @@ def test_launcher_settings_reads_prefixed_values_from_env_file(tmp_path, monkeyp
             [
                 "GPSTATION_V1_API_URL=http://127.0.0.1:8199/base/",
                 "GPSTATION_V1_ACCESS_TOKEN=test-launcher-token",
+                'GPSTATION_V1_RTC_ICE_SERVERS_JSON=[{"urls":"stun:example.com:3478"}]',
             ]
         ),
         encoding="utf-8",
@@ -27,6 +28,7 @@ def test_launcher_settings_reads_prefixed_values_from_env_file(tmp_path, monkeyp
 
     assert settings.api_url == "http://127.0.0.1:8199/base"
     assert settings.access_token == "test-launcher-token"
+    assert settings.rtc_ice_servers_json == '[{"urls":"stun:example.com:3478"}]'
 
 
 def test_control_websocket_url_uses_v1_path():

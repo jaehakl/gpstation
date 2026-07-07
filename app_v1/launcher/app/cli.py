@@ -37,6 +37,7 @@ def config_check() -> None:
                 "launcher_name": settings.launcher_name,
                 "heartbeat_interval_seconds": settings.heartbeat_interval_seconds,
                 "session_ready_timeout_seconds": settings.session_ready_timeout_seconds,
+                "rtc_ice_servers_json": settings.rtc_ice_servers_json,
                 "access_token": "set" if settings.access_token else "missing",
             },
             ensure_ascii=False,
