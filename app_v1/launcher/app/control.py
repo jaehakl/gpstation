@@ -129,7 +129,6 @@ async def handle_server_message(manager: SessionManager, message: dict[str, Any]
             job_id=str(message["job_id"]),
             handler_type=str(message["handler_type"]),
             slave_app_id=str(message["slave_app_id"]),
-            input=message.get("input"),
             offer=message["offer"],
         )
         return

@@ -193,7 +193,6 @@ class SessionManager:
         job_id: str,
         handler_type: str,
         slave_app_id: str,
-        input: Any,
         offer: dict[str, Any],
     ) -> None:
         if self.current_job_id is not None:
@@ -256,7 +255,6 @@ class SessionManager:
                         "job_id": job_id,
                         "handler_type": handler_type,
                         "slave_app_id": slave_app_id,
-                        "input": input,
                         "offer": offer,
                     }
                 )

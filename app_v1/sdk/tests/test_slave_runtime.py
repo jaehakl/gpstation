@@ -16,6 +16,7 @@ from sdk.slave.runtime import (
     handle_datachannel_message,
     emit,
     load_rtc_ice_servers,
+    parse_job_ready_message,
     read_stdin_line,
     send_job_result,
     summarize_sdp_candidates,
@@ -140,6 +141,37 @@ def test_emit_writes_utf8_json_line(monkeypatch):
     output = stdout.buffer.getvalue()
     assert "한글".encode("utf-8") in output
     assert json.loads(output.decode("utf-8")) == {"type": "test", "payload": "한글"}
+
+
+def test_parse_job_ready_message_extracts_input_payload():
+    is_ready, input_payload, error = parse_job_ready_message(
+        json.dumps({"kind": "job.ready", "id": "job-1", "input": {"text": "한글"}}),
+        "job-1",
+    )
+
+    assert is_ready is True
+    assert input_payload == {"text": "한글"}
+    assert error is None
+
+
+def test_parse_job_ready_message_rejects_wrong_job_id():
+    is_ready, input_payload, error = parse_job_ready_message(
+        json.dumps({"kind": "job.ready", "id": "other", "input": {"text": "hello"}}),
+        "job-1",
+    )
+
+    assert is_ready is True
+    assert input_payload is None
+    assert error == "job.ready id mismatch: expected job-1, got other"
+
+
+def test_parse_job_ready_message_reports_malformed_frame():
+    is_ready, input_payload, error = parse_job_ready_message("{not-json", "job-1")
+
+    assert is_ready is True
+    assert input_payload is None
+    assert error is not None
+    assert "malformed job.ready frame" in error
 
 
 @pytest.mark.asyncio

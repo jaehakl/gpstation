@@ -24,10 +24,8 @@ def job_to_data(job: Job) -> JobData:
         user_id=str(job.user_id),
         handler_type=job.handler_type,
         slave_app_id=job.slave_app_id,
-        input=job.input,
         offer=job.offer,
         answer=job.answer,
-        result=job.result,
         progress=list(job.progress or []),
         state=job.state,
         launcher_id=str(job.launcher_id) if job.launcher_id else None,
@@ -51,7 +49,6 @@ class JobService:
         user_id: str,
         handler_type: str,
         slave_app_id: str,
-        input: Any,
         offer: dict[str, Any],
     ) -> Job:
         signal = SignalPayload.model_validate(offer)
@@ -61,7 +58,6 @@ class JobService:
             user_id=user_id,
             handler_type=handler_type,
             slave_app_id=slave_app_id,
-            input=input,
             offer=signal.model_dump(exclude_none=True),
             state="queued",
             progress=[],
@@ -159,11 +155,11 @@ class JobService:
         return job
 
     @staticmethod
-    async def mark_result(db: AsyncSession, *, job_id: str, result: Any) -> Job | None:
+    async def mark_result(db: AsyncSession, *, job_id: str) -> Job | None:
         job = await db.get(Job, job_id)
         if job is None:
             return None
-        job.result = result
+        job.result = None
         job.state = "succeeded"
         job.finished_at = utcnow()
         await clear_launcher_if_current(db, job)

@@ -98,7 +98,6 @@ class JobStart(StrictModel):
     job_id: str
     handler_type: str
     slave_app_id: str
-    input: Any = None
     offer: SignalPayload
 
 
@@ -133,7 +132,6 @@ class JobProgress(StrictModel):
 class JobResult(StrictModel):
     type: Literal["job.result"]
     job_id: str
-    result: Any = None
 
 
 class JobError(StrictModel):

@@ -79,10 +79,8 @@ export type JobData = {
   user_id: string;
   handler_type: string;
   slave_app_id: string;
-  input?: unknown;
   offer: Record<string, unknown>;
   answer?: Record<string, unknown> | null;
-  result?: unknown;
   progress: unknown[];
   state: JobState;
   launcher_id?: string | null;

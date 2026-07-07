@@ -28,7 +28,6 @@ async def create_job(
             user_id=principal.user_id,
             handler_type=body.handler_type,
             slave_app_id=body.slave_app_id,
-            input=body.input,
             offer=body.offer,
         )
     except ValueError as exc:
@@ -81,7 +80,6 @@ async def wait_job_answer(
         job_id=str(job.id),
         state=job.state,
         answer=job.answer,
-        result=job.result,
         last_error=job.last_error,
     )
 
@@ -129,7 +127,6 @@ async def dispatch_queued_jobs(db: AsyncSession, *, user_id: str | None = None) 
                     "job_id": str(job.id),
                     "handler_type": job.handler_type,
                     "slave_app_id": job.slave_app_id,
-                    "input": job.input,
                     "offer": job.offer,
                 },
             )

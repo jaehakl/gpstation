@@ -145,7 +145,7 @@ async def handle_launcher_message(
         await runtime.set_job_event(message.job_id)
         return
     if message.type == "job.result":
-        await JobService.mark_result(db, job_id=message.job_id, result=message.result)
+        await JobService.mark_result(db, job_id=message.job_id)
         await runtime.mark_launcher_job(launcher_id, None, worker_status="idle")
         await runtime.set_job_event(message.job_id)
         await dispatch_more_jobs(db)

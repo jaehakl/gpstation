@@ -23,10 +23,8 @@ export type JobDescriptor = {
   user_id: string;
   handler_type: string;
   slave_app_id: string;
-  input?: unknown;
   offer: SignalPayload;
   answer?: SignalPayload | null;
-  result?: unknown;
   progress: unknown[];
   state: string;
   launcher_id?: string | null;
@@ -41,7 +39,6 @@ export type JobAnswerWaitResult = {
   job_id: string;
   state: string;
   answer?: SignalPayload | null;
-  result?: unknown;
   last_error?: string | null;
 };
 
@@ -309,7 +306,6 @@ export class GpStationClient {
         body: JSON.stringify({
           handler_type: handlerType,
           slave_app_id: options.slaveAppId ?? 'echo',
-          input,
           offer: {
             type: 'offer',
             sdp: peerConnection.localDescription.sdp,
@@ -334,7 +330,11 @@ export class GpStationClient {
 
       status('waiting for data channel');
       await jobPeer.waitUntilOpen(timeoutMs);
-      dataChannel.send(JSON.stringify({ kind: 'job.ready', id: created.job.id }));
+      dataChannel.send(JSON.stringify({ kind: 'job.ready', id: created.job.id, input: input === undefined ? null : input }));
+      emitDiagnostic(peerConnection, dataChannel, diagnostic, {
+        stage: 'job-ready',
+        message: 'sent job ready',
+      });
       status('waiting for result');
       return await jobPeer.waitForResult<TResult>(created.job.id, timeoutMs);
     } catch (error) {

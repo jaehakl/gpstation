@@ -1,5 +1,7 @@
+import pytest
 from pydantic import ValidationError
 
+from app.models import JobCreateRequest
 from sdk.protocol.messages import DataChannelAttachment, DataChannelMessage, parse_control_message
 
 
@@ -90,14 +92,38 @@ def test_parse_job_start_message():
             "job_id": "job-1",
             "handler_type": "echo.request",
             "slave_app_id": "echo",
-            "input": {"text": "hello"},
             "offer": {"type": "offer", "sdp": "v=0\r\n"},
         }
     )
 
     assert message.type == "job.start"
     assert message.offer.type == "offer"
-    assert message.input == {"text": "hello"}
+
+
+def test_parse_job_start_rejects_input_body():
+    with pytest.raises(ValidationError):
+        parse_control_message(
+            {
+                "type": "job.start",
+                "job_id": "job-1",
+                "handler_type": "echo.request",
+                "slave_app_id": "echo",
+                "input": {"text": "hello"},
+                "offer": {"type": "offer", "sdp": "v=0\r\n"},
+            }
+        )
+
+
+def test_job_create_request_rejects_input_body():
+    with pytest.raises(ValidationError):
+        JobCreateRequest.model_validate(
+            {
+                "handler_type": "echo.request",
+                "slave_app_id": "echo",
+                "input": {"text": "hello"},
+                "offer": {"type": "offer", "sdp": "v=0\r\n"},
+            }
+        )
 
 
 def test_data_channel_echo_result_envelope():

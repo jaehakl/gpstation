@@ -238,6 +238,8 @@ async def run_worker_job(
         result_ack_event = asyncio.Event()
         closed_event = asyncio.Event()
         channel_holder: dict[str, Any] = {}
+        ready_payload: dict[str, Any] = {"input": None}
+        ready_error: dict[str, str] = {}
 
         @pc.on("datachannel")
         def on_datachannel(channel: Any) -> None:
@@ -248,15 +250,28 @@ async def run_worker_job(
             def on_message(raw_message: Any) -> None:
                 try:
                     if isinstance(raw_message, str):
-                        payload = json.loads(raw_message)
-                        if payload.get("kind") == "job.ready":
+                        is_ready_message, input_payload, error_detail = parse_job_ready_message(raw_message, job_id)
+                        if is_ready_message:
+                            if error_detail is not None:
+                                ready_error["detail"] = error_detail
+                            else:
+                                ready_payload["input"] = input_payload
                             ready_event.set()
                             return
+                        payload = json.loads(raw_message)
                         if payload.get("kind") == "job.result.ack" and str(payload.get("id")) == job_id:
                             result_ack_event.set()
                             return
+                        if not ready_event.is_set():
+                            ready_error["detail"] = f"expected job.ready before {payload.get('kind') or 'unknown message'}"
+                            ready_event.set()
+                            return
                     log(f"unsupported worker job datachannel message: {raw_message}")
                 except Exception as exc:
+                    if not ready_event.is_set():
+                        ready_error["detail"] = f"malformed job.ready frame: {exc}"
+                        ready_event.set()
+                        return
                     log(f"job datachannel message error: {exc}")
 
             @channel.on("close")
@@ -297,13 +312,15 @@ async def run_worker_job(
             task.cancel()
         if closed_task in done and not ready_event.is_set():
             raise RuntimeError("peer connection closed before job ready")
+        if ready_error:
+            raise RuntimeError(ready_error["detail"])
 
         channel = channel_holder.get("channel")
         if channel is None:
             raise RuntimeError("datachannel was not opened")
         emit({"type": "job.running", "job_id": job_id})
         response = await app.dispatch(
-            DataChannelMessage(id=job_id, type=handler_type, payload=message.get("input"), attachments=[]),
+            DataChannelMessage(id=job_id, type=handler_type, payload=ready_payload.get("input"), attachments=[]),
             context,
         )
         if response is None:
@@ -317,11 +334,6 @@ async def run_worker_job(
             {
                 "type": "job.result",
                 "job_id": job_id,
-                "result": {
-                    "type": response.type,
-                    "payload": response.payload,
-                    "attachments": [attachment_metadata(attachment) for attachment in response.attachments],
-                },
             }
         )
     except asyncio.CancelledError:
@@ -350,6 +362,18 @@ async def run_worker_job(
     finally:
         if pc is not None:
             await pc.close()
+
+
+def parse_job_ready_message(raw_message: str, job_id: str) -> tuple[bool, Any, str | None]:
+    try:
+        payload = json.loads(raw_message)
+    except Exception as exc:
+        return True, None, f"malformed job.ready frame: {exc}"
+    if payload.get("kind") != "job.ready":
+        return False, None, None
+    if str(payload.get("id")) != job_id:
+        return True, None, f"job.ready id mismatch: expected {job_id}, got {payload.get('id')}"
+    return True, payload.get("input"), None
 
 
 async def wait_for_job_result_ack(

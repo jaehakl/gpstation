@@ -153,7 +153,7 @@ def test_subprocess_env_includes_rtc_ice_servers_json():
 
 
 def test_json_line_encodes_non_ascii_as_utf8():
-    data = json_line({"type": "job.start", "input": {"prompt": "한글 prompt"}})
+    data = json_line({"kind": "job.ready", "input": {"prompt": "한글 prompt"}})
 
     assert data.endswith(b"\n")
     assert "한글".encode("utf-8") in data
@@ -206,7 +206,6 @@ async def test_start_job_rejects_second_job_while_busy(tmp_path):
         job_id="job-2",
         handler_type="echo.request",
         slave_app_id="echo",
-        input={"text": "hello"},
         offer={"type": "offer", "sdp": "v=0\r\n"},
     )
 
@@ -233,7 +232,6 @@ async def test_start_job_rejects_unknown_slave_app():
         job_id="job-1",
         handler_type="echo.request",
         slave_app_id="missing",
-        input={},
         offer={"type": "offer", "sdp": "v=0\r\n"},
     )
 
@@ -292,7 +290,6 @@ async def test_handle_server_message_dispatches_job_controls():
             "job_id": "job-1",
             "handler_type": "echo.request",
             "slave_app_id": "echo",
-            "input": {"text": "hello"},
             "offer": {"type": "offer", "sdp": "v=0\r\n"},
         },
     )
@@ -306,7 +303,6 @@ async def test_handle_server_message_dispatches_job_controls():
                 "job_id": "job-1",
                 "handler_type": "echo.request",
                 "slave_app_id": "echo",
-                "input": {"text": "hello"},
                 "offer": {"type": "offer", "sdp": "v=0\r\n"},
             },
         ),

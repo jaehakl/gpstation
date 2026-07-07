@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 from fastapi import HTTPException
 
@@ -84,6 +86,64 @@ def test_launcher_routes_replace_legacy_routes():
     assert "/redoc" not in paths
     assert legacy_prefix not in paths
     assert f"{legacy_prefix}/control" not in paths
+
+
+@pytest.mark.asyncio
+async def test_dispatch_queued_jobs_sends_job_start_without_input(monkeypatch):
+    job = SimpleNamespace(
+        id="job-1",
+        user_id="user-1",
+        handler_type="ai.llm",
+        slave_app_id="ai",
+        offer={"type": "offer", "sdp": "v=0\r\n"},
+    )
+    launcher = SimpleNamespace(id="launcher-1")
+    sent_messages = []
+    marked_jobs = []
+    selected = {"count": 0}
+
+    async def select_next_queued_job(db, *, user_id=None):
+        selected["count"] += 1
+        return job if selected["count"] == 1 else None
+
+    async def select_idle_launcher_for_job(db, *, job, idle_launcher_ids):
+        return launcher
+
+    async def assign_job(db, *, job, launcher):
+        return job
+
+    async def idle_launcher_ids():
+        return {"launcher-1"}
+
+    async def mark_launcher_job(*args, **kwargs):
+        marked_jobs.append((args, kwargs))
+
+    async def send_to_launcher(launcher_id, message):
+        sent_messages.append((launcher_id, message))
+
+    monkeypatch.setattr(jobs.JobService, "select_next_queued_job", select_next_queued_job)
+    monkeypatch.setattr(jobs.JobService, "select_idle_launcher_for_job", select_idle_launcher_for_job)
+    monkeypatch.setattr(jobs.JobService, "assign_job", assign_job)
+    monkeypatch.setattr(jobs.runtime, "idle_launcher_ids", idle_launcher_ids)
+    monkeypatch.setattr(jobs.runtime, "mark_launcher_job", mark_launcher_job)
+    monkeypatch.setattr(jobs, "send_to_launcher", send_to_launcher)
+
+    await jobs.dispatch_queued_jobs(object(), user_id="user-1")
+
+    assert sent_messages == [
+        (
+            "launcher-1",
+            {
+                "type": "job.start",
+                "job_id": "job-1",
+                "handler_type": "ai.llm",
+                "slave_app_id": "ai",
+                "offer": {"type": "offer", "sdp": "v=0\r\n"},
+            },
+        )
+    ]
+    assert "input" not in sent_messages[0][1]
+    assert marked_jobs
 
 
 @pytest.mark.asyncio

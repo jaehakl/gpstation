@@ -3,6 +3,7 @@ import uuid
 
 import pytest
 
+from app.user_auth.db import User  # noqa: F401
 from app.db import Job, Launcher
 from app.service.job_service import JobService
 
@@ -75,8 +76,8 @@ def make_job(state="queued", launcher_id=None):
         launcher_id=launcher_id,
         handler_type="echo.request",
         slave_app_id="echo",
-        input={"text": "hello"},
         offer={"type": "offer", "sdp": "v=0\r\n"},
+        result={"ok": True},
         state=state,
         progress=[],
         attempt_count=0,
@@ -86,7 +87,7 @@ def make_job(state="queued", launcher_id=None):
 
 
 @pytest.mark.asyncio
-async def test_create_job_persists_queued_offer_and_input():
+async def test_create_job_persists_queued_offer_without_input_body():
     db = FakeDb()
 
     job = await JobService.create_job(
@@ -94,12 +95,11 @@ async def test_create_job_persists_queued_offer_and_input():
         user_id="user-1",
         handler_type="echo.request",
         slave_app_id="echo",
-        input={"text": "hello"},
         offer={"type": "offer", "sdp": "v=0\r\n"},
     )
 
     assert job.state == "queued"
-    assert job.input == {"text": "hello"}
+    assert job.input is None
     assert job.offer == {"type": "offer", "sdp": "v=0\r\n"}
     assert db.added == [job]
     assert db.commits == 1
@@ -115,7 +115,6 @@ async def test_create_job_rejects_non_offer_signal():
             user_id="user-1",
             handler_type="echo.request",
             slave_app_id="echo",
-            input={},
             offer={"type": "answer", "sdp": "v=0\r\n"},
         )
 
@@ -154,9 +153,9 @@ async def test_result_clears_launcher_to_ready():
     job = make_job(state="running", launcher_id=launcher.id)
     db = FakeDb(jobs=[job], launchers=[launcher])
 
-    await JobService.mark_result(db, job_id=job.id, result={"ok": True})
+    await JobService.mark_result(db, job_id=job.id)
 
     assert job.state == "succeeded"
-    assert job.result == {"ok": True}
+    assert job.result is None
     assert job.finished_at is not None
     assert launcher.status == "ready"

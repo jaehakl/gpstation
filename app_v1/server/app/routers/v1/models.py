@@ -40,7 +40,6 @@ class JobCreateRequest(BaseModel):
 
     handler_type: str
     slave_app_id: str = "echo"
-    input: Any = None
     offer: dict[str, Any]
 
 
@@ -49,10 +48,8 @@ class JobData(BaseModel):
     user_id: str
     handler_type: str
     slave_app_id: str
-    input: Any = None
     offer: dict[str, Any]
     answer: dict[str, Any] | None = None
-    result: Any = None
     progress: list[Any] = Field(default_factory=list)
     state: JobState
     launcher_id: str | None = None
@@ -76,5 +73,4 @@ class JobAnswerWaitResult(BaseModel):
     job_id: str
     state: JobState
     answer: dict[str, Any] | None = None
-    result: Any = None
     last_error: str | None = None
