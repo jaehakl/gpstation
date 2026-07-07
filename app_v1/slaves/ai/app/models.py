@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class LlmRequest(BaseModel):
@@ -8,6 +8,13 @@ class LlmRequest(BaseModel):
     prompt: str
     max_tokens: int | None = None
     temperature: float | None = None
+
+    @field_validator("system_prompt", "prompt")
+    @classmethod
+    def reject_surrogates(cls, value: str) -> str:
+        if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+            raise ValueError("LLM text contains invalid Unicode surrogate characters")
+        return value
 
 
 class LlmResponse(BaseModel):

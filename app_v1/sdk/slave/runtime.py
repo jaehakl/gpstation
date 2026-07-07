@@ -165,7 +165,7 @@ async def _run_worker_stdio(*, app: SlaveApp) -> None:
                 current_job_task = None
                 current_job_id = None
 
-            line = await asyncio.to_thread(sys.stdin.readline)
+            line = await asyncio.to_thread(read_stdin_line)
             if not line:
                 break
             try:
@@ -432,7 +432,7 @@ async def _run_app_stdio(
 
     try:
         while not closed.is_set():
-            line = await asyncio.to_thread(sys.stdin.readline)
+            line = await asyncio.to_thread(read_stdin_line)
             if not line:
                 break
             message = json.loads(line)
@@ -779,8 +779,25 @@ def error_call_id(raw_message: Any) -> str:
         return "error"
 
 
+def read_stdin_line() -> str:
+    buffer = getattr(sys.stdin, "buffer", None)
+    if buffer is None:
+        return sys.stdin.readline()
+    raw_line = buffer.readline()
+    if not raw_line:
+        return ""
+    return raw_line.decode("utf-8")
+
+
 def emit(message: dict[str, Any]) -> None:
-    print(json.dumps(message, ensure_ascii=False), flush=True)
+    line = json.dumps(message, ensure_ascii=False) + "\n"
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is None:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        return
+    buffer.write(line.encode("utf-8"))
+    buffer.flush()
 
 
 def log(message: str) -> None:

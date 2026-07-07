@@ -6,7 +6,7 @@ import pytest
 from app.control import handle_server_message, launcher_hello_payload
 from app.settings import LauncherSettings
 from app.slave_registry import SlaveApp, SlaveAppRegistry, load_registry
-from app.subprocess_manager import SESSION_LOG_LINE_LIMIT, ManagedWorker, SessionManager, subprocess_env
+from app.subprocess_manager import SESSION_LOG_LINE_LIMIT, ManagedWorker, SessionManager, json_line, subprocess_env
 
 
 def write_manifest(root, folder_name: str, slave_app_id: str, **extra) -> None:
@@ -146,7 +146,18 @@ def test_subprocess_env_includes_rtc_ice_servers_json():
         rtc_ice_servers_json='[{"urls":"turn:turn.example.com:3478","username":"u","credential":"p"}]',
     )
 
-    assert subprocess_env(settings)["GPSTATION_V1_RTC_ICE_SERVERS_JSON"] == settings.rtc_ice_servers_json
+    env = subprocess_env(settings)
+    assert env["GPSTATION_V1_RTC_ICE_SERVERS_JSON"] == settings.rtc_ice_servers_json
+    assert env["PYTHONIOENCODING"] == "utf-8"
+    assert env["PYTHONUTF8"] == "1"
+
+
+def test_json_line_encodes_non_ascii_as_utf8():
+    data = json_line({"type": "job.start", "input": {"prompt": "한글 prompt"}})
+
+    assert data.endswith(b"\n")
+    assert "한글".encode("utf-8") in data
+    assert json.loads(data.decode("utf-8"))["input"]["prompt"] == "한글 prompt"
 
 
 def test_registry_rejects_unknown_launch_app(tmp_path):

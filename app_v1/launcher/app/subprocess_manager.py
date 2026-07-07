@@ -545,5 +545,7 @@ def json_line(message: dict[str, Any]) -> bytes:
 
 def subprocess_env(settings: LauncherSettings) -> dict[str, str]:
     env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     env["GPSTATION_V1_RTC_ICE_SERVERS_JSON"] = settings.rtc_ice_servers_json
     return env

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
+from io import BytesIO
 
 import pytest
 
@@ -12,7 +14,9 @@ from sdk.slave.runtime import (
     decode_binary_frame,
     encode_binary_frame,
     handle_datachannel_message,
+    emit,
     load_rtc_ice_servers,
+    read_stdin_line,
     send_job_result,
     summarize_sdp_candidates,
     wait_for_job_result_ack,
@@ -110,6 +114,32 @@ def test_send_job_result_uses_job_result_envelope():
         "payload": {"text": "hello"},
         "attachments": [],
     }
+
+
+def test_read_stdin_line_decodes_utf8_bytes(monkeypatch):
+    class FakeStdin:
+        buffer = BytesIO(json.dumps({"prompt": "한글"}, ensure_ascii=False).encode("utf-8") + b"\n")
+
+    monkeypatch.setattr(sys, "stdin", FakeStdin())
+
+    line = read_stdin_line()
+
+    assert json.loads(line)["prompt"] == "한글"
+
+
+def test_emit_writes_utf8_json_line(monkeypatch):
+    class FakeStdout:
+        def __init__(self) -> None:
+            self.buffer = BytesIO()
+
+    stdout = FakeStdout()
+    monkeypatch.setattr(sys, "stdout", stdout)
+
+    emit({"type": "test", "payload": "한글"})
+
+    output = stdout.buffer.getvalue()
+    assert "한글".encode("utf-8") in output
+    assert json.loads(output.decode("utf-8")) == {"type": "test", "payload": "한글"}
 
 
 @pytest.mark.asyncio

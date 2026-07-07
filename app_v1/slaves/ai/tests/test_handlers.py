@@ -12,7 +12,7 @@ from sdk.slave import DataChannelAttachment, DataChannelMessage, SlaveContext
 from app import __main__ as ai_slave
 from app.model_runtime import embedding as embedding_runtime
 from app.model_runtime import image as image_runtime
-from app.models import EmbeddingResponse, GeneratedImage, LlmResponse, SdxlT2IResponse
+from app.models import EmbeddingResponse, GeneratedImage, LlmRequest, LlmResponse, SdxlT2IResponse
 
 
 def context() -> SlaveContext:
@@ -60,6 +60,17 @@ class AiHandlerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.payload, {"answer": "hello"})
         self.assertEqual(response.attachments, [])
         generate_llm_answer.assert_awaited_once()
+
+    def test_llm_request_accepts_korean_text(self) -> None:
+        request = LlmRequest(system_prompt="친절하게 답하세요.", prompt="한글 질문입니다.")
+
+        self.assertEqual(request.prompt, "한글 질문입니다.")
+
+    def test_llm_request_rejects_surrogate_text(self) -> None:
+        with self.assertRaises(ValueError) as error:
+            LlmRequest(system_prompt="system", prompt="bad\udcec")
+
+        self.assertIn("invalid Unicode surrogate", str(error.exception))
 
     async def test_embeddings_handler_returns_embedding_payload(self) -> None:
         generate_embedding = AsyncMock(return_value=EmbeddingResponse(embedding=[0.1, 0.2], dimensions=2))
