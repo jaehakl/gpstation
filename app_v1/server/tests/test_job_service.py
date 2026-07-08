@@ -62,8 +62,7 @@ def make_launcher(launcher_id="launcher-1", user_id="user-1", slave_app_ids=None
         launcher_name="desktop",
         ip_address="127.0.0.1",
         status=status,
-        slave_app_ids=slave_app_ids or ["echo"],
-        active_session_ids=[],
+        slave_app_ids=slave_app_ids or ["ai"],
         connected_at=datetime.now(timezone.utc),
         last_heartbeat_at=datetime.now(timezone.utc),
     )
@@ -74,8 +73,8 @@ def make_job(state="queued", launcher_id=None):
         id="job-1",
         user_id="user-1",
         launcher_id=launcher_id,
-        handler_type="echo.request",
-        slave_app_id="echo",
+        handler_type="ai.llm",
+        slave_app_id="ai",
         offer={"type": "offer", "sdp": "v=0\r\n"},
         result={"ok": True},
         state=state,
@@ -93,8 +92,8 @@ async def test_create_job_persists_queued_offer_without_input_body():
     job = await JobService.create_job(
         db,
         user_id="user-1",
-        handler_type="echo.request",
-        slave_app_id="echo",
+        handler_type="ai.llm",
+        slave_app_id="ai",
         offer={"type": "offer", "sdp": "v=0\r\n"},
     )
 
@@ -113,8 +112,8 @@ async def test_create_job_rejects_non_offer_signal():
         await JobService.create_job(
             db,
             user_id="user-1",
-            handler_type="echo.request",
-            slave_app_id="echo",
+            handler_type="ai.llm",
+            slave_app_id="ai",
             offer={"type": "answer", "sdp": "v=0\r\n"},
         )
 

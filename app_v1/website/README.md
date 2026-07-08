@@ -1,6 +1,6 @@
 # GP Station v1 Website
 
-Google OAuth 로그인, JWT 쿠키 세션, Access Token 발급, 사용자 관리, Launcher와 SlaveSession 관리를 제공하는 Vite 기반 React 콘솔입니다.
+Google OAuth 로그인, JWT 쿠키 세션, Access Token 발급, 사용자 관리, Launcher와 Job 관리를 제공하는 Vite 기반 React 콘솔입니다.
 
 ## Install
 
@@ -28,7 +28,7 @@ VITE_GPSTATION_V1_API_URL=https://gps.qutat.com
 VITE_GPSTATION_V1_API_URL=http://localhost:8000
 ```
 
-운영에서는 `npm run build`로 생성되는 `dist` 디렉터리를 `/var/www/gpstation-v1`로 publish하고, Nginx가 그 디렉터리를 정적 파일로 직접 서빙합니다. 별도의 website Node/systemd 서비스는 사용하지 않습니다.
+운영에서는 `npm run build`로 생성되는 `dist` 디렉터리를 `/var/www/gpstation-v1`로 publish하고, Nginx가 그 디렉터리를 정적 파일로 직접 서빙합니다. 별도 website Node/systemd 서비스는 사용하지 않습니다.
 
 Google Cloud Console production 설정:
 

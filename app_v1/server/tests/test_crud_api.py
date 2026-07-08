@@ -9,7 +9,6 @@ from app.db import AccessKey
 from app.models import UserData
 from app.routers.web import crud_access_keys as access_keys
 from app.routers.web import crud_launchers as launchers
-from app.routers.web import crud_slave_sessions as slave_sessions
 from app.routers.web import crud_users as users
 from app.routers.web.crud_auth import require_crud_user
 from app.routers.web.models import CrudDeleteRequest, CrudUpsertRequest
@@ -68,7 +67,7 @@ def test_crud_specs_do_not_expose_sensitive_fields():
         "code_verifier",
     }
 
-    for spec in [users.CRUD_SPEC, access_keys.CRUD_SPEC, launchers.CRUD_SPEC, slave_sessions.CRUD_SPEC]:
+    for spec in [users.CRUD_SPEC, access_keys.CRUD_SPEC, launchers.CRUD_SPEC]:
         assert sensitive_fields.isdisjoint(spec.public_fields)
         assert sensitive_fields.isdisjoint(spec.writable_fields)
 
@@ -85,7 +84,6 @@ def test_crud_relationship_fields_are_id_only():
         updated_at=None,
         access_keys=[SimpleNamespace(id="key-1", name="desktop")],
         launchers=[SimpleNamespace(id="launcher-1", ip_address="127.0.0.1")],
-        slave_sessions=[SimpleNamespace(id="session-1", slave_app_id="echo")],
     )
     launcher_row = SimpleNamespace(
         id="launcher-1",
@@ -93,14 +91,12 @@ def test_crud_relationship_fields_are_id_only():
         launcher_name="local",
         ip_address="127.0.0.1",
         status="online",
-        slave_app_ids=["echo"],
-        active_session_ids=[],
+        slave_app_ids=["ai"],
         connected_at=None,
         last_heartbeat_at=None,
         disconnected_at=None,
         created_at=None,
         updated_at=None,
-        slave_sessions=[SimpleNamespace(id="session-1", slave_app_id="echo")],
     )
 
     serialized_user = crud.serialize_entity(user_row, users.CRUD_SPEC)
@@ -108,16 +104,13 @@ def test_crud_relationship_fields_are_id_only():
 
     assert serialized_user["access_key_ids"] == ["key-1"]
     assert serialized_user["launcher_ids"] == ["launcher-1"]
-    assert serialized_user["slave_session_ids"] == ["session-1"]
-    assert serialized_launcher["slave_session_ids"] == ["session-1"]
     assert "access_key_names" not in serialized_user
     assert "launcher_labels" not in serialized_user
-    assert "slave_session_labels" not in serialized_launcher
 
 
 def test_crud_relationship_fields_are_eager_loaded():
-    assert users.CRUD_SPEC.relationship_loads == ("access_keys", "launchers", "slave_sessions")
-    assert launchers.CRUD_SPEC.relationship_loads == ("slave_sessions",)
+    assert users.CRUD_SPEC.relationship_loads == ("access_keys", "launchers")
+    assert launchers.CRUD_SPEC.relationship_loads == ()
 
 
 def test_crud_visibility_scopes_user_owned_tables_and_blocks_unowned_tables():
@@ -226,56 +219,3 @@ async def test_crud_access_key_delete_revokes_without_exposing_hash():
     assert access_key.revoked_at is not None
     assert db.commits == 1
 
-
-@pytest.mark.asyncio
-async def test_crud_slave_session_delete_uses_session_service(monkeypatch):
-    calls = []
-
-    async def close_session(db, session_id, reason):
-        calls.append((db, session_id, reason))
-        return object() if session_id == "session-1" else None
-
-    monkeypatch.setattr(slave_sessions.SessionService, "close_session", close_session)
-
-    db = FakeDeleteDb(["session-1", "missing"])
-    result = await crud.delete_rows(
-        db,
-        slave_sessions.CRUD_SPEC,
-        CrudDeleteRequest(ids=["session-1", "missing"]),
-        make_user_data("admin"),
-    )
-
-    assert result.deleted == 1
-    assert calls == [(db, "session-1", "closed by CRUD"), (db, "missing", "closed by CRUD")]
-
-
-@pytest.mark.asyncio
-async def test_crud_slave_session_delete_filters_user_owned_rows(monkeypatch):
-    calls = []
-
-    class CapturingDb(FakeDeleteDb):
-        def __init__(self, rows):
-            super().__init__(rows)
-            self.statements = []
-
-        async def execute(self, stmt):
-            self.statements.append(stmt)
-            return await super().execute(stmt)
-
-    async def close_session(db, session_id, reason):
-        calls.append((db, session_id, reason))
-        return object()
-
-    monkeypatch.setattr(slave_sessions.SessionService, "close_session", close_session)
-
-    db = CapturingDb(["owned-session"])
-    result = await crud.delete_rows(
-        db,
-        slave_sessions.CRUD_SPEC,
-        CrudDeleteRequest(ids=["owned-session", "other-session"]),
-        make_user_data("user", "user-1"),
-    )
-
-    assert result.deleted == 1
-    assert calls == [(db, "owned-session", "closed by CRUD")]
-    assert "slave_sessions.user_id" in str(db.statements[0])

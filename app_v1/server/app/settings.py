@@ -43,9 +43,6 @@ class Settings(BaseSettings):
     refresh_ttl_sec: int = Field(..., gt=0)
     cookie_domain: str = Field(...)
     secure_cookies: bool = Field(...)
-    session_ttl_seconds: int = Field(..., ge=10, le=3600)
-    session_ready_timeout_seconds: float = Field(..., gt=0)
-    cleanup_interval_seconds: float = Field(..., gt=0)
     cors_origins: str = Field(...)
 
     @field_validator("public_base_url")

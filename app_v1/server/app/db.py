@@ -109,35 +109,12 @@ class Launcher(TimestampMixin, Base):
     ip_address: Mapped[Optional[str]] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     slave_app_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
-    active_session_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
     connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     disconnected_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     user: Mapped["User"] = relationship("User", back_populates="launchers")
-    slave_sessions: Mapped[list["SlaveSession"]] = relationship(back_populates="launcher", lazy="selectin")
     jobs: Mapped[list["Job"]] = relationship(back_populates="launcher", lazy="selectin")
-
-
-class SlaveSession(TimestampMixin, Base):
-    __tablename__ = "slave_sessions"
-
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=uuid_text)
-    user_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    launcher_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("launchers.id", ondelete="SET NULL"))
-    slave_app_id: Mapped[str] = mapped_column(Text, nullable=False)
-    master_ip_address: Mapped[Optional[str]] = mapped_column(Text)
-    master_user_agent: Mapped[Optional[str]] = mapped_column(Text)
-    session_token_hash: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False)
-    ttl_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    ready_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    last_error: Mapped[Optional[str]] = mapped_column(Text)
-
-    user: Mapped["User"] = relationship("User", back_populates="slave_sessions")
-    launcher: Mapped[Optional["Launcher"]] = relationship(back_populates="slave_sessions")
 
 
 class Job(TimestampMixin, Base):

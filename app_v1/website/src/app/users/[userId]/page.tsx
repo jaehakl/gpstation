@@ -3,9 +3,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { dbTables } from '../../../api/api';
-import type { AccessKeyScope, CrudAccessKeyRow, CrudLauncherRow, CrudSlaveSessionRow, CrudUserRow, UserRole } from '../../../api/types';
+import type { AccessKeyScope, CrudAccessKeyRow, CrudLauncherRow, CrudUserRow, UserRole } from '../../../api/types';
 import { useAuthStore } from '../../../stores/authStore';
-import { displayAccessKeyName, displayLauncherName, displaySlaveSessionName, displayUserName, errorMessage, formatDate, nullableText } from '../../format';
+import { displayAccessKeyName, displayLauncherName, displayUserName, errorMessage, formatDate, nullableText } from '../../format';
 
 type UserFormState = {
   email: string;
@@ -27,7 +27,6 @@ export default function UserDetailPage() {
   const [loadedUser, setLoadedUser] = useState<CrudUserRow | null>(null);
   const [form, setForm] = useState<UserFormState | null>(null);
   const [launchers, setLaunchers] = useState<CrudLauncherRow[]>([]);
-  const [sessions, setSessions] = useState<CrudSlaveSessionRow[]>([]);
   const [tokens, setTokens] = useState<CrudAccessKeyRow[]>([]);
   const [tokenName, setTokenName] = useState('');
   const [tokenExpiresAt, setTokenExpiresAt] = useState('');
@@ -69,30 +68,22 @@ export default function UserDetailPage() {
   const loadRelated = useCallback(async () => {
     if (!authReady || !currentUser || !loadedUser || !canViewRuntime) {
       setLaunchers([]);
-      setSessions([]);
       return;
     }
     const launcherIds = loadedUser.launcher_ids ?? [];
-    const slaveSessionIds = loadedUser.slave_session_ids ?? [];
-    if (launcherIds.length === 0 && slaveSessionIds.length === 0) {
+    if (launcherIds.length === 0) {
       setLaunchers([]);
-      setSessions([]);
       return;
     }
     try {
-      const [nextLaunchers, nextSessions] = await Promise.all([
-        launcherIds.length > 0
-          ? dbTables.launchers.listRows({ selected_ids: launcherIds, limit: launcherIds.length, sort: ['last_heartbeat_at', 'desc'] })
-          : Promise.resolve({ items: [] as CrudLauncherRow[], total: 0 }),
-        slaveSessionIds.length > 0
-          ? dbTables.slaveSessions.listRows({ selected_ids: slaveSessionIds, limit: 10, sort: ['created_at', 'desc'] })
-          : Promise.resolve({ items: [] as CrudSlaveSessionRow[], total: 0 }),
-      ]);
+      const nextLaunchers = await dbTables.launchers.listRows({
+        selected_ids: launcherIds,
+        limit: launcherIds.length,
+        sort: ['last_heartbeat_at', 'desc'],
+      });
       setLaunchers(nextLaunchers.items);
-      setSessions(nextSessions.items);
     } catch {
       setLaunchers([]);
-      setSessions([]);
     }
   }, [authReady, canViewRuntime, currentUser, loadedUser]);
 
@@ -368,7 +359,7 @@ export default function UserDetailPage() {
           ) : null}
         </section>
 
-        <RuntimePanel canView={canViewRuntime} launchers={launchers} sessions={sessions} />
+        <RuntimePanel canView={canViewRuntime} launchers={launchers} />
       </aside>
     </div>
   );
@@ -650,16 +641,14 @@ function AccessTokenPanel({
 function RuntimePanel({
   canView,
   launchers,
-  sessions,
 }: {
   canView: boolean;
   launchers: CrudLauncherRow[];
-  sessions: CrudSlaveSessionRow[];
 }) {
   if (!canView) {
     return (
       <section className="panel">
-        <h2>Launcher / SlaveSession</h2>
+        <h2>Launcher</h2>
         <p className="message warn">승인된 user 또는 admin 계정에서만 런처와 세션 상태를 볼 수 있습니다.</p>
       </section>
     );
@@ -677,25 +666,10 @@ function RuntimePanel({
                 {displayLauncherName(launcher)} / {launcher.status}
               </dt>
               <dd>{launcher.slave_app_ids.join(', ') || '-'}</dd>
-              <dd>활성 세션 {launcher.active_session_ids.length}</dd>
               <dd>{formatDate(launcher.last_heartbeat_at)}</dd>
             </div>
           ))}
           {launchers.length === 0 ? <p className="emptyText">연결된 Launcher가 없습니다.</p> : null}
-        </dl>
-      </div>
-      <div>
-        <h3>SlaveSession</h3>
-        <dl className="detailList">
-          {sessions.slice(0, 5).map((session) => (
-            <div className="detailItem" key={session.id}>
-              <dt>
-                {displaySlaveSessionName(session)} / {session.status}
-              </dt>
-              <dd>{formatDate(session.created_at)}</dd>
-            </div>
-          ))}
-          {sessions.length === 0 ? <p className="emptyText">SlaveSession이 없습니다.</p> : null}
         </dl>
       </div>
     </section>

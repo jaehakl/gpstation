@@ -283,13 +283,13 @@ def test_send_job_result_uses_job_result_envelope():
     send_job_result(
         channel,
         "job-1",
-        DataChannelMessage(id="job-1", type="echo.result", payload={"text": "hello"}),
+        DataChannelMessage(id="job-1", type="ai.llm.result", payload={"text": "hello"}),
     )
 
     assert json.loads(channel.sent[0]) == {
         "kind": "job.result",
         "id": "job-1",
-        "type": "echo.result",
+        "type": "ai.llm.result",
         "payload": {"text": "hello"},
         "attachments": [],
     }

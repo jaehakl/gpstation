@@ -1,18 +1,19 @@
 import { KeyRound, ListChecks, Monitor, RefreshCw, Users } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { dbTables } from '../api/api';
-import type { CrudLauncherRow, CrudSlaveSessionRow, DashboardSummary } from '../api/types';
+import type { CrudLauncherRow, DashboardSummary, JobData } from '../api/types';
 import { useAuthStore } from '../stores/authStore';
-import { displaySlaveSessionName, errorMessage, formatDate } from './format';
+import { errorMessage, formatDate } from './format';
 
 export default function DashboardPage() {
   const user = useAuthStore((state) => state.user);
   const authReady = useAuthStore((state) => state.authReady);
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [launchers, setLaunchers] = useState<CrudLauncherRow[]>([]);
-  const [sessions, setSessions] = useState<CrudSlaveSessionRow[]>([]);
+  const [jobs, setJobs] = useState<JobData[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -25,14 +26,14 @@ export default function DashboardPage() {
     setIsLoading(true);
     setError(null);
     try {
-      const [nextSummary, nextLaunchers, nextSessions] = await Promise.all([
+      const [nextSummary, nextLaunchers, nextJobs] = await Promise.all([
         dbTables.dashboard.summary(),
         dbTables.launchers.listRows({ limit: 5, sort: ['last_heartbeat_at', 'desc'] }),
-        dbTables.slaveSessions.listRows({ limit: 5, sort: ['created_at', 'desc'] }),
+        dbTables.jobs.list({ limit: 5 }),
       ]);
       setSummary(nextSummary);
       setLaunchers(nextLaunchers.items);
-      setSessions(nextSessions.items);
+      setJobs(nextJobs);
     } catch (loadError) {
       setError(errorMessage(loadError, '대시보드를 불러오지 못했습니다.'));
     } finally {
@@ -57,7 +58,7 @@ export default function DashboardPage() {
         <p className="eyebrow">GP Station v1</p>
         <h1>관리 콘솔</h1>
         <p className="message warn" style={{ marginTop: 16 }}>
-          로그인하면 계정, Access Token, Launcher, SlaveSession 상태를 관리할 수 있습니다.
+          로그인하면 계정, Access Token, Launcher, Job 상태를 관리할 수 있습니다.
         </p>
         <Link to="/login" className="button primaryButton fullButton" style={{ marginTop: 14 }}>
           <KeyRound size={16} aria-hidden="true" />
@@ -105,7 +106,7 @@ export default function DashboardPage() {
 
       <section className="gridCards">
         <Metric label="Launchers" value={summary?.launchers ?? 0} icon={<Monitor size={19} aria-hidden="true" />} />
-        <Metric label="Active sessions" value={summary?.active_sessions ?? 0} icon={<ListChecks size={19} aria-hidden="true" />} />
+        <Metric label="Jobs" value={jobs.length} icon={<ListChecks size={19} aria-hidden="true" />} />
         <Metric label="Users" value={summary?.users ?? 0} icon={<Users size={19} aria-hidden="true" />} />
         <Metric label="Access Tokens" value={summary?.access_keys ?? 0} icon={<KeyRound size={19} aria-hidden="true" />} />
       </section>
@@ -126,7 +127,6 @@ export default function DashboardPage() {
                     <th>이름</th>
                     <th>상태</th>
                     <th>Slave App</th>
-                    <th>활성 세션</th>
                     <th>Heartbeat</th>
                   </tr>
                 </thead>
@@ -138,11 +138,10 @@ export default function DashboardPage() {
                         <span className="statusPill">{launcher.status}</span>
                       </td>
                       <td>{launcher.slave_app_ids.join(', ') || '-'}</td>
-                      <td>{launcher.active_session_ids.length}</td>
                       <td>{formatDate(launcher.last_heartbeat_at)}</td>
                     </tr>
                   ))}
-                  {launchers.length === 0 ? <EmptyRow colSpan={5} text="표시할 Launcher가 없습니다." /> : null}
+                  {launchers.length === 0 ? <EmptyRow colSpan={4} text="표시할 Launcher가 없습니다." /> : null}
                 </tbody>
               </table>
             </div>
@@ -151,21 +150,21 @@ export default function DashboardPage() {
 
         <section className="panel">
           <div className="toolbar">
-            <h2>최근 SlaveSession</h2>
-            <Link to="/slave-sessions" className="button smallButton">
+            <h2>최근 Job</h2>
+            <Link to="/jobs" className="button smallButton">
               전체 보기
             </Link>
           </div>
           <dl className="detailList">
-            {sessions.map((session) => (
-              <div className="detailItem" key={session.id}>
+            {jobs.map((job) => (
+              <div className="detailItem" key={job.id}>
                 <dt>
-                  {displaySlaveSessionName(session)} / {session.status}
+                  {job.handler_type} / {job.state}
                 </dt>
-                <dd>{formatDate(session.created_at)}</dd>
+                <dd>{formatDate(job.created_at)}</dd>
               </div>
             ))}
-            {sessions.length === 0 ? <p className="emptyText">표시할 SlaveSession이 없습니다.</p> : null}
+            {jobs.length === 0 ? <p className="emptyText">표시할 Job이 없습니다.</p> : null}
           </dl>
         </section>
       </div>
@@ -173,7 +172,7 @@ export default function DashboardPage() {
   );
 }
 
-function Metric({ label, value, icon }: { label: string; value: number; icon: React.ReactNode }) {
+function Metric({ label, value, icon }: { label: string; value: number; icon: ReactNode }) {
   return (
     <div className="metricCard">
       <span>

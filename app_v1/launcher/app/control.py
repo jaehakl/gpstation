@@ -8,7 +8,7 @@ import websockets
 
 from app.settings import LauncherSettings
 from app.slave_registry import SlaveAppRegistry, load_default_registry
-from app.subprocess_manager import SessionManager
+from app.subprocess_manager import WorkerManager
 
 BACKOFF_SECONDS = [1, 2, 5, 10, 30]
 
@@ -36,7 +36,7 @@ async def run_connection(settings: LauncherSettings) -> None:
     async with await open_websocket(settings.control_websocket_url, headers) as websocket:
         send_lock = asyncio.Lock()
         registry = load_default_registry()
-        manager: SessionManager | None = None
+        manager: WorkerManager | None = None
         heartbeat_task: asyncio.Task[None] | None = None
         try:
             await send_json(
@@ -47,16 +47,16 @@ async def run_connection(settings: LauncherSettings) -> None:
             accepted = json.loads(await websocket.recv())
             if accepted.get("type") != "launcher.accepted":
                 raise RuntimeError(f"Expected launcher.accepted, received {accepted.get('type')}")
-            print(f"Launcher session: {accepted.get('launcher_session_id')}", flush=True)
+            print(f"Launcher connection: {accepted.get('launcher_id')}", flush=True)
             capabilities = accepted.get("capabilities") if isinstance(accepted.get("capabilities"), dict) else {}
-            forward_session_logs = capabilities.get("session_logs") is True
-            if not forward_session_logs:
-                print("Session log forwarding disabled: server did not advertise session_logs capability", flush=True)
-            manager = SessionManager(
+            forward_job_logs = capabilities.get("job_logs") is True
+            if not forward_job_logs:
+                print("Job log forwarding disabled: server did not advertise job_logs capability", flush=True)
+            manager = WorkerManager(
                 settings,
                 lambda message: send_json(websocket, send_lock, message),
                 registry,
-                forward_session_logs=forward_session_logs,
+                forward_job_logs=forward_job_logs,
             )
             heartbeat_task = asyncio.create_task(send_heartbeats(websocket, send_lock, manager, settings))
 
@@ -89,7 +89,7 @@ async def send_json(websocket: Any, send_lock: asyncio.Lock, message: dict[str, 
 async def send_heartbeats(
     websocket: Any,
     send_lock: asyncio.Lock,
-    manager: SessionManager,
+    manager: WorkerManager,
     settings: LauncherSettings,
 ) -> None:
     while True:
@@ -99,8 +99,7 @@ async def send_heartbeats(
             send_lock,
             {
                 "type": "launcher.heartbeat",
-                "status": "busy" if manager.active_session_ids() or manager.current_job_id else "ready",
-                "active_session_ids": manager.active_session_ids(),
+                "status": "busy" if manager.current_job_id else "ready",
                 "current_job_id": manager.current_job_id,
                 "loaded_slave_app_id": manager.current_worker_slave_app_id(),
                 "worker_status": manager.worker_status,
@@ -109,21 +108,8 @@ async def send_heartbeats(
         )
 
 
-async def handle_server_message(manager: SessionManager, message: dict[str, Any]) -> None:
+async def handle_server_message(manager: WorkerManager, message: dict[str, Any]) -> None:
     message_type = message.get("type")
-    if message_type == "session.start":
-        await manager.start_session(
-            str(message["session_id"]),
-            str(message.get("slave_app_id") or "echo"),
-            int(message["ttl_seconds"]),
-        )
-        return
-    if message_type == "signal.to_launcher":
-        await manager.forward_signal(str(message["session_id"]), message["signal"])
-        return
-    if message_type == "session.stop":
-        await manager.stop_session(str(message["session_id"]), str(message.get("reason") or "closed"))
-        return
     if message_type == "job.start":
         await manager.start_job(
             job_id=str(message["job_id"]),

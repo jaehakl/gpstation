@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import WebSocket
 
-SESSION_LOG_LINE_LIMIT = 500
+JOB_LOG_LINE_LIMIT = 500
 
 
 def utcnow() -> datetime:
@@ -19,7 +19,6 @@ def utcnow() -> datetime:
 class LauncherRuntime:
     id: str
     websocket: WebSocket
-    active_session_ids: set[str] = field(default_factory=set)
     slave_app_startup_timeouts: dict[str, float] = field(default_factory=dict)
     current_job_id: str | None = None
     loaded_slave_app_id: str | None = None
@@ -27,23 +26,11 @@ class LauncherRuntime:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
-class SessionRuntime:
-    id: str
-    launcher_id: str
-    ready_event: asyncio.Event = field(default_factory=asyncio.Event)
-    client_websocket: WebSocket | None = None
-    pending_client_signals: list[dict[str, Any]] = field(default_factory=list)
-    status: str = "starting"
-    last_error: str | None = None
-
-
 class RuntimeRegistry:
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
         self.launchers: dict[str, LauncherRuntime] = {}
-        self.sessions: dict[str, SessionRuntime] = {}
-        self.session_logs: dict[str, deque[dict[str, str]]] = {}
+        self.job_logs: dict[str, deque[dict[str, str]]] = {}
         self.job_events: dict[str, asyncio.Event] = {}
 
     async def register_launcher(
@@ -61,16 +48,9 @@ class RuntimeRegistry:
             self.launchers[launcher_id] = launcher
         return launcher
 
-    async def remove_launcher(self, launcher_id: str) -> list[SessionRuntime]:
+    async def remove_launcher(self, launcher_id: str) -> None:
         async with self.lock:
             self.launchers.pop(launcher_id, None)
-            affected = [session for session in self.sessions.values() if session.launcher_id == launcher_id]
-            for session in affected:
-                self.sessions.pop(session.id, None)
-                session.status = "error"
-                session.last_error = "launcher disconnected"
-                session.ready_event.set()
-            return affected
 
     async def get_launcher(self, launcher_id: str) -> LauncherRuntime | None:
         async with self.lock:
@@ -83,7 +63,6 @@ class RuntimeRegistry:
     async def mark_heartbeat(
         self,
         launcher_id: str,
-        active_session_ids: list[str],
         *,
         current_job_id: str | None = None,
         loaded_slave_app_id: str | None = None,
@@ -93,7 +72,6 @@ class RuntimeRegistry:
         async with self.lock:
             launcher = self.launchers.get(launcher_id)
             if launcher is not None:
-                launcher.active_session_ids = set(active_session_ids)
                 launcher.current_job_id = current_job_id
                 launcher.loaded_slave_app_id = loaded_slave_app_id
                 launcher.worker_status = worker_status
@@ -133,7 +111,6 @@ class RuntimeRegistry:
                     "loaded_slave_app_id": launcher.loaded_slave_app_id,
                     "worker_status": launcher.worker_status,
                     "metadata": dict(launcher.metadata),
-                    "active_session_ids": sorted(launcher.active_session_ids),
                 }
                 for launcher_id, launcher in self.launchers.items()
             }
@@ -143,7 +120,7 @@ class RuntimeRegistry:
             return {
                 launcher_id
                 for launcher_id, launcher in self.launchers.items()
-                if launcher.current_job_id is None and not launcher.active_session_ids
+                if launcher.current_job_id is None
             }
 
     async def set_job_event(self, job_id: str) -> None:
@@ -167,97 +144,15 @@ class RuntimeRegistry:
                 return None
             return launcher.slave_app_startup_timeouts.get(slave_app_id)
 
-    async def register_session(self, session_id: str, launcher_id: str) -> SessionRuntime:
-        session = SessionRuntime(id=session_id, launcher_id=launcher_id)
-        async with self.lock:
-            self.sessions[session_id] = session
-            self.session_logs.setdefault(session_id, deque(maxlen=SESSION_LOG_LINE_LIMIT))
-            launcher = self.launchers.get(launcher_id)
-            if launcher is not None:
-                launcher.active_session_ids.add(session_id)
-        return session
-
-    async def get_session(self, session_id: str) -> SessionRuntime | None:
-        async with self.lock:
-            return self.sessions.get(session_id)
-
-    async def mark_session_ready(self, session_id: str) -> SessionRuntime | None:
-        async with self.lock:
-            session = self.sessions.get(session_id)
-            if session is None:
-                return None
-            session.status = "ready"
-            session.ready_event.set()
-            return session
-
-    async def mark_session_error(self, session_id: str, detail: str) -> SessionRuntime | None:
-        async with self.lock:
-            session = self.sessions.get(session_id)
-            if session is None:
-                return None
-            session.status = "error"
-            session.last_error = detail
-            session.ready_event.set()
-            return session
-
-    async def attach_client(self, session_id: str, websocket: WebSocket) -> SessionRuntime:
-        async with self.lock:
-            session = self.sessions.get(session_id)
-            if session is None:
-                raise KeyError("session not available")
-            session.client_websocket = websocket
-            return session
-
-    async def detach_client(self, session_id: str, websocket: WebSocket) -> None:
-        async with self.lock:
-            session = self.sessions.get(session_id)
-            if session is not None and session.client_websocket is websocket:
-                session.client_websocket = None
-
-    async def store_or_get_client_socket(
+    async def append_job_log(
         self,
-        session_id: str,
-        signal: dict[str, Any],
-    ) -> WebSocket | None:
-        async with self.lock:
-            session = self.sessions.get(session_id)
-            if session is None:
-                return None
-            if session.client_websocket is None:
-                session.pending_client_signals.append(signal)
-                return None
-            return session.client_websocket
-
-    async def take_pending_client_signals(self, session_id: str) -> list[dict[str, Any]]:
-        async with self.lock:
-            session = self.sessions.get(session_id)
-            if session is None:
-                return []
-            pending = session.pending_client_signals
-            session.pending_client_signals = []
-            return pending
-
-    async def close_session(self, session_id: str) -> SessionRuntime | None:
-        async with self.lock:
-            session = self.sessions.pop(session_id, None)
-            if session is None:
-                return None
-            launcher = self.launchers.get(session.launcher_id)
-            if launcher is not None:
-                launcher.active_session_ids.discard(session_id)
-            session.status = "closed"
-            session.ready_event.set()
-            return session
-
-    async def append_session_log(
-        self,
-        session_id: str,
+        job_id: str,
         stream: str,
         line: str,
         logged_at: str | None = None,
     ) -> None:
         async with self.lock:
-            items = self.session_logs.setdefault(session_id, deque(maxlen=SESSION_LOG_LINE_LIMIT))
+            items = self.job_logs.setdefault(job_id, deque(maxlen=JOB_LOG_LINE_LIMIT))
             items.append(
                 {
                     "time": logged_at or utcnow().isoformat(),
@@ -266,10 +161,10 @@ class RuntimeRegistry:
                 }
             )
 
-    async def get_session_logs(self, session_id: str, limit: int = 200) -> list[dict[str, str]]:
+    async def get_job_logs(self, job_id: str, limit: int = 200) -> list[dict[str, str]]:
         async with self.lock:
-            items = list(self.session_logs.get(session_id, ()))
-        clamped_limit = max(1, min(limit, SESSION_LOG_LINE_LIMIT))
+            items = list(self.job_logs.get(job_id, ()))
+        clamped_limit = max(1, min(limit, JOB_LOG_LINE_LIMIT))
         return items[-clamped_limit:]
 
 

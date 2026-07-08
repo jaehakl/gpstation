@@ -27,7 +27,6 @@ export type AccessKeyCreateResult = {
 
 export type DashboardSummary = {
   launchers: number;
-  active_sessions: number;
   users: number;
   access_keys: number;
 };
@@ -60,7 +59,6 @@ export type CrudDeleteResponse = {
 export type LauncherReconcileResponse = {
   ok: true;
   launchers: number;
-  slave_sessions: number;
 };
 
 export type LauncherRuntimeData = {
@@ -68,7 +66,6 @@ export type LauncherRuntimeData = {
   current_job_id?: string | null;
   loaded_slave_app_id?: string | null;
   worker_status?: string | null;
-  active_session_ids: string[];
   metadata: Record<string, unknown>;
 };
 
@@ -115,7 +112,6 @@ export type CrudUserRow = {
   updated_at?: string | null;
   access_key_ids?: string[];
   launcher_ids?: string[];
-  slave_session_ids?: string[];
 };
 
 export type CrudAccessKeyRow = {
@@ -142,28 +138,9 @@ export type CrudLauncherRow = {
   ip_address?: string | null;
   status: string;
   slave_app_ids: string[];
-  active_session_ids: string[];
   connected_at: string;
   last_heartbeat_at: string;
   disconnected_at?: string | null;
-  created_at?: string | null;
-  updated_at?: string | null;
-  slave_session_ids?: string[];
-};
-
-export type CrudSlaveSessionRow = {
-  id: string;
-  user_id: string;
-  launcher_id?: string | null;
-  slave_app_id: string;
-  master_ip_address?: string | null;
-  master_user_agent?: string | null;
-  status: string;
-  ttl_seconds: number;
-  expires_at: string;
-  ready_at?: string | null;
-  closed_at?: string | null;
-  last_error?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 };

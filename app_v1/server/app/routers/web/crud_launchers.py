@@ -20,21 +20,15 @@ CRUD_SPEC = CrudSpec(
         "ip_address",
         "status",
         "slave_app_ids",
-        "active_session_ids",
         "connected_at",
         "last_heartbeat_at",
         "disconnected_at",
         "created_at",
         "updated_at",
-        "slave_session_ids",
     ),
-    searchable_fields=("launcher_name", "ip_address", "status", "slave_app_ids", "active_session_ids"),
+    searchable_fields=("launcher_name", "ip_address", "status", "slave_app_ids"),
     sortable_fields=("launcher_name", "status", "connected_at", "last_heartbeat_at", "disconnected_at", "created_at", "updated_at"),
     default_sort=("last_heartbeat_at", "desc"),
-    computed_fields={
-        "slave_session_ids": lambda launcher: [slave_session.id for slave_session in launcher.slave_sessions],
-    },
-    relationship_loads=("slave_sessions",),
 )
 
 router = APIRouter(prefix="/launchers", tags=["crud-launchers"])

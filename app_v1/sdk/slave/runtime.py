@@ -148,12 +148,9 @@ class SlaveApp:
 
 def run_app(app: SlaveApp) -> None:
     args = parse_args()
-    if args.worker:
-        asyncio.run(_run_worker_stdio(app=app))
-        return
-    if not args.session_id or args.ttl_seconds is None:
-        raise SystemExit("--session-id and --ttl-seconds are required unless --worker is set")
-    asyncio.run(_run_app_stdio(app=app, session_id=args.session_id, ttl_seconds=args.ttl_seconds))
+    if not args.worker:
+        raise SystemExit("--worker is required")
+    asyncio.run(_run_worker_stdio(app=app))
 
 
 async def _run_worker_stdio(*, app: SlaveApp) -> None:
@@ -586,142 +583,6 @@ async def wait_for_job_result_ack(
                 task.cancel()
 
 
-async def _run_app_stdio(
-    *,
-    app: SlaveApp,
-    session_id: str,
-    ttl_seconds: int,
-) -> None:
-    context = SlaveContext(session_id=session_id, ttl_seconds=ttl_seconds)
-    try:
-        from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
-        from aiortc.sdp import candidate_from_sdp
-        from aioice.ice import Connection as AioIceConnection
-    except Exception as exc:
-        emit({"type": "error", "code": "aiortc_import_failed", "detail": str(exc)})
-        return
-
-    try:
-        ice_servers = load_rtc_ice_servers()
-        ice_gather_timeout_seconds = load_rtc_ice_gather_timeout_seconds(ice_servers)
-        configure_aioice_gather_timeout(AioIceConnection, ice_gather_timeout_seconds)
-        rtc_configuration = build_rtc_configuration(RTCConfiguration, RTCIceServer, ice_servers)
-        log(f"RTC ICE gather timeout: {ice_gather_timeout_seconds:g}s")
-    except Exception as exc:
-        emit({"type": "error", "code": "rtc_configuration_failed", "detail": str(exc)})
-        return
-
-    warmup_task = asyncio.create_task(warm_rtc_runtime(RTCPeerConnection, rtc_configuration, label=f"session {session_id}"))
-    try:
-        await app.run_initialize(context)
-        await warmup_task
-    except Exception as exc:
-        if not warmup_task.done():
-            warmup_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await warmup_task
-        emit({"type": "error", "code": "initialize_failed", "detail": str(exc)})
-        return
-
-    pc = RTCPeerConnection(rtc_configuration)
-    closed = asyncio.Event()
-    pending_calls: dict[str, PendingCall] = {}
-
-    @pc.on("datachannel")
-    def on_datachannel(channel: Any) -> None:
-        log(f"datachannel: {channel.label}")
-
-        @channel.on("message")
-        def on_message(message: Any) -> None:
-            log("datachannel message received")
-            asyncio.create_task(handle_datachannel_message(channel, message, app, context, pending_calls))
-
-    @pc.on("connectionstatechange")
-    async def on_connectionstatechange() -> None:
-        log(f"peer connection state: {pc.connectionState}")
-        if pc.connectionState in {"closed", "failed", "disconnected"}:
-            closed.set()
-
-    @pc.on("iceconnectionstatechange")
-    def on_iceconnectionstatechange() -> None:
-        log(f"ICE connection state: {pc.iceConnectionState}")
-
-    @pc.on("icegatheringstatechange")
-    def on_icegatheringstatechange_log() -> None:
-        log(f"ICE gathering state: {pc.iceGatheringState}")
-
-    emit({"type": "ready", "session_id": session_id})
-
-    try:
-        while not closed.is_set():
-            line = await asyncio.to_thread(read_stdin_line)
-            if not line:
-                break
-            message = json.loads(line)
-            if message.get("type") == "stop":
-                break
-            if message.get("type") == "signal":
-                await handle_signal(pc, message["signal"], RTCSessionDescription, candidate_from_sdp, ice_servers)
-    except Exception as exc:
-        emit({"type": "error", "code": "runtime_error", "detail": str(exc)})
-    finally:
-        await pc.close()
-        emit({"type": "closed", "session_id": session_id})
-
-
-async def handle_signal(
-    pc: Any,
-    signal: dict[str, Any],
-    rtc_session_description: Any,
-    candidate_from_sdp: Any,
-    ice_servers: list[dict[str, Any]],
-) -> None:
-    signal_type = signal.get("type")
-    if signal_type == "offer":
-        log(f"received offer candidates: {format_candidate_summary(summarize_sdp_candidates(signal['sdp']))}")
-        remote_started_at = time.perf_counter()
-        await pc.setRemoteDescription(rtc_session_description(sdp=signal["sdp"], type="offer"))
-        log(f"remote offer set duration_ms={elapsed_ms(remote_started_at)}")
-        answer_started_at = time.perf_counter()
-        answer = await pc.createAnswer()
-        log(f"answer created duration_ms={elapsed_ms(answer_started_at)}")
-        local_started_at = time.perf_counter()
-        await pc.setLocalDescription(answer)
-        log(f"local answer set and ICE gathered duration_ms={elapsed_ms(local_started_at)}")
-        log(f"post-setLocal ICE state={pc.iceGatheringState}")
-        answer_summary = summarize_sdp_candidates(pc.localDescription.sdp)
-        log(f"created answer candidates: {format_candidate_summary(answer_summary)}")
-        has_stun_server = any(url.startswith(("stun:", "stuns:")) for url in iter_rtc_ice_server_urls(ice_servers))
-        if answer_summary["srflx"] == 0 and has_stun_server:
-            log(
-                f"session warning: no srflx ICE candidates gathered; "
-                f"consider increasing {RTC_ICE_GATHER_TIMEOUT_ENV}"
-            )
-        emit(
-            {
-                "type": "signal",
-                "signal": {
-                    "type": "answer",
-                    "sdp": pc.localDescription.sdp,
-                },
-            }
-        )
-        return
-    if signal_type == "ice":
-        candidate_text = signal.get("candidate")
-        if not candidate_text:
-            await pc.addIceCandidate(None)
-            log("received end-of-candidates")
-            return
-        if candidate_text.startswith("candidate:"):
-            candidate_text = candidate_text.removeprefix("candidate:")
-        candidate = candidate_from_sdp(candidate_text)
-        candidate.sdpMid = signal.get("sdpMid")
-        candidate.sdpMLineIndex = signal.get("sdpMLineIndex")
-        await pc.addIceCandidate(candidate)
-        log("received remote ICE candidate")
-
-
 async def warm_rtc_runtime(rtc_peer_connection_cls: Any, rtc_configuration: Any, *, label: str) -> None:
     started_at = time.perf_counter()
     pc = None
@@ -1141,6 +1002,4 @@ def log(message: str) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--worker", action="store_true")
-    parser.add_argument("--session-id")
-    parser.add_argument("--ttl-seconds", type=int)
     return parser.parse_args()

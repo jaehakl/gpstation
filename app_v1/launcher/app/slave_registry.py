@@ -44,18 +44,6 @@ class SlaveAppRegistry:
             raise KeyError(slave_app_id)
         return app
 
-    def subprocess_args(self, session_id: str, slave_app_id: str, ttl_seconds: int) -> list[str]:
-        app = self.require(slave_app_id)
-        return [
-            str(app.python_executable),
-            "-m",
-            app.module,
-            "--session-id",
-            session_id,
-            "--ttl-seconds",
-            str(ttl_seconds),
-        ]
-
     def worker_subprocess_args(self, slave_app_id: str) -> list[str]:
         app = self.require(slave_app_id)
         return [

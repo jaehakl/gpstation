@@ -21,10 +21,6 @@ export function displayLauncherName(launcher: { ip_address?: string | null; laun
   return launcher.ip_address?.trim() || launcher.launcher_name?.trim() || 'Launcher';
 }
 
-export function displaySlaveSessionName(session: { master_ip_address?: string | null; slave_app_id: string }) {
-  return `${session.master_ip_address?.trim() || 'unknown'} / ${session.slave_app_id}`;
-}
-
 export function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }

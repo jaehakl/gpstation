@@ -20,7 +20,7 @@ import type {
   CallResult,
   ConnectDiagnosticEvent,
   JobDescriptor,
-  LauncherSessionView,
+  LauncherView,
   ReceivedFile,
 } from '@gpstation/v1-master-js-sdk';
 
@@ -89,7 +89,7 @@ export function App() {
   const [apiBaseUrl, setApiBaseUrl] = useState(defaultApiBaseUrl);
   const [token, setToken] = useState(defaultAccessToken);
   const [rtcIceServersJson, setRtcIceServersJson] = useState(defaultRtcIceServersJson);
-  const [launchers, setLaunchers] = useState<LauncherSessionView[]>([]);
+  const [launchers, setLaunchers] = useState<LauncherView[]>([]);
   const [selectedLauncherId, setSelectedLauncherId] = useState('');
   const [currentJob, setCurrentJob] = useState<JobDescriptor | null>(null);
   const [status, setStatus] = useState('idle');
@@ -272,7 +272,7 @@ export function App() {
     }
   }
 
-  function selectLauncher(launcher: LauncherSessionView) {
+  function selectLauncher(launcher: LauncherView) {
     setSelectedLauncherId(launcher.id);
   }
 
@@ -508,7 +508,6 @@ export function App() {
                 <span>Name</span>
                 <span>Status</span>
                 <span>Apps</span>
-                <span>Sessions</span>
               </div>
               {launchers.map((launcher) => (
                 <button
@@ -520,7 +519,6 @@ export function App() {
                   <span>{launcher.launcher_name}</span>
                   <span>{launcher.status}</span>
                   <span>{launcher.slave_app_ids.join(', ') || '-'}</span>
-                  <span>{launcher.active_session_count}</span>
                 </button>
               ))}
               {launchers.length === 0 && <p className="emptyText">No connected launchers.</p>}

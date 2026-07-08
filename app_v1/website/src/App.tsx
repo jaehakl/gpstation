@@ -5,7 +5,6 @@ import JobsPage from './app/jobs/page';
 import DashboardPage from './app/page';
 import LaunchersPage from './app/launchers/page';
 import LoginPage from './app/login/page';
-import SlaveSessionsPage from './app/slave-sessions/page';
 import UserDetailPage from './app/users/[userId]/page';
 import UsersPage from './app/users/page';
 
@@ -19,7 +18,6 @@ export function App() {
         <Route path="/users/:userId" element={<UserDetailPage />} />
         <Route path="/jobs" element={<JobsPage />} />
         <Route path="/launchers" element={<LaunchersPage />} />
-        <Route path="/slave-sessions" element={<SlaveSessionsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </AppShell>

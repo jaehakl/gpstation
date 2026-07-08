@@ -9,9 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sdk.protocol.messages import LauncherHello, parse_control_message
 from app.auth import Principal, authenticate_db_authorization, require_client
 from app.db import SessionLocal, get_db
-from app.models import LauncherSessionView
-from app.service.realtime_service import safe_close_client, safe_send_json
-from app.service.session_service import SessionService
+from app.models import LauncherView
+from app.service.realtime_service import safe_send_json
 from app.service.launcher_service import LauncherService
 from app.service.job_service import JobService
 from app.state import runtime, utcnow
@@ -19,11 +18,11 @@ from app.state import runtime, utcnow
 router = APIRouter(prefix="/launchers", tags=["v1-launchers"])
 
 
-@router.get("", response_model=list[LauncherSessionView])
+@router.get("", response_model=list[LauncherView])
 async def list_launchers(
     principal: Principal = Depends(require_client),
     db: AsyncSession = Depends(get_db),
-) -> list[LauncherSessionView]:
+) -> list[LauncherView]:
     return await LauncherService.list_launchers_for_user(db, principal.user_id)
 
 
@@ -63,9 +62,9 @@ async def launcher_control(websocket: WebSocket) -> None:
             await websocket.send_json(
                 {
                     "type": "launcher.accepted",
-                    "launcher_session_id": launcher_id,
+                    "launcher_id": launcher_id,
                     "server_time": utcnow().isoformat(),
-                    "capabilities": {"session_logs": True},
+                    "capabilities": {"job_logs": True},
                 }
             )
             await dispatch_more_jobs(db)
@@ -79,11 +78,8 @@ async def launcher_control(websocket: WebSocket) -> None:
             await safe_send_json(websocket, {"type": "error", "detail": str(exc)})
         finally:
             if launcher_id is not None:
-                affected = await runtime.remove_launcher(launcher_id)
+                await runtime.remove_launcher(launcher_id)
                 await LauncherService.mark_disconnected(db, launcher_id)
-                for session in affected:
-                    await SessionService.close_session(db, session.id, "launcher disconnected", status="error")
-                    await safe_close_client(session, "launcher disconnected")
                 failed_jobs = await JobService.fail_launcher_jobs(db, launcher_id=launcher_id, detail="launcher disconnected")
                 for job in failed_jobs:
                     await runtime.set_job_event(str(job.id))
@@ -99,38 +95,12 @@ async def handle_launcher_message(
     if message.type == "launcher.heartbeat":
         await runtime.mark_heartbeat(
             launcher_id,
-            message.active_session_ids,
             current_job_id=message.current_job_id,
             loaded_slave_app_id=message.loaded_slave_app_id,
             worker_status=message.worker_status,
             metadata=message.metadata,
         )
-        await LauncherService.mark_heartbeat(db, launcher_id, message.status, message.active_session_ids)
-        return
-    if message.type == "session.ready":
-        await SessionService.mark_session_ready(db, message.session_id)
-        await runtime.mark_session_ready(message.session_id)
-        return
-    if message.type == "signal.to_client":
-        await relay_to_client(message.session_id, {"signal": message.signal.model_dump(exclude_none=True)})
-        return
-    if message.type == "session.closed":
-        await SessionService.close_session(db, message.session_id, message.reason)
-        session = await runtime.close_session(message.session_id)
-        if session is not None:
-            await safe_close_client(session, message.reason)
-        return
-    if message.type == "session.error":
-        await SessionService.mark_session_error(db, message.session_id, message.detail, message.code)
-        session = await runtime.mark_session_error(message.session_id, message.detail)
-        if session is not None:
-            await relay_to_client(
-                message.session_id,
-                {"type": "session.error", "code": message.code, "detail": message.detail},
-            )
-        return
-    if message.type == "session.log":
-        await runtime.append_session_log(message.session_id, message.stream, message.line, message.time)
+        await LauncherService.mark_heartbeat(db, launcher_id, message.status)
         return
     if message.type == "job.answer":
         await JobService.mark_answer(db, job_id=message.job_id, answer=message.answer.model_dump(exclude_none=True))
@@ -143,6 +113,9 @@ async def handle_launcher_message(
     if message.type == "job.progress":
         await JobService.append_progress(db, job_id=message.job_id, progress=message.progress)
         await runtime.set_job_event(message.job_id)
+        return
+    if message.type == "job.log":
+        await runtime.append_job_log(message.job_id, message.stream, message.line, message.time)
         return
     if message.type == "job.result":
         await JobService.mark_result(db, job_id=message.job_id)
@@ -171,12 +144,6 @@ async def handle_launcher_message(
         return
     if message.type == "ping":
         await websocket.send_json({"type": "pong", "server_time": utcnow().isoformat()})
-
-
-async def relay_to_client(session_id: str, message: dict[str, Any]) -> None:
-    websocket = await runtime.store_or_get_client_socket(session_id, message)
-    if websocket is not None:
-        await safe_send_json(websocket, message)
 
 
 def extract_slave_startup_timeouts(metadata: dict[str, Any]) -> dict[str, float]:

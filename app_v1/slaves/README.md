@@ -1,17 +1,11 @@
 # GP Station v1 Slave Executables
 
-`slaves/` contains independent slave executable projects:
-
-- `echo/`: built-in echo slave executable. It imports `sdk.slave` and is launched with its own `.venv`.
-- `ai/`: built-in AI slave executable. It exposes LLM, SDXL t2i, and embedding handlers over the same DataChannel runtime.
+`slaves/` contains independent slave executable projects. The default built-in app is `ai`, which exposes LLM, SDXL text-to-image, and embedding handlers through the persistent worker/job runtime.
 
 ## Install
 
 ```powershell
-cd app_v1/slaves/echo
-poetry install
-
-cd ../ai
+cd app_v1/slaves/ai
 poetry install
 ```
 
@@ -28,15 +22,15 @@ cd app_v1/launcher
 poetry run gpstation-v1-slave-launcher
 ```
 
-The launcher discovers `../slaves/*/manifest.json`. Each executable must have its own `.venv`; if it is missing, session startup fails with a clear `executable_venv_missing` error.
+The launcher discovers `../slaves/*/manifest.json`. Each executable must have its own `.venv`; if it is missing, job startup fails with a clear `worker_start_failed` error explaining which Poetry install is needed.
 
-Manifest files require `id`, `name`, and `module`. They may also set `startup_timeout_seconds` when an executable needs more time before it can emit the SDK `ready` frame. The launcher advertises that value to the server and both sides use it for session startup waits.
+Manifest files require `id`, `name`, and `module`. They may also set `startup_timeout_seconds` when an executable needs more time before it can emit the SDK `worker.ready` frame. The launcher advertises that value to the server and uses it for worker startup waits.
 
-`ai/` sets `startup_timeout_seconds` to `300` because it pre-imports the LLM, SDXL, and embedding libraries during `initialize`. This does not preload model weights, but it can still take longer than the default lightweight slave timeout.
+`ai/` sets `startup_timeout_seconds` to `300` because it pre-imports the LLM, SDXL, and embedding libraries during `initialize`. This does not preload model weights, but it can still take longer than the default lightweight worker timeout.
 
 ## AI Handlers
 
-`ai` supports these call types:
+`ai` supports these job handler types:
 
 - `ai.llm`: payload `{"system_prompt":"...", "prompt":"...", "max_tokens":512, "temperature":0.5}` returns `{"answer":"..."}`
 - `ai.embeddings`: payload `{"text":"..."}` returns `{"embedding":[...], "dimensions":123}`

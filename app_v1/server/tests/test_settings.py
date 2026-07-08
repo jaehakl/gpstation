@@ -24,9 +24,6 @@ REQUIRED_ENV_LINES = [
     "GPSTATION_V1_REFRESH_TTL_SEC=1209600",
     "GPSTATION_V1_COOKIE_DOMAIN=",
     "GPSTATION_V1_SECURE_COOKIES=false",
-    "GPSTATION_V1_SESSION_TTL_SECONDS=300",
-    "GPSTATION_V1_SESSION_READY_TIMEOUT_SECONDS=10",
-    "GPSTATION_V1_CLEANUP_INTERVAL_SECONDS=5",
     "GPSTATION_V1_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000",
 ]
 
@@ -95,9 +92,6 @@ def strict_settings(**overrides):
         "refresh_ttl_sec": 1209600,
         "cookie_domain": "",
         "secure_cookies": False,
-        "session_ttl_seconds": 300,
-        "session_ready_timeout_seconds": 10,
-        "cleanup_interval_seconds": 5,
         "cors_origins": "http://localhost:3000,http://127.0.0.1:3000",
     }
     values.update(overrides)

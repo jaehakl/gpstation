@@ -25,7 +25,7 @@ class LauncherSettings(BaseSettings):
     access_token: str
     launcher_name: str = Field(default_factory=gethostname)
     heartbeat_interval_seconds: float = Field(default=5.0, gt=0)
-    session_ready_timeout_seconds: float = Field(default=10.0, gt=0)
+    worker_ready_timeout_seconds: float = Field(default=10.0, gt=0)
     rtc_ice_servers_json: str = DEFAULT_RTC_ICE_SERVERS_JSON
     rtc_ice_gather_timeout_seconds: str = ""
     rtc_memory_cache_enabled: str = ""

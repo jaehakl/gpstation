@@ -1,36 +1,33 @@
 # GP Station v1
 
-Fresh MVP implementation for the README flow. This directory is intentionally separate from the existing `apps/` tree.
+Fresh MVP implementation for the job-based GP Station runtime. This directory is intentionally separate from the existing `apps/` tree.
 
 ## Layout
 
-- `sdk/`: installable shared Python SDK package with protocol and slave runtime libraries.
-- `server/`: FastAPI orchestration and signaling relay.
-- `launcher/`: Python slave launcher project.
-- `slaves/echo/`: built-in echo slave executable project.
+- `sdk/`: shared Python protocol and slave runtime libraries.
+- `server/`: FastAPI orchestration server for launchers, jobs, auth, and the management API.
+- `launcher/`: Python launcher that keeps a persistent slave worker and runs assigned jobs.
 - `slaves/ai/`: built-in AI slave executable project.
-- `sdk/master/js/`: browser TypeScript master SDK.
-- `masters/echo/`: browser demo app.
-- `masters/ai/`: browser AI slave test app.
+- `sdk/master/js/`: browser TypeScript master SDK for `/v1/jobs`.
+- `masters/ai/`: browser AI master app.
 - `website/`: OAuth/JWT account and runtime management console.
 
 ## Local Run Order
 
-1. Install Python dependencies with Poetry in `server/`, `launcher/`, and each executable such as `slaves/echo/` or `slaves/ai/`.
+1. Install dependencies with Poetry in `server/`, `launcher/`, and `slaves/ai/`.
 2. Start the v1 server with `cd app_v1/server && poetry run gpstation-v1-server`.
-3. Start one slave launcher with `cd app_v1/launcher && poetry run gpstation-v1-slave-launcher`.
+3. Start one launcher with `cd app_v1/launcher && poetry run gpstation-v1-slave-launcher`.
 4. Open the management website with `cd app_v1/website && npm run dev`.
-5. For the raw WebRTC demo, create a user Access Token with `client` scope and put it in the example web client.
-6. Refresh launchers, select the connected launcher and `echo` slave app, create a session, and call a handler such as `echo.request` with JSON and optional files.
+5. Create a user Access Token with `client` scope and a launcher Access Token with `launcher` scope.
+6. Open `masters/ai`, select a launcher that advertises `ai`, and run `ai.llm`, `ai.embeddings`, or `ai.sdxl.t2i` through `/v1/jobs`.
 
 ## Environment Files
 
 Runtime settings that change by environment live in each app root:
 
-- `server/.env`: server DB URL, host/port, public URL, Google OAuth, JWT, CORS origins, and session timeouts.
+- `server/.env`: server DB URL, host/port, public URL, Google OAuth, JWT, CORS origins, and job/launcher timing settings.
 - `launcher/.env`: server API URL, launcher access token, optional launcher name, and launcher timing settings.
-- `masters/echo/.env`: browser demo server URL and default client token.
-- `masters/ai/.env`: browser AI test app server URL and default client token.
+- `masters/ai/.env`: browser AI master server URL and default client token.
 - `slaves/ai/.env`: local model paths and AI runtime options.
 - `website/.env`: management website API URL.
 

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import Principal, require_client
 from app.db import get_db
-from app.models import JobAnswerWaitResult, JobCreateRequest, JobCreateResult, JobData, OkResponse, SessionLogResponse
+from app.models import JobAnswerWaitResult, JobCreateRequest, JobCreateResult, JobData, JobLogResponse, OkResponse
 from app.service.job_service import JOB_TERMINAL_STATES, JobService, job_to_data
 from app.service.realtime_service import send_to_launcher
 from app.settings import settings
@@ -48,17 +48,17 @@ async def get_job(
     return job_to_data(job)
 
 
-@router.get("/{job_id}/logs", response_model=SessionLogResponse)
+@router.get("/{job_id}/logs", response_model=JobLogResponse)
 async def get_job_logs(
     job_id: str,
     limit: int = Query(default=200, ge=1, le=500),
     principal: Principal = Depends(require_client),
     db: AsyncSession = Depends(get_db),
-) -> SessionLogResponse:
+) -> JobLogResponse:
     job = await JobService.get_user_job(db, job_id=job_id, user_id=principal.user_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-    return SessionLogResponse(items=await runtime.get_session_logs(job_id, limit=limit))
+    return JobLogResponse(items=await runtime.get_job_logs(job_id, limit=limit))
 
 
 @router.get("/{job_id}/wait-answer", response_model=JobAnswerWaitResult)

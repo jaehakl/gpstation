@@ -18,4 +18,4 @@ Open `http://127.0.0.1:3002`, use a website-created Access Token with `client` s
 
 The app reads `VITE_GPSTATION_V1_API_URL` and `VITE_GPSTATION_V1_ACCESS_TOKEN` from `app_v1/masters/ai/.env`. Use `env.example` as the shared local template.
 
-The `ai.sdxl.t2i` response returns image metadata in JSON and image bytes as DataChannel file attachments. Long AI calls use larger client-side timeouts than the raw echo console.
+The `ai.sdxl.t2i` response returns image metadata in JSON and image bytes as DataChannel file attachments. Long AI calls use larger client-side timeouts than lightweight local handlers.

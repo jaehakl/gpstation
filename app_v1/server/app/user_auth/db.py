@@ -53,12 +53,6 @@ class User(TimestampMixin, Base):
     auth_audits: Mapped[list["AuthAudit"]] = relationship(back_populates="user", lazy="selectin")
     access_keys: Mapped[list["AccessKey"]] = relationship("AccessKey", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
     launchers: Mapped[list["Launcher"]] = relationship("Launcher", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
-    slave_sessions: Mapped[list["SlaveSession"]] = relationship(
-        "SlaveSession",
-        back_populates="user",
-        cascade="all, delete-orphan",
-        lazy="selectin",
-    )
     jobs: Mapped[list["Job"]] = relationship("Job", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
 
 

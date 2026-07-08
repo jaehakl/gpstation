@@ -5,23 +5,20 @@ from datetime import datetime, timezone
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import Launcher, SlaveSession
-from app.models import LauncherSessionView
-from app.service.session_service import ACTIVE_SESSION_STATUSES
+from app.db import Launcher
+from app.models import LauncherView
 
 
 ACTIVE_LAUNCHER_STATUSES = {"ready", "busy"}
-LAUNCHER_DISCONNECTED_REASON = "launcher disconnected"
 
 
-def launcher_to_view(launcher: Launcher) -> LauncherSessionView:
-    return LauncherSessionView(
+def launcher_to_view(launcher: Launcher) -> LauncherView:
+    return LauncherView(
         id=str(launcher.id),
         user_id=str(launcher.user_id),
         launcher_name=launcher.launcher_name,
         status=launcher.status,
         slave_app_ids=[str(item) for item in (launcher.slave_app_ids or [])],
-        active_session_count=len(launcher.active_session_ids or []),
         connected_at=launcher.connected_at.astimezone(timezone.utc),
         last_heartbeat_at=launcher.last_heartbeat_at.astimezone(timezone.utc),
     )
@@ -29,7 +26,7 @@ def launcher_to_view(launcher: Launcher) -> LauncherSessionView:
 
 class LauncherService:
     @staticmethod
-    async def list_launchers_for_user(db: AsyncSession, user_id: str) -> list[LauncherSessionView]:
+    async def list_launchers_for_user(db: AsyncSession, user_id: str) -> list[LauncherView]:
         stmt = (
             select(Launcher)
             .where(Launcher.user_id == user_id, Launcher.disconnected_at.is_(None))
@@ -55,7 +52,6 @@ class LauncherService:
             ip_address=ip_address,
             status="ready",
             slave_app_ids=unique_slave_app_ids,
-            active_session_ids=[],
             connected_at=now,
             last_heartbeat_at=now,
         )
@@ -69,14 +65,12 @@ class LauncherService:
         db: AsyncSession,
         launcher_id: str,
         status: str,
-        active_session_ids: list[str],
     ) -> None:
         launcher = await db.get(Launcher, launcher_id)
         if launcher is None:
             return
 
         launcher.status = status
-        launcher.active_session_ids = active_session_ids
         launcher.last_heartbeat_at = datetime.now(timezone.utc)
         await db.commit()
 
@@ -87,7 +81,6 @@ class LauncherService:
             return
 
         launcher.status = "disconnected"
-        launcher.active_session_ids = []
         launcher.disconnected_at = datetime.now(timezone.utc)
         await db.commit()
 
@@ -97,7 +90,7 @@ class LauncherService:
         await db.execute(
             update(Launcher)
             .where(Launcher.disconnected_at.is_(None))
-            .values(status="disconnected", active_session_ids=[], disconnected_at=now)
+            .values(status="disconnected", disconnected_at=now)
         )
         await db.commit()
 
@@ -107,7 +100,7 @@ class LauncherService:
         *,
         connected_launcher_ids: set[str],
         user_id: str | None = None,
-    ) -> tuple[int, int]:
+    ) -> int:
         launcher_clauses = [
             (Launcher.status.in_(ACTIVE_LAUNCHER_STATUSES)) | (Launcher.disconnected_at.is_(None))
         ]
@@ -128,32 +121,12 @@ class LauncherService:
             and (user_id is None or str(launcher.user_id) == user_id)
         ]
         if not target_launchers:
-            return 0, 0
+            return 0
 
         now = datetime.now(timezone.utc)
-        target_launcher_ids = {str(launcher.id) for launcher in target_launchers}
-        sessions = (
-            await db.execute(
-                select(SlaveSession).where(
-                    SlaveSession.launcher_id.in_(target_launcher_ids),
-                    SlaveSession.status.in_(ACTIVE_SESSION_STATUSES),
-                )
-            )
-        ).scalars().all()
-        target_sessions = [
-            session
-            for session in sessions
-            if str(session.launcher_id) in target_launcher_ids and session.status in ACTIVE_SESSION_STATUSES
-        ]
-
         for launcher in target_launchers:
             launcher.status = "disconnected"
-            launcher.active_session_ids = []
             launcher.disconnected_at = now
-        for session in target_sessions:
-            session.status = "error"
-            session.closed_at = now
-            session.last_error = LAUNCHER_DISCONNECTED_REASON
 
         await db.commit()
-        return len(target_launchers), len(target_sessions)
+        return len(target_launchers)

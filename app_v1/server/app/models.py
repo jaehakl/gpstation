@@ -26,27 +26,26 @@ class OkResponse(BaseModel):
     ok: bool = True
 
 
-class LauncherSessionView(BaseModel):
+class LauncherView(BaseModel):
     id: str
     user_id: str
     launcher_name: str
     status: str
     slave_app_ids: list[str]
-    active_session_count: int
     connected_at: datetime
     last_heartbeat_at: datetime
     ip_address: Optional[str] = None
     disconnected_at: Optional[datetime] = None
 
 
-class SessionLogItem(BaseModel):
+class JobLogItem(BaseModel):
     time: str
     stream: str
     line: str
 
 
-class SessionLogResponse(BaseModel):
-    items: list[SessionLogItem]
+class JobLogResponse(BaseModel):
+    items: list[JobLogItem]
 
 
 from app.routers.v1.models import (  # noqa: E402
@@ -54,8 +53,6 @@ from app.routers.v1.models import (  # noqa: E402
     JobCreateRequest,
     JobCreateResult,
     JobData,
-    SessionCreateRequest,
-    SessionCreateResult,
 )
 from app.routers.web.models import (  # noqa: E402
     AccessKeyCreate,
@@ -80,16 +77,14 @@ __all__ = [
     "CrudListResponse",
     "CrudUpsertRequest",
     "CrudUpsertResponse",
-    "LauncherSessionView",
+    "LauncherView",
     "OkResponse",
     "JobAnswerWaitResult",
     "JobCreateRequest",
     "JobCreateResult",
     "JobData",
-    "SessionCreateRequest",
-    "SessionCreateResult",
-    "SessionLogItem",
-    "SessionLogResponse",
+    "JobLogItem",
+    "JobLogResponse",
     "UserData",
     "UserRole",
 ]

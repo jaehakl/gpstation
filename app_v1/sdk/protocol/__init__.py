@@ -1,6 +1,5 @@
 from sdk.protocol.constants import CONTROL_WS_PATH, DATA_CHANNEL_LABEL
 from sdk.protocol.messages import (
-    ClientSignalMessage,
     ControlMessage,
     DataChannelAttachment,
     DataChannelMessage,
@@ -11,7 +10,6 @@ from sdk.protocol.messages import (
 __all__ = [
     "CONTROL_WS_PATH",
     "DATA_CHANNEL_LABEL",
-    "ClientSignalMessage",
     "ControlMessage",
     "DataChannelAttachment",
     "DataChannelMessage",

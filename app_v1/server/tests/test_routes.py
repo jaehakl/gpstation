@@ -6,8 +6,8 @@ from fastapi import HTTPException
 from app.auth import Principal
 from app.main import app
 from app.models import UserData
-from app.routers.v1 import jobs, launchers, sessions
-from app.routers.web import launchers as web_launchers, slave_sessions
+from app.routers.v1 import jobs, launchers
+from app.routers.web import launchers as web_launchers
 from app.state import RuntimeRegistry
 
 
@@ -34,9 +34,6 @@ def test_launcher_routes_replace_legacy_routes():
         "/web/crud/access_keys/delete",
         "/web/crud/launchers/list",
         "/web/crud/launchers/{row_id}",
-        "/web/crud/slave_sessions/list",
-        "/web/crud/slave_sessions/{row_id}",
-        "/web/crud/slave_sessions/delete",
         "/web/launchers/reconcile-disconnected",
         "/web/launchers/runtime",
         "/web/launchers/{launcher_id}/cancel-current-job",
@@ -50,19 +47,23 @@ def test_launcher_routes_replace_legacy_routes():
         "/web/auth/logout",
         "/web/users/me/access-tokens",
         "/web/users/{user_id}/access-tokens",
-        "/web/slave-sessions/{session_id}/close",
-        "/web/slave-sessions/{session_id}/logs",
     ]:
         assert path in paths
     assert "/v1/launchers" in paths
     assert "/v1/launchers/control" in paths
-    assert "/v1/sessions" in paths
-    assert "/v1/sessions/{session_id}/logs" in paths
     assert "/v1/jobs" in paths
     assert "/v1/jobs/{job_id}" in paths
     assert "/v1/jobs/{job_id}/logs" in paths
     assert "/v1/jobs/{job_id}/wait-answer" in paths
     assert "/v1/jobs/{job_id}/kill" in paths
+    assert "/v1/sessions" not in paths
+    assert "/v1/sessions/{session_id}/logs" not in paths
+    assert "/v1/sessions/{session_id}/signal" not in paths
+    assert "/web/crud/slave_sessions/list" not in paths
+    assert "/web/crud/slave_sessions/{row_id}" not in paths
+    assert "/web/crud/slave_sessions/delete" not in paths
+    assert "/web/slave-sessions/{session_id}/close" not in paths
+    assert "/web/slave-sessions/{session_id}/logs" not in paths
     assert "/crud/users/list" not in paths
     assert "/crud/access_keys/list" not in paths
     assert "/crud/launchers/list" not in paths
@@ -187,35 +188,7 @@ async def test_cookie_backed_routes_do_not_allow_unknown_cors_origin():
 
 
 @pytest.mark.asyncio
-async def test_session_ready_commits_db_before_waking_runtime(monkeypatch):
-    calls = []
-
-    async def mark_db_ready(db, session_id):
-        calls.append(("db", db, session_id))
-
-    async def mark_runtime_ready(session_id):
-        calls.append(("runtime", session_id))
-
-    monkeypatch.setattr(launchers.SessionService, "mark_session_ready", mark_db_ready)
-    monkeypatch.setattr(launchers.runtime, "mark_session_ready", mark_runtime_ready)
-
-    db = object()
-
-    await launchers.handle_launcher_message(
-        db,
-        "launcher-1",
-        object(),
-        {"type": "session.ready", "session_id": "session-1"},
-    )
-
-    assert calls == [
-        ("db", db, "session-1"),
-        ("runtime", "session-1"),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_launcher_session_log_message_is_stored(monkeypatch):
+async def test_launcher_job_log_message_is_stored(monkeypatch):
     registry = RuntimeRegistry()
     monkeypatch.setattr(launchers, "runtime", registry)
 
@@ -224,15 +197,15 @@ async def test_launcher_session_log_message_is_stored(monkeypatch):
         "launcher-1",
         object(),
         {
-            "type": "session.log",
-            "session_id": "session-1",
+            "type": "job.log",
+            "job_id": "job-1",
             "time": "2026-07-07T00:00:00+00:00",
             "stream": "stderr",
             "line": "loading model",
         },
     )
 
-    assert await registry.get_session_logs("session-1") == [
+    assert await registry.get_job_logs("job-1") == [
         {
             "time": "2026-07-07T00:00:00+00:00",
             "stream": "stderr",
@@ -246,7 +219,6 @@ def test_extract_slave_startup_timeouts_ignores_invalid_values():
         {
             "slave_apps": {
                 "ai": {"startup_timeout_seconds": 300},
-                "echo": {},
                 "bad": {"startup_timeout_seconds": "not-a-number"},
                 "zero": {"startup_timeout_seconds": 0},
             }
@@ -255,46 +227,9 @@ def test_extract_slave_startup_timeouts_ignores_invalid_values():
 
 
 @pytest.mark.asyncio
-async def test_session_ready_timeout_uses_runtime_slave_timeout(monkeypatch):
-    registry = RuntimeRegistry()
-    await registry.register_launcher("launcher-1", object(), {"ai": 300})
-    monkeypatch.setattr(sessions, "runtime", registry)
-    monkeypatch.setattr(sessions.settings, "session_ready_timeout_seconds", 10)
-
-    assert await sessions.resolve_session_ready_timeout_seconds("launcher-1", "ai") == 300
-    assert await sessions.resolve_session_ready_timeout_seconds("launcher-1", "echo") == 10
-
-
-@pytest.mark.asyncio
-async def test_v1_session_logs_requires_session_owner(monkeypatch):
-    registry = RuntimeRegistry()
-    await registry.append_session_log("session-1", "stderr", "owned log", "2026-07-07T00:00:00+00:00")
-    monkeypatch.setattr(sessions, "runtime", registry)
-
-    response = await sessions.get_session_logs(
-        "session-1",
-        limit=10,
-        principal=Principal(token="token", user_id="user-1", scopes=frozenset({"client"})),
-        db=FakeDb(object()),
-    )
-
-    assert response.items[0].line == "owned log"
-
-    with pytest.raises(HTTPException) as error:
-        await sessions.get_session_logs(
-            "session-1",
-            limit=10,
-            principal=Principal(token="token", user_id="other-user", scopes=frozenset({"client"})),
-            db=FakeDb(None),
-        )
-
-    assert error.value.status_code == 404
-
-
-@pytest.mark.asyncio
 async def test_v1_job_logs_requires_job_owner(monkeypatch):
     registry = RuntimeRegistry()
-    await registry.append_session_log("job-1", "stderr", "job log", "2026-07-07T00:00:00+00:00")
+    await registry.append_job_log("job-1", "stderr", "job log", "2026-07-07T00:00:00+00:00")
     monkeypatch.setattr(jobs, "runtime", registry)
 
     response = await jobs.get_job_logs(
@@ -318,41 +253,6 @@ async def test_v1_job_logs_requires_job_owner(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_web_session_logs_allows_admin_or_owner(monkeypatch):
-    registry = RuntimeRegistry()
-    await registry.append_session_log("session-1", "stderr", "web log", "2026-07-07T00:00:00+00:00")
-    monkeypatch.setattr(slave_sessions, "runtime", registry)
-
-    response = await slave_sessions.api_get_slave_session_logs(
-        "session-1",
-        limit=10,
-        db=FakeDb(object()),
-        current_user=UserData(id="user-1", role="user"),
-    )
-
-    assert response.items[0].line == "web log"
-
-    admin_response = await slave_sessions.api_get_slave_session_logs(
-        "session-1",
-        limit=10,
-        db=FakeDb(object()),
-        current_user=UserData(id="admin-1", role="admin"),
-    )
-
-    assert admin_response.items[0].line == "web log"
-
-    with pytest.raises(HTTPException) as error:
-        await slave_sessions.api_get_slave_session_logs(
-            "session-1",
-            limit=10,
-            db=FakeDb(None),
-            current_user=UserData(id="other-user", role="user"),
-        )
-
-    assert error.value.status_code == 404
-
-
-@pytest.mark.asyncio
 async def test_web_reconcile_disconnected_launchers_uses_runtime_and_user_scope(monkeypatch):
     registry = RuntimeRegistry()
     await registry.register_launcher("connected-launcher", object())
@@ -362,7 +262,7 @@ async def test_web_reconcile_disconnected_launchers_uses_runtime_and_user_scope(
 
     async def reconcile(db, *, connected_launcher_ids, user_id):
         calls.append((db, connected_launcher_ids, user_id))
-        return 2, 3
+        return 2
 
     monkeypatch.setattr(web_launchers.LauncherService, "reconcile_disconnected_launchers", reconcile)
     db = object()
@@ -377,9 +277,7 @@ async def test_web_reconcile_disconnected_launchers_uses_runtime_and_user_scope(
     )
 
     assert user_response.launchers == 2
-    assert user_response.slave_sessions == 3
     assert admin_response.launchers == 2
-    assert admin_response.slave_sessions == 3
     assert calls == [
         (db, {"connected-launcher"}, "user-1"),
         (db, {"connected-launcher"}, None),

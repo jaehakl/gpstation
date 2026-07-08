@@ -90,7 +90,7 @@ export default function LaunchersPage() {
     setMessage(null);
     try {
       const result = await dbTables.launchers.reconcileDisconnected();
-      setMessage(`Launcher ${result.launchers}개, SlaveSession ${result.slave_sessions}개를 보정했습니다.`);
+      setMessage(`Launcher ${result.launchers}개를 보정했습니다.`);
       await loadLaunchers();
     } catch (reconcileError) {
       setError(errorMessage(reconcileError, 'Launcher 상태를 보정하지 못했습니다.'));
@@ -216,7 +216,6 @@ export default function LaunchersPage() {
                 <th>사용자</th>
                 <th>상태</th>
                 <th>Slave App</th>
-                <th>활성 세션</th>
                 <th>Worker</th>
                 <th>현재 Job</th>
                 <th>IP</th>
@@ -242,7 +241,6 @@ export default function LaunchersPage() {
                         <span className="statusPill">{launcher.status}</span>
                       </td>
                       <td>{launcher.slave_app_ids.join(', ') || '-'}</td>
-                      <td>{runtime?.active_session_ids.length ?? launcher.active_session_ids.length}</td>
                       <td>
                         <span className="statusPill">{runtime?.worker_status ?? 'offline'}</span>
                         <div className="mutedText">{runtime?.loaded_slave_app_id ?? '-'}</div>
@@ -291,7 +289,7 @@ export default function LaunchersPage() {
 function EmptyRow({ text }: { text: string }) {
   return (
     <tr>
-      <td colSpan={10} className="emptyText">
+      <td colSpan={9} className="emptyText">
         {text}
       </td>
     </tr>

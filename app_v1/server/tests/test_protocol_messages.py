@@ -10,7 +10,7 @@ def test_parse_launcher_hello_message():
         {
             "type": "launcher.hello",
             "launcher_name": "desktop-4090",
-            "slave_app_ids": ["echo"],
+            "slave_app_ids": ["ai"],
             "metadata": {
                 "slave_apps": {
                     "ai": {
@@ -23,7 +23,7 @@ def test_parse_launcher_hello_message():
 
     assert message.type == "launcher.hello"
     assert message.launcher_name == "desktop-4090"
-    assert message.slave_app_ids == ["echo"]
+    assert message.slave_app_ids == ["ai"]
     assert message.metadata["slave_apps"]["ai"]["startup_timeout_seconds"] == 300
 
 
@@ -31,14 +31,14 @@ def test_parse_launcher_accepted_capabilities():
     message = parse_control_message(
         {
             "type": "launcher.accepted",
-            "launcher_session_id": "launcher-1",
+            "launcher_id": "launcher-1",
             "server_time": "2026-07-07T00:00:00+00:00",
-            "capabilities": {"session_logs": True},
+            "capabilities": {"job_logs": True},
         }
     )
 
     assert message.type == "launcher.accepted"
-    assert message.capabilities == {"session_logs": True}
+    assert message.capabilities == {"job_logs": True}
 
 
 def test_parse_rejects_extra_fields():
@@ -50,18 +50,19 @@ def test_parse_rejects_extra_fields():
         raise AssertionError("ValidationError was not raised")
 
 
-def test_parse_session_log_message():
+def test_parse_job_log_message():
     message = parse_control_message(
         {
-            "type": "session.log",
-            "session_id": "session-1",
+            "type": "job.log",
+            "job_id": "job-1",
             "time": "2026-07-07T00:00:00+00:00",
             "stream": "stderr",
             "line": "model loading",
         }
     )
 
-    assert message.type == "session.log"
+    assert message.type == "job.log"
+    assert message.job_id == "job-1"
     assert message.stream == "stderr"
     assert message.line == "model loading"
 
@@ -71,7 +72,6 @@ def test_parse_launcher_heartbeat_with_worker_state():
         {
             "type": "launcher.heartbeat",
             "status": "busy",
-            "active_session_ids": [],
             "current_job_id": "job-1",
             "loaded_slave_app_id": "ai",
             "worker_status": "busy",
@@ -90,8 +90,8 @@ def test_parse_job_start_message():
         {
             "type": "job.start",
             "job_id": "job-1",
-            "handler_type": "echo.request",
-            "slave_app_id": "echo",
+            "handler_type": "ai.llm",
+            "slave_app_id": "ai",
             "offer": {"type": "offer", "sdp": "v=0\r\n"},
         }
     )
@@ -106,8 +106,8 @@ def test_parse_job_start_rejects_input_body():
             {
                 "type": "job.start",
                 "job_id": "job-1",
-                "handler_type": "echo.request",
-                "slave_app_id": "echo",
+                "handler_type": "ai.llm",
+                "slave_app_id": "ai",
                 "input": {"text": "hello"},
                 "offer": {"type": "offer", "sdp": "v=0\r\n"},
             }
@@ -118,18 +118,18 @@ def test_job_create_request_rejects_input_body():
     with pytest.raises(ValidationError):
         JobCreateRequest.model_validate(
             {
-                "handler_type": "echo.request",
-                "slave_app_id": "echo",
+                "handler_type": "ai.llm",
+                "slave_app_id": "ai",
                 "input": {"text": "hello"},
                 "offer": {"type": "offer", "sdp": "v=0\r\n"},
             }
         )
 
 
-def test_data_channel_echo_result_envelope():
+def test_data_channel_job_result_envelope():
     message = DataChannelMessage(
         id="msg-1",
-        type="echo.result",
+        type="ai.llm.result",
         payload={"text": "hello"},
     )
 

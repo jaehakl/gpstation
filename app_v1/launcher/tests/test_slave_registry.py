@@ -6,7 +6,7 @@ import pytest
 from app.control import handle_server_message, launcher_hello_payload
 from app.settings import LauncherSettings
 from app.slave_registry import SlaveApp, SlaveAppRegistry, load_registry
-from app.subprocess_manager import SESSION_LOG_LINE_LIMIT, ManagedWorker, SessionManager, json_line, subprocess_env
+from app.subprocess_manager import JOB_LOG_LINE_LIMIT, ManagedWorker, WorkerManager, json_line, subprocess_env
 
 
 def write_manifest(root, folder_name: str, slave_app_id: str, **extra) -> None:
@@ -26,21 +26,21 @@ def write_manifest(root, folder_name: str, slave_app_id: str, **extra) -> None:
 
 
 def test_load_registry_from_manifests(tmp_path):
-    write_manifest(tmp_path, "echo", "echo")
-    write_manifest(tmp_path, "other", "other", startup_timeout_seconds=300)
+    write_manifest(tmp_path, "ai", "ai")
+    write_manifest(tmp_path, "render", "render", startup_timeout_seconds=300)
 
     registry = load_registry(tmp_path)
 
-    assert registry.ids() == ["echo", "other"]
-    assert registry.require("echo").module == "app"
-    assert registry.require("echo").project_dir == tmp_path / "echo"
-    assert registry.require("echo").startup_timeout_seconds is None
-    assert registry.require("other").startup_timeout_seconds == 300
+    assert registry.ids() == ["ai", "render"]
+    assert registry.require("ai").module == "app"
+    assert registry.require("ai").project_dir == tmp_path / "ai"
+    assert registry.require("ai").startup_timeout_seconds is None
+    assert registry.require("render").startup_timeout_seconds == 300
 
 
 def test_registry_builds_slave_app_metadata(tmp_path):
-    write_manifest(tmp_path, "echo", "echo")
     write_manifest(tmp_path, "ai", "ai", startup_timeout_seconds=300)
+    write_manifest(tmp_path, "render", "render")
 
     registry = load_registry(tmp_path)
 
@@ -73,34 +73,17 @@ def test_registry_rejects_duplicate_ids(tmp_path):
     with pytest.raises(ValueError):
         SlaveAppRegistry(
             [
-                SlaveApp(id="echo", name="Echo", module="app", project_dir=tmp_path / "echo"),
-                SlaveApp(id="echo", name="Echo Again", module="app", project_dir=tmp_path / "echo-again"),
+                SlaveApp(id="ai", name="AI", module="app", project_dir=tmp_path / "ai"),
+                SlaveApp(id="ai", name="AI Again", module="app", project_dir=tmp_path / "ai-again"),
             ]
         )
 
 
-def test_registry_builds_subprocess_args(tmp_path):
-    slave_app = SlaveApp(id="echo", name="Echo", module="app", project_dir=tmp_path / "echo")
-    registry = SlaveAppRegistry([slave_app])
-
-    args = registry.subprocess_args("session-1", "echo", 60)
-
-    assert args == [
-        str(slave_app.python_executable),
-        "-m",
-        "app",
-        "--session-id",
-        "session-1",
-        "--ttl-seconds",
-        "60",
-    ]
-
-
 def test_registry_builds_worker_subprocess_args(tmp_path):
-    slave_app = SlaveApp(id="echo", name="Echo", module="app", project_dir=tmp_path / "echo")
+    slave_app = SlaveApp(id="ai", name="AI", module="app", project_dir=tmp_path / "ai")
     registry = SlaveAppRegistry([slave_app])
 
-    assert registry.worker_subprocess_args("echo") == [
+    assert registry.worker_subprocess_args("ai") == [
         str(slave_app.python_executable),
         "-m",
         "app",
@@ -108,7 +91,7 @@ def test_registry_builds_worker_subprocess_args(tmp_path):
     ]
 
 
-def test_session_manager_uses_slave_startup_timeout_when_larger(tmp_path):
+def test_worker_manager_uses_slave_startup_timeout_when_larger(tmp_path):
     registry = SlaveAppRegistry(
         [
             SlaveApp(
@@ -120,8 +103,8 @@ def test_session_manager_uses_slave_startup_timeout_when_larger(tmp_path):
             )
         ]
     )
-    manager = SessionManager(
-        LauncherSettings(access_token="test-token", session_ready_timeout_seconds=10),
+    manager = WorkerManager(
+        LauncherSettings(access_token="test-token", worker_ready_timeout_seconds=10),
         async_noop,
         registry,
     )
@@ -129,15 +112,15 @@ def test_session_manager_uses_slave_startup_timeout_when_larger(tmp_path):
     assert manager.ready_timeout_seconds_for("ai") == 300
 
 
-def test_session_manager_uses_global_timeout_without_slave_override(tmp_path):
-    registry = SlaveAppRegistry([SlaveApp(id="echo", name="Echo", module="app", project_dir=tmp_path / "echo")])
-    manager = SessionManager(
-        LauncherSettings(access_token="test-token", session_ready_timeout_seconds=10),
+def test_worker_manager_uses_global_timeout_without_slave_override(tmp_path):
+    registry = SlaveAppRegistry([SlaveApp(id="ai", name="AI", module="app", project_dir=tmp_path / "ai")])
+    manager = WorkerManager(
+        LauncherSettings(access_token="test-token", worker_ready_timeout_seconds=10),
         async_noop,
         registry,
     )
 
-    assert manager.ready_timeout_seconds_for("echo") == 10
+    assert manager.ready_timeout_seconds_for("ai") == 10
 
 
 def test_subprocess_env_includes_rtc_ice_servers_json():
@@ -164,33 +147,38 @@ def test_json_line_encodes_non_ascii_as_utf8():
     assert json.loads(data.decode("utf-8"))["input"]["prompt"] == "한글 prompt"
 
 
-def test_registry_rejects_unknown_launch_app(tmp_path):
-    registry = SlaveAppRegistry([SlaveApp(id="echo", name="Echo", module="app", project_dir=tmp_path / "echo")])
+def test_registry_rejects_unknown_worker_app(tmp_path):
+    registry = SlaveAppRegistry([SlaveApp(id="ai", name="AI", module="app", project_dir=tmp_path / "ai")])
 
     with pytest.raises(KeyError):
-        registry.subprocess_args("session-1", "missing", 60)
+        registry.worker_subprocess_args("missing")
 
 
 @pytest.mark.asyncio
-async def test_start_session_missing_executable_venv_sends_error(tmp_path):
+async def test_start_job_missing_executable_venv_sends_error(tmp_path):
     messages = []
 
     async def send_control(message):
         messages.append(message)
 
-    project_dir = tmp_path / "echo"
+    project_dir = tmp_path / "ai"
     project_dir.mkdir()
-    registry = SlaveAppRegistry([SlaveApp(id="echo", name="Echo", module="app", project_dir=project_dir)])
-    manager = SessionManager(LauncherSettings(access_token="test-token"), send_control, registry)
+    registry = SlaveAppRegistry([SlaveApp(id="ai", name="AI", module="app", project_dir=project_dir)])
+    manager = WorkerManager(LauncherSettings(access_token="test-token"), send_control, registry)
 
-    await manager.start_session("session-1", "echo", 60)
+    await manager.start_job(
+        job_id="job-1",
+        handler_type="ai.llm",
+        slave_app_id="ai",
+        offer={"type": "offer", "sdp": "v=0\r\n"},
+    )
 
-    assert messages[0]["type"] == "session.error"
-    assert messages[0]["session_id"] == "session-1"
-    assert messages[0]["code"] == "executable_venv_missing"
+    assert messages[0]["type"] == "job.error"
+    assert messages[0]["job_id"] == "job-1"
+    assert messages[0]["code"] == "worker_start_failed"
     assert str(project_dir) in messages[0]["detail"]
     assert "poetry install" in messages[0]["detail"]
-    assert manager.sessions == {}
+    assert manager.current_job_id is None
 
 
 @pytest.mark.asyncio
@@ -200,16 +188,16 @@ async def test_start_job_rejects_second_job_while_busy(tmp_path):
     async def send_control(message):
         messages.append(message)
 
-    project_dir = tmp_path / "echo"
+    project_dir = tmp_path / "ai"
     project_dir.mkdir()
-    registry = SlaveAppRegistry([SlaveApp(id="echo", name="Echo", module="app", project_dir=project_dir)])
-    manager = SessionManager(LauncherSettings(access_token="test-token"), send_control, registry)
+    registry = SlaveAppRegistry([SlaveApp(id="ai", name="AI", module="app", project_dir=project_dir)])
+    manager = WorkerManager(LauncherSettings(access_token="test-token"), send_control, registry)
     manager.current_job_id = "job-1"
 
     await manager.start_job(
         job_id="job-2",
-        handler_type="echo.request",
-        slave_app_id="echo",
+        handler_type="ai.llm",
+        slave_app_id="ai",
         offer={"type": "offer", "sdp": "v=0\r\n"},
     )
 
@@ -230,11 +218,11 @@ async def test_start_job_rejects_unknown_slave_app():
     async def send_control(message):
         messages.append(message)
 
-    manager = SessionManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
+    manager = WorkerManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
 
     await manager.start_job(
         job_id="job-1",
-        handler_type="echo.request",
+        handler_type="ai.llm",
         slave_app_id="missing",
         offer={"type": "offer", "sdp": "v=0\r\n"},
     )
@@ -253,9 +241,9 @@ async def test_cancel_job_forwards_cancel_to_worker_without_reset():
     stdout_task = asyncio.create_task(asyncio.sleep(60))
     stderr_task = asyncio.create_task(asyncio.sleep(60))
     process = FakeWorkerProcess()
-    manager = SessionManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
+    manager = WorkerManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
     manager.worker = ManagedWorker(
-        slave_app_id="echo",
+        slave_app_id="ai",
         process=process,
         ready_event=asyncio.Event(),
         stdout_task=stdout_task,
@@ -292,8 +280,8 @@ async def test_handle_server_message_dispatches_job_controls():
         {
             "type": "job.start",
             "job_id": "job-1",
-            "handler_type": "echo.request",
-            "slave_app_id": "echo",
+            "handler_type": "ai.llm",
+            "slave_app_id": "ai",
             "offer": {"type": "offer", "sdp": "v=0\r\n"},
         },
     )
@@ -305,8 +293,8 @@ async def test_handle_server_message_dispatches_job_controls():
             "start_job",
             {
                 "job_id": "job-1",
-                "handler_type": "echo.request",
-                "slave_app_id": "echo",
+                "handler_type": "ai.llm",
+                "slave_app_id": "ai",
                 "offer": {"type": "offer", "sdp": "v=0\r\n"},
             },
         ),
@@ -322,11 +310,11 @@ async def test_record_subprocess_log_sends_control_message_and_stores_buffer():
     async def send_control(message):
         messages.append(message)
 
-    manager = SessionManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
+    manager = WorkerManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
 
-    await manager.record_subprocess_log("session-1", "stderr", "loading model")
+    await manager.record_subprocess_log("job-1", "stderr", "loading model")
 
-    logs = manager.get_session_logs("session-1")
+    logs = manager.get_job_logs("job-1")
     assert logs == [
         {
             "time": messages[0]["time"],
@@ -334,8 +322,8 @@ async def test_record_subprocess_log_sends_control_message_and_stores_buffer():
             "line": "loading model",
         }
     ]
-    assert messages[0]["type"] == "session.log"
-    assert messages[0]["session_id"] == "session-1"
+    assert messages[0]["type"] == "job.log"
+    assert messages[0]["job_id"] == "job-1"
     assert messages[0]["stream"] == "stderr"
     assert messages[0]["line"] == "loading model"
 
@@ -347,16 +335,16 @@ async def test_record_subprocess_log_can_disable_control_forwarding():
     async def send_control(message):
         messages.append(message)
 
-    manager = SessionManager(
+    manager = WorkerManager(
         LauncherSettings(access_token="test-token"),
         send_control,
         SlaveAppRegistry([]),
-        forward_session_logs=False,
+        forward_job_logs=False,
     )
 
-    await manager.record_subprocess_log("session-1", "stderr", "loading model")
+    await manager.record_subprocess_log("job-1", "stderr", "loading model")
 
-    assert manager.get_session_logs("session-1")[0]["line"] == "loading model"
+    assert manager.get_job_logs("job-1")[0]["line"] == "loading model"
     assert messages == []
 
 
@@ -367,15 +355,15 @@ async def test_subprocess_log_buffer_discards_old_lines():
     async def send_control(message):
         messages.append(message)
 
-    manager = SessionManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
+    manager = WorkerManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
 
-    for index in range(SESSION_LOG_LINE_LIMIT + 2):
-        await manager.record_subprocess_log("session-1", "stderr", f"line-{index}")
+    for index in range(JOB_LOG_LINE_LIMIT + 2):
+        await manager.record_subprocess_log("job-1", "stderr", f"line-{index}")
 
-    logs = manager.get_session_logs("session-1", limit=SESSION_LOG_LINE_LIMIT)
-    assert len(logs) == SESSION_LOG_LINE_LIMIT
+    logs = manager.get_job_logs("job-1", limit=JOB_LOG_LINE_LIMIT)
+    assert len(logs) == JOB_LOG_LINE_LIMIT
     assert logs[0]["line"] == "line-2"
-    assert logs[-1]["line"] == f"line-{SESSION_LOG_LINE_LIMIT + 1}"
+    assert logs[-1]["line"] == f"line-{JOB_LOG_LINE_LIMIT + 1}"
 
 
 @pytest.mark.asyncio

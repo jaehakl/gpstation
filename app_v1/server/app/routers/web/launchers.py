@@ -21,7 +21,6 @@ router = APIRouter(prefix="/launchers", tags=["web-launchers"])
 class LauncherReconcileResponse(BaseModel):
     ok: bool = True
     launchers: int
-    slave_sessions: int
 
 
 class LauncherRuntimeData(BaseModel):
@@ -29,7 +28,6 @@ class LauncherRuntimeData(BaseModel):
     current_job_id: str | None = None
     loaded_slave_app_id: str | None = None
     worker_status: str | None = None
-    active_session_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -40,12 +38,12 @@ async def api_reconcile_disconnected_launchers(
 ) -> LauncherReconcileResponse:
     connected_launcher_ids = await runtime.get_launcher_ids()
     user_id = None if current_user.role == "admin" else current_user.id
-    launchers, slave_sessions = await LauncherService.reconcile_disconnected_launchers(
+    launchers = await LauncherService.reconcile_disconnected_launchers(
         db,
         connected_launcher_ids=connected_launcher_ids,
         user_id=user_id,
     )
-    return LauncherReconcileResponse(launchers=launchers, slave_sessions=slave_sessions)
+    return LauncherReconcileResponse(launchers=launchers)
 
 
 @router.get("/runtime", response_model=list[LauncherRuntimeData])

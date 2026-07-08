@@ -1,8 +1,8 @@
 # GP Station v1 Master JS SDK
 
-Browser TypeScript SDK for the master side of the v1 MVP.
+Browser TypeScript SDK for the master side of the v1 job runtime.
 
-Build it before running the example web app:
+Build it before running the AI master app:
 
 ```powershell
 cd app_v1/sdk/master/js
@@ -11,17 +11,25 @@ npm run build
 ```
 
 ```ts
+import { GpStationClient } from '@gpstation/v1-master-js-sdk';
+
 const client = new GpStationClient({
   apiBaseUrl: 'https://gps.qutat.com',
   token: process.env.GPSTATION_V1_ACCESS_TOKEN!,
 });
 
 const launchers = await client.listLaunchers();
-const session = await client.createSession({ launcherSessionId: launchers[0].id, slaveAppId: 'echo' });
-const peer = await client.connectSession(session);
-const file = new File(['hello file'], 'hello.txt', { type: 'text/plain' });
-const result = await peer.call('echo.request', { text: 'hello' }, { files: [file] });
+const result = await client.runJob({
+  launcherId: launchers[0].id,
+  slaveAppId: 'ai',
+  handlerType: 'ai.llm',
+  payload: {
+    prompt: 'hello',
+    max_tokens: 128,
+  },
+});
 
 console.log(result.payload);
-console.log(result.files[0]?.blob);
 ```
+
+The SDK keeps the browser-facing surface on `/v1/jobs`: `runJob`, `prewarmJobConnection`, `getJob`, `getJobLogs`, and `killJob`.

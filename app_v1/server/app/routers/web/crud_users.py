@@ -40,7 +40,6 @@ CRUD_SPEC = CrudSpec(
         "updated_at",
         "access_key_ids",
         "launcher_ids",
-        "slave_session_ids",
     ),
     writable_fields=("email", "username", "display_name", "role", "status"),
     owner_field="id",
@@ -53,9 +52,8 @@ CRUD_SPEC = CrudSpec(
     computed_fields={
         "access_key_ids": lambda user: [access_key.id for access_key in user.access_keys],
         "launcher_ids": lambda user: [launcher.id for launcher in user.launchers],
-        "slave_session_ids": lambda user: [slave_session.id for slave_session in user.slave_sessions],
     },
-    relationship_loads=("access_keys", "launchers", "slave_sessions"),
+    relationship_loads=("access_keys", "launchers"),
 )
 
 router = APIRouter(prefix="/users", tags=["crud-users"])
