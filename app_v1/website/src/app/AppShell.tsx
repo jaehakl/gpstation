@@ -1,5 +1,5 @@
-import { KeyRound, LayoutDashboard, ListChecks, LogIn, LogOut, MessageCircle, Monitor, User, Users } from 'lucide-react';
-import { type ReactNode } from 'react';
+import { KeyRound, LayoutDashboard, ListChecks, LogIn, LogOut, Menu, MessageCircle, Monitor, User, Users, X } from 'lucide-react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 
 import { useAuthStore, useBootstrapAuth } from '../stores/authStore';
@@ -22,24 +22,82 @@ export function AppShell({ children }: AppShellProps) {
   const { pathname } = useLocation();
   const user = useAuthStore((state) => state.user);
   const authReady = useAuthStore((state) => state.authReady);
+  const [mobileMenuPath, setMobileMenuPath] = useState<string | null>(null);
+  const authenticated = authReady && user && user.role !== 'unauthorized';
+  const isChatPage = pathname === '/chat' || pathname.startsWith('/chat/');
+  const mobileMenuOpen = Boolean(authenticated && mobileMenuPath === pathname);
+
+  useEffect(() => {
+    if (mobileMenuPath === null || (authenticated && mobileMenuPath === pathname)) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => setMobileMenuPath(null), 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [authenticated, mobileMenuPath, pathname]);
+
+  useEffect(() => {
+    if (!mobileMenuOpen) {
+      return;
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setMobileMenuPath(null);
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [mobileMenuOpen]);
 
   return (
     <div className="appFrame">
-      {authReady && user && user.role !== 'unauthorized' ? (
-        <aside className="sidebar">
+      {authenticated ? (
+        <aside className="sidebar desktopSidebar">
           <Sidebar pathname={pathname} />
         </aside>
       ) : null}
       <div className="appMain">
         <header className="topHeader">
-          <Link to="/" className="brand">
-            <KeyRound size={18} aria-hidden="true" />
-            <span>GP Station v1</span>
-          </Link>
+          <div className="brandGroup">
+            {authenticated ? (
+              <button
+                type="button"
+                className="button iconButton mobileMenuButton"
+                aria-controls="mobile-sidebar"
+                aria-expanded={mobileMenuOpen}
+                onClick={() => setMobileMenuPath(pathname)}
+              >
+                <Menu size={18} aria-hidden="true" />
+                <span className="visuallyHidden">Menu</span>
+              </button>
+            ) : null}
+            <Link to="/" className="brand">
+              <KeyRound size={18} aria-hidden="true" />
+              <span>GP Station v1</span>
+            </Link>
+          </div>
           <HeaderAction />
         </header>
-        <main className="pageSlot">{children}</main>
+        <main className={isChatPage ? 'pageSlot chatPageSlot' : 'pageSlot'}>{children}</main>
       </div>
+      {authenticated && mobileMenuOpen ? (
+        <div className="mobileSidebarLayer" role="presentation" onMouseDown={() => setMobileMenuPath(null)}>
+          <aside
+            id="mobile-sidebar"
+            className="mobileSidebar"
+            aria-label="Mobile navigation"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="mobileSidebarHeader">
+              <strong>Menu</strong>
+              <button type="button" className="button iconButton" onClick={() => setMobileMenuPath(null)}>
+                <X size={18} aria-hidden="true" />
+                <span className="visuallyHidden">Close menu</span>
+              </button>
+            </div>
+            <Sidebar pathname={pathname} onNavigate={() => setMobileMenuPath(null)} />
+          </aside>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -76,7 +134,7 @@ function HeaderAction() {
   );
 }
 
-function Sidebar({ pathname }: { pathname: string }) {
+function Sidebar({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
   const user = useAuthStore((state) => state.user);
   const logoutUser = useAuthStore((state) => state.logoutUser);
   const displayName = user?.display_name?.trim() || user?.username || user?.email || '사용자';
@@ -100,13 +158,13 @@ function Sidebar({ pathname }: { pathname: string }) {
             const Icon = item.icon;
             const active = pathname === item.href || (item.href !== '/' && pathname.startsWith(`${item.href}/`));
             return (
-              <Link key={item.href} to={item.href} className={active ? 'navLink active' : 'navLink'}>
+              <Link key={item.href} to={item.href} className={active ? 'navLink active' : 'navLink'} onClick={onNavigate}>
                 <Icon size={17} aria-hidden="true" />
                 {item.label}
               </Link>
             );
           })}
-        <Link to={accountPath} className={pathname === accountPath ? 'navLink active' : 'navLink'}>
+        <Link to={accountPath} className={pathname === accountPath ? 'navLink active' : 'navLink'} onClick={onNavigate}>
           <User size={17} aria-hidden="true" />
           내 계정
         </Link>
@@ -116,6 +174,7 @@ function Sidebar({ pathname }: { pathname: string }) {
         type="button"
         className="button fullButton"
         onClick={() => {
+          onNavigate?.();
           void logoutUser();
         }}
       >
