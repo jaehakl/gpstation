@@ -5,8 +5,10 @@ import {
   Hash,
   ImageIcon,
   ListChecks,
+  MessageCircle,
   RefreshCw,
   Send,
+  Square,
   Terminal,
   Wifi,
 } from 'lucide-react';
@@ -15,11 +17,14 @@ import {
   GpStationClient,
   parseRtcIceServersJson,
 } from '@gpstation/v1-master-js-sdk';
+import ReactMarkdown from 'react-markdown';
 import type {
   CandidateSummary,
   CallResult,
   ConnectDiagnosticEvent,
+  JobEvent,
   JobDescriptor,
+  JobSession,
   LauncherView,
   ReceivedFile,
 } from '@gpstation/v1-master-js-sdk';
@@ -28,10 +33,11 @@ const defaultApiBaseUrl = import.meta.env.VITE_GPSTATION_V1_API_URL || '';
 const defaultAccessToken = import.meta.env.VITE_GPSTATION_V1_ACCESS_TOKEN || '';
 const defaultRtcIceServersJson = import.meta.env.VITE_GPSTATION_V1_RTC_ICE_SERVERS_JSON || '';
 const LLM_TIMEOUT_MS = 600_000;
+const CHAT_TIMEOUT_MS = 600_000;
 const EMBEDDING_TIMEOUT_MS = 600_000;
 const SDXL_TIMEOUT_MS = 600_000;
 
-type TabId = 'connection' | 'llm' | 'embeddings' | 'sdxl';
+type TabId = 'connection' | 'llm' | 'chat' | 'embeddings' | 'sdxl';
 
 type LogItem = {
   id: number;
@@ -40,6 +46,28 @@ type LogItem = {
 
 type LlmResponse = {
   answer: string;
+};
+
+type ChatResponse = LlmResponse & {
+  context_window: number;
+  prompt_tokens: number;
+  max_response_tokens: number;
+  remaining_tokens: number;
+  cache_enabled: boolean;
+};
+
+type ChatPayload = {
+  system_prompt?: string;
+  prompt: string;
+  max_tokens?: number;
+  temperature?: number;
+};
+
+type ChatMessage = {
+  id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  streaming: boolean;
 };
 
 type EmbeddingResponse = {
@@ -81,6 +109,7 @@ type DiagnosticLogItem = ConnectDiagnosticEvent & {
 const tabs: { id: TabId; label: string; icon: typeof Cable }[] = [
   { id: 'connection', label: 'Connection', icon: Cable },
   { id: 'llm', label: 'ai.llm', icon: Brain },
+  { id: 'chat', label: 'ai.chat', icon: MessageCircle },
   { id: 'embeddings', label: 'ai.embeddings', icon: Hash },
   { id: 'sdxl', label: 'ai.sdxl.t2i', icon: ImageIcon },
 ];
@@ -111,6 +140,16 @@ export function App() {
   const [llmResult, setLlmResult] = useState<LlmResponse | null>(null);
   const [llmRawJson, setLlmRawJson] = useState('');
 
+  const [chatSystemPrompt, setChatSystemPrompt] = useState('You are a helpful conversational assistant.');
+  const [chatPrompt, setChatPrompt] = useState('Say hello from the streaming chat handler.');
+  const [chatMaxTokens, setChatMaxTokens] = useState('512');
+  const [chatTemperature, setChatTemperature] = useState('0.5');
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatContext, setChatContext] = useState<ChatResponse | null>(null);
+  const [chatSession, setChatSession] = useState<JobSession | null>(null);
+  const [chatSessionStatus, setChatSessionStatus] = useState('closed');
+  const [chatBusy, setChatBusy] = useState(false);
+
   const [embeddingText, setEmbeddingText] = useState('GP Station AI slave embedding test');
   const [embeddingResult, setEmbeddingResult] = useState<EmbeddingResponse | null>(null);
   const [embeddingRawJson, setEmbeddingRawJson] = useState('');
@@ -129,6 +168,10 @@ export function App() {
 
   const logIdRef = useRef(0);
   const diagnosticIdRef = useRef(0);
+  const chatMessageIdRef = useRef(0);
+  const activeChatAssistantMessageIdRef = useRef<number | null>(null);
+  const chatTranscriptEndRef = useRef<HTMLDivElement | null>(null);
+  const chatSessionRef = useRef<JobSession | null>(null);
   const sdxlFilesRef = useRef<DisplayFile[]>([]);
 
   const client = useMemo(
@@ -142,6 +185,7 @@ export function App() {
 
   const selectedLauncher = launchers.find((launcher) => launcher.id === selectedLauncherId);
   const aiLaunchers = launchers.filter((launcher) => launcher.slave_app_ids.includes('ai'));
+  const chatOpen = chatSession !== null && !chatSession.closed;
 
   const addLog = useCallback((message: string) => {
     const id = logIdRef.current + 1;
@@ -188,14 +232,36 @@ export function App() {
 
   useEffect(() => {
     return () => {
+      chatSessionRef.current?.close();
       revokeFiles(sdxlFilesRef.current);
     };
   }, []);
 
   useEffect(() => {
+    chatSessionRef.current = chatSession;
+  }, [chatSession]);
+
+  useEffect(() => {
+    chatTranscriptEndRef.current?.scrollIntoView({ block: 'end' });
+  }, [chatMessages, chatBusy]);
+
+  useEffect(() => {
+    const session = chatSessionRef.current;
+    if (session && !session.closed) {
+      session.close();
+      chatSessionRef.current = null;
+      setChatSession(null);
+      setChatSessionStatus('closed');
+    }
+  }, [client]);
+
+  useEffect(() => {
     client.clearPrewarmedJobConnections();
-    prewarmAiConnection(true);
+    const timer = window.setTimeout(() => {
+      prewarmAiConnection(true);
+    }, 0);
     return () => {
+      window.clearTimeout(timer);
       client.clearPrewarmedJobConnections();
     };
   }, [client, prewarmAiConnection]);
@@ -344,6 +410,194 @@ export function App() {
       handleError(error, 'ai.llm failed');
     } finally {
       setBusy(false);
+    }
+  }
+
+  function nextChatMessageId(): number {
+    const id = chatMessageIdRef.current + 1;
+    chatMessageIdRef.current = id;
+    return id;
+  }
+
+  function appendChatDelta(messageId: number, delta: string) {
+    if (activeChatAssistantMessageIdRef.current !== messageId) {
+      return;
+    }
+    setChatMessages((items) =>
+      items.map((item) =>
+        item.id === messageId && item.streaming ? { ...item, content: item.content + delta } : item,
+      ),
+    );
+  }
+
+  function finishChatAssistant(messageId: number, answer: string) {
+    setChatMessages((items) =>
+      items.map((item) => (item.id === messageId ? { ...item, content: answer, streaming: false } : item)),
+    );
+    if (activeChatAssistantMessageIdRef.current === messageId) {
+      activeChatAssistantMessageIdRef.current = null;
+    }
+  }
+
+  function handleChatEvent(event: JobEvent, assistantMessageId: number) {
+    if (activeChatAssistantMessageIdRef.current !== assistantMessageId) {
+      return;
+    }
+    if (event.type !== 'ai.chat.delta') {
+      return;
+    }
+    const delta = readChatDelta(event.payload);
+    if (delta) {
+      appendChatDelta(assistantMessageId, delta);
+    }
+  }
+
+  async function callChat() {
+    const prompt = chatPrompt.trim();
+    if (!prompt) {
+      handleError(new Error('prompt is required'), 'ai.chat failed');
+      return;
+    }
+    const existingSession = chatSessionRef.current && !chatSessionRef.current.closed ? chatSessionRef.current : null;
+    const systemPrompt = chatSystemPrompt.trim();
+    if (!existingSession && !systemPrompt) {
+      handleError(new Error('system prompt is required for a new chat'), 'ai.chat failed');
+      return;
+    }
+    let payload: ChatPayload;
+    try {
+      payload = {
+        prompt,
+        max_tokens: parseOptionalInt(chatMaxTokens, 'max tokens'),
+        temperature: parseOptionalFloat(chatTemperature, 'temperature'),
+      };
+    } catch (error) {
+      handleError(error, 'ai.chat failed');
+      return;
+    }
+    if (!existingSession) {
+      payload.system_prompt = systemPrompt;
+    }
+
+    const userMessage: ChatMessage = {
+      id: nextChatMessageId(),
+      role: 'user',
+      content: prompt,
+      streaming: false,
+    };
+    const assistantMessageId = nextChatMessageId();
+    const assistantMessage: ChatMessage = {
+      id: assistantMessageId,
+      role: 'assistant',
+      content: '',
+      streaming: true,
+    };
+
+    const startedAt = new Date();
+    activeChatAssistantMessageIdRef.current = assistantMessageId;
+    setBusy(true);
+    setChatBusy(true);
+    setChatMessages((items) => [
+      ...items.map((item) => (item.streaming ? { ...item, streaming: false } : item)),
+      userMessage,
+      assistantMessage,
+    ]);
+    setChatPrompt('');
+    addLog(`${formatClock(new Date())} ai.chat start`);
+    try {
+      let response: ChatResponse;
+      if (existingSession) {
+        setStatus('ai.chat waiting for result');
+        setCurrentJobState('running');
+        const result = await existingSession.call<ChatPayload, ChatResponse>('ai.chat', payload, {
+          timeoutMs: CHAT_TIMEOUT_MS,
+          onEvent: (event) => handleChatEvent(event, assistantMessageId),
+        });
+        response = result.payload;
+      } else {
+        setDiagnostics([]);
+        setLocalSdp('');
+        setRemoteSdp('');
+        setCurrentJob(null);
+        setSubprocessLogs([]);
+        setSubprocessLogStatus('Creating job');
+        const result = await client.runJob<ChatPayload, ChatResponse>('ai.chat', payload, {
+          slaveAppId: 'ai',
+          timeoutMs: CHAT_TIMEOUT_MS,
+          autoFinish: false,
+          rtcConfig: parseRtcConfigInput(rtcIceServersJson),
+          onEvent: (event) => handleChatEvent(event, assistantMessageId),
+          onJobCreated: (job) => {
+            setCurrentJob(job);
+            setSubprocessLogStatus('Waiting for logs');
+            addLog(`job: ${job.id}`);
+          },
+          onStatus: (nextStatus) => {
+            setStatus(nextStatus);
+            if (nextStatus === 'waiting for answer') {
+              setCurrentJobState('assigned');
+            }
+            if (nextStatus === 'waiting for data channel') {
+              setCurrentJobState('answer_ready');
+            }
+            if (nextStatus === 'waiting for result') {
+              setCurrentJobState('running');
+            }
+            addLog(nextStatus);
+          },
+          onDiagnostic: addDiagnostic,
+        });
+        response = result.payload;
+        chatSessionRef.current = result.session;
+        setChatSession(result.session);
+        setChatSessionStatus('open');
+      }
+      finishChatAssistant(assistantMessageId, response.answer);
+      setChatContext(response);
+      setCurrentJobState('running');
+      setStatus('ai.chat response complete');
+      addLog(`${formatClock(new Date())} ai.chat response complete (${formatDurationSince(startedAt)})`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      finishChatAssistant(assistantMessageId, `Error: ${message}`);
+      setCurrentJobState('failed');
+      addLog(`${formatClock(new Date())} ai.chat failed (${formatDurationSince(startedAt)})`);
+      handleError(error, 'ai.chat failed');
+    } finally {
+      setBusy(false);
+      setChatBusy(false);
+    }
+  }
+
+  async function finishChatSession() {
+    const session = chatSessionRef.current;
+    if (!session || session.closed) {
+      chatSessionRef.current = null;
+      setChatSession(null);
+      setChatSessionStatus('closed');
+      return;
+    }
+    const startedAt = new Date();
+    setBusy(true);
+    setChatBusy(true);
+    addLog(`${formatClock(new Date())} ai.chat finish`);
+    try {
+      await session.finish({ timeoutMs: CHAT_TIMEOUT_MS });
+      setCurrentJobState('succeeded');
+      setStatus('ai.chat session closed');
+      addLog(`${formatClock(new Date())} ai.chat session closed (${formatDurationSince(startedAt)})`);
+    } catch (error) {
+      session.close();
+      setCurrentJobState('failed');
+      addLog(`${formatClock(new Date())} ai.chat finish failed (${formatDurationSince(startedAt)})`);
+      handleError(error, 'ai.chat finish failed');
+    } finally {
+      chatSessionRef.current = null;
+      setChatSession(null);
+      setChatSessionStatus('closed');
+      setBusy(false);
+      setChatBusy(false);
+      prewarmAiConnection();
     }
   }
 
@@ -692,6 +946,70 @@ export function App() {
         </section>
       )}
 
+      {activeTab === 'chat' && (
+        <section className="tabGrid workGrid">
+          <div className="panel formPanel">
+            <div className="panelHeader">
+              <h2>ai.chat</h2>
+              <MessageCircle size={17} aria-hidden="true" />
+            </div>
+            <label>
+              <span>System Prompt</span>
+              <textarea
+                value={chatSystemPrompt}
+                onChange={(event) => setChatSystemPrompt(event.target.value)}
+                rows={5}
+                disabled={chatOpen}
+              />
+            </label>
+            <div className="formGrid compact">
+              <label>
+                <span>Max Tokens</span>
+                <input value={chatMaxTokens} inputMode="numeric" onChange={(event) => setChatMaxTokens(event.target.value)} />
+              </label>
+              <label>
+                <span>Temperature</span>
+                <input value={chatTemperature} inputMode="decimal" onChange={(event) => setChatTemperature(event.target.value)} />
+              </label>
+            </div>
+          </div>
+
+          <div className="panel resultPanel">
+            <div className="panelHeader">
+              <h2>Conversation</h2>
+              <span>{formatChatContext(chatContext, chatOpen ? 'session open' : chatSessionStatus)}</span>
+            </div>
+            <div className="chatTranscript">
+              {chatMessages.map((item) => (
+                <div key={item.id} className={`chatMessage ${item.role}`}>
+                  <div className={item.role === 'user' ? 'chatBubble' : 'chatMarkdown'}>
+                    <ReactMarkdown>{formatChatMarkdown(item.content || (item.streaming ? '...' : ''), item.role)}</ReactMarkdown>
+                  </div>
+                </div>
+              ))}
+              {chatMessages.length === 0 && <p className="emptyText">No chat messages yet.</p>}
+              <div ref={chatTranscriptEndRef} />
+            </div>
+            <div className="chatComposer">
+              <label>
+                <span>Prompt</span>
+                <textarea value={chatPrompt} onChange={(event) => setChatPrompt(event.target.value)} rows={4} />
+              </label>
+              <div className="chatComposerActions">
+                <button type="button" className="primaryButton" onClick={callChat} disabled={busy || chatBusy}>
+                  <Send size={17} aria-hidden="true" />
+                  <span>Send</span>
+                </button>
+                <button type="button" onClick={finishChatSession} disabled={!chatOpen || chatBusy}>
+                  <Square size={16} aria-hidden="true" />
+                  <span>End Chat</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
       {activeTab === 'embeddings' && (
         <section className="tabGrid workGrid">
           <div className="panel formPanel">
@@ -841,6 +1159,69 @@ async function readErrorResponse(response: Response): Promise<string> {
     return text;
   }
   return text;
+}
+
+function readChatDelta(payload: unknown): string {
+  if (!payload || typeof payload !== 'object' || !('delta' in payload)) {
+    return '';
+  }
+  const delta = (payload as { delta?: unknown }).delta;
+  return typeof delta === 'string' ? delta : '';
+}
+
+function formatChatContext(context: ChatResponse | null, fallback: string): string {
+  if (!context) {
+    return fallback;
+  }
+  const usedTokens = Math.max(0, context.context_window - context.remaining_tokens);
+  const cache = context.cache_enabled ? 'cache on' : 'cache off';
+  return `${usedTokens} / ${context.context_window} tokens, ${context.remaining_tokens} remaining, ${cache}`;
+}
+
+function formatChatMarkdown(content: string, role: ChatMessage['role']): string {
+  if (role !== 'assistant') {
+    return content;
+  }
+  return withMarkdownCodeSegments(content, (segment) =>
+    segment.replace(/(?<=[^\s*_])(\*\*\*|\*\*|\*|___|__|_)(?=[가-힣])/g, '$1 '),
+  );
+}
+
+function withMarkdownCodeSegments(content: string, formatText: (segment: string) => string): string {
+  let index = 0;
+  let formatted = '';
+  while (index < content.length) {
+    const fenceIndex = content.indexOf('```', index);
+    const inlineIndex = content.indexOf('`', index);
+    const nextCodeIndex = pickNextCodeIndex(fenceIndex, inlineIndex);
+    if (nextCodeIndex === -1) {
+      formatted += formatText(content.slice(index));
+      break;
+    }
+    formatted += formatText(content.slice(index, nextCodeIndex));
+    if (content.startsWith('```', nextCodeIndex)) {
+      const fenceEnd = content.indexOf('```', nextCodeIndex + 3);
+      const endIndex = fenceEnd === -1 ? content.length : fenceEnd + 3;
+      formatted += content.slice(nextCodeIndex, endIndex);
+      index = endIndex;
+      continue;
+    }
+    const inlineEnd = content.indexOf('`', nextCodeIndex + 1);
+    const endIndex = inlineEnd === -1 ? content.length : inlineEnd + 1;
+    formatted += content.slice(nextCodeIndex, endIndex);
+    index = endIndex;
+  }
+  return formatted;
+}
+
+function pickNextCodeIndex(fenceIndex: number, inlineIndex: number): number {
+  if (fenceIndex === -1) {
+    return inlineIndex;
+  }
+  if (inlineIndex === -1) {
+    return fenceIndex;
+  }
+  return Math.min(fenceIndex, inlineIndex);
 }
 
 function parseOptionalInt(value: string, label: string): number | undefined {

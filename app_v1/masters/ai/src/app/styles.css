@@ -421,6 +421,145 @@ dt,
   color: #d9f7e8;
 }
 
+.chatTranscript {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 320px;
+  max-height: 560px;
+  overflow: auto;
+  border: 0;
+  border-radius: 0;
+  background: var(--panel);
+  padding: 12px;
+}
+
+.chatMessage {
+  display: grid;
+  gap: 5px;
+  width: min(82%, 720px);
+}
+
+.chatBubble {
+  margin: 0;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px 12px;
+}
+
+.chatMarkdown {
+  overflow-wrap: anywhere;
+  background: #fff;
+  color: var(--text);
+  padding: 2px 0;
+}
+
+.chatBubble > :first-child,
+.chatMarkdown > :first-child {
+  margin-top: 0;
+}
+
+.chatBubble > :last-child,
+.chatMarkdown > :last-child {
+  margin-bottom: 0;
+}
+
+.chatBubble p,
+.chatBubble ul,
+.chatBubble ol,
+.chatBubble blockquote,
+.chatBubble pre,
+.chatMarkdown p,
+.chatMarkdown ul,
+.chatMarkdown ol,
+.chatMarkdown blockquote,
+.chatMarkdown pre {
+  margin: 0 0 10px;
+}
+
+.chatBubble ul,
+.chatBubble ol,
+.chatMarkdown ul,
+.chatMarkdown ol {
+  padding-left: 22px;
+}
+
+.chatBubble li + li,
+.chatMarkdown li + li {
+  margin-top: 4px;
+}
+
+.chatBubble code,
+.chatMarkdown code {
+  border-radius: 5px;
+  background: rgba(21, 29, 27, 0.08);
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: 0.92em;
+  padding: 1px 5px;
+}
+
+.chatBubble pre,
+.chatMarkdown pre {
+  overflow: auto;
+  border-radius: 8px;
+  background: #111817;
+  color: #d9f7e8;
+  padding: 10px;
+}
+
+.chatBubble pre code,
+.chatMarkdown pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+.chatBubble a,
+.chatMarkdown a {
+  color: var(--blue);
+  font-weight: 850;
+}
+
+.chatBubble blockquote,
+.chatMarkdown blockquote {
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+  padding-left: 10px;
+}
+
+.chatMessage.user {
+  justify-self: end;
+}
+
+.chatMessage.user .chatBubble {
+  border-color: #c8dcff;
+  background: #f3f7ff;
+  color: #17325f;
+}
+
+.chatMessage.assistant {
+  justify-self: start;
+}
+
+.chatComposer {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.chatComposer textarea {
+  min-height: 98px;
+}
+
+.chatComposerActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .metricStrip {
   display: grid;
   grid-template-columns: 170px minmax(0, 1fr);
@@ -516,5 +655,9 @@ dt,
   .tableHead,
   .launcherRow {
     grid-template-columns: minmax(100px, 1fr) 74px minmax(72px, 0.8fr) 64px;
+  }
+
+  .chatMessage {
+    width: 100%;
   }
 }

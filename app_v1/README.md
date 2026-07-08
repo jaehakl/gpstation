@@ -19,7 +19,7 @@ Fresh MVP implementation for the job-based GP Station runtime. This directory is
 3. Start one launcher with `cd app_v1/launcher && poetry run gpstation-v1-slave-launcher`.
 4. Open the management website with `cd app_v1/website && npm run dev`.
 5. Create a user Access Token with `client` scope and a launcher Access Token with `launcher` scope.
-6. Open `masters/ai`, select a launcher that advertises `ai`, and run `ai.llm`, `ai.embeddings`, or `ai.sdxl.t2i` through `/v1/jobs`.
+6. Open `masters/ai`, select a launcher that advertises `ai`, and run `ai.llm`, `ai.chat`, `ai.embeddings`, or `ai.sdxl.t2i` through `/v1/jobs`.
 
 ## Environment Files
 

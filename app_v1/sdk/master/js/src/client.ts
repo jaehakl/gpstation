@@ -63,7 +63,9 @@ export class GpStationJobSession implements JobSession {
       options.timeoutMs ?? this.defaultTimeoutMs,
       (event) => {
         this.defaultOnEvent?.(event);
-        options.onEvent?.(event);
+        if (options.onEvent !== this.defaultOnEvent) {
+          options.onEvent?.(event);
+        }
       },
     );
   }
@@ -82,13 +84,17 @@ export class GpStationJobSession implements JobSession {
 
 export class GpStationClient {
   private readonly apiBaseUrl: string;
-  private readonly token: string;
+  private readonly token?: string;
+  private readonly authMode: 'bearer' | 'cookie';
+  private readonly jobApiPrefix: string;
   private readonly rtcConfig?: RTCConfiguration;
   private readonly prewarmedJobConnections: PreparedJobConnection[] = [];
 
   constructor(options: GpStationClientOptions) {
     this.apiBaseUrl = options.apiBaseUrl.replace(/\/+$/, '');
     this.token = options.token;
+    this.authMode = options.authMode ?? 'bearer';
+    this.jobApiPrefix = normalizeApiPrefix(options.jobApiPrefix ?? '/v1/jobs');
     this.rtcConfig = options.rtcConfig;
   }
 
@@ -257,7 +263,7 @@ export class GpStationClient {
       });
 
       status('creating job');
-      const created = await this.request<JobCreateResult>('/v1/jobs', {
+      const created = await this.request<JobCreateResult>(this.jobApiPrefix, {
         method: 'POST',
         body: JSON.stringify({
           handler_type: handlerType,
@@ -344,7 +350,7 @@ export class GpStationClient {
       return;
     }
     try {
-      await this.request<{ ok: boolean }>(`/v1/jobs/${encodeURIComponent(jobId)}/kill`, { method: 'POST' });
+      await this.request<{ ok: boolean }>(`${this.jobApiPrefix}/${encodeURIComponent(jobId)}/kill`, { method: 'POST' });
     } catch {
       // Best-effort cleanup only; the retry path should still surface its own result.
     }
@@ -370,13 +376,17 @@ export class GpStationClient {
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const headers = new Headers(init.headers);
+    if (!headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
+    if (this.authMode === 'bearer') {
+      headers.set('Authorization', `Bearer ${this.token ?? ''}`);
+    }
     const response = await fetch(`${this.apiBaseUrl}${path}`, {
       ...init,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.token}`,
-        ...init.headers,
-      },
+      credentials: this.authMode === 'cookie' ? 'include' : init.credentials,
+      headers,
     });
     if (!response.ok) {
       throw new Error(`${response.status} ${await response.text()}`);
@@ -393,11 +403,19 @@ export class GpStationClient {
       }
       const waitSeconds = Math.max(0, Math.min(30, Math.floor((timeoutMs - elapsed) / 1000)));
       const result = await this.request<JobAnswerWaitResult>(
-        `/v1/jobs/${encodeURIComponent(jobId)}/wait-answer?wait_seconds=${waitSeconds}`,
+        `${this.jobApiPrefix}/${encodeURIComponent(jobId)}/wait-answer?wait_seconds=${waitSeconds}`,
       );
       if (result.answer || ['failed', 'cancelled', 'killed', 'succeeded'].includes(result.state)) {
         return result;
       }
     }
   }
+}
+
+function normalizeApiPrefix(prefix: string): string {
+  const trimmed = prefix.trim();
+  if (!trimmed || trimmed === '/') {
+    return '';
+  }
+  return `/${trimmed.replace(/^\/+|\/+$/g, '')}`;
 }

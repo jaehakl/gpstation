@@ -6,7 +6,9 @@ from fastapi import HTTPException
 from app.auth import Principal
 from app.main import app
 from app.models import UserData
+from app.models import JobCreateRequest
 from app.routers.v1 import jobs, launchers
+from app.routers.web import jobs as web_jobs
 from app.routers.web import launchers as web_launchers
 from app.state import RuntimeRegistry
 
@@ -39,6 +41,7 @@ def test_launcher_routes_replace_legacy_routes():
         "/web/launchers/{launcher_id}/cancel-current-job",
         "/web/launchers/{launcher_id}/reset-worker",
         "/web/jobs",
+        "/web/jobs/{job_id}/wait-answer",
         "/web/jobs/{job_id}/kill",
         "/web/auth/google/start",
         "/web/auth/google/callback",
@@ -247,6 +250,94 @@ async def test_v1_job_logs_requires_job_owner(monkeypatch):
             limit=10,
             principal=Principal(token="token", user_id="other-user", scopes=frozenset({"client"})),
             db=FakeDb(None),
+        )
+
+    assert error.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_web_create_job_uses_cookie_user_and_dispatches(monkeypatch):
+    calls = []
+    dispatch_calls = []
+    job = SimpleNamespace(
+        id="job-1",
+        user_id="user-1",
+        handler_type="ai.chat",
+        slave_app_id="ai",
+        offer={"type": "offer", "sdp": "v=0\r\n"},
+        answer=None,
+        progress=[],
+        state="queued",
+        launcher_id=None,
+        assigned_at=None,
+        answer_ready_at=None,
+        started_at=None,
+        finished_at=None,
+        cancel_requested_at=None,
+        last_error=None,
+        attempt_count=0,
+        created_at=None,
+        updated_at=None,
+    )
+
+    async def create_job(db, **kwargs):
+        calls.append((db, kwargs))
+        return job
+
+    async def dispatch_queued_jobs(db, *, user_id=None):
+        dispatch_calls.append((db, user_id))
+
+    monkeypatch.setattr(web_jobs.JobService, "create_job", create_job)
+    monkeypatch.setattr("app.routers.v1.jobs.dispatch_queued_jobs", dispatch_queued_jobs)
+
+    db = object()
+    response = await web_jobs.api_create_job(
+        body=JobCreateRequest(handler_type="ai.chat", slave_app_id="ai", offer={"type": "offer", "sdp": "v=0\r\n"}),
+        db=db,
+        current_user=UserData(id="user-1", role="user", roles=["user"]),
+    )
+
+    assert response.job.id == "job-1"
+    assert response.answer_wait_url.endswith("/web/jobs/job-1/wait-answer")
+    assert calls == [
+        (
+            db,
+            {
+                "user_id": "user-1",
+                "handler_type": "ai.chat",
+                "slave_app_id": "ai",
+                "offer": {"type": "offer", "sdp": "v=0\r\n"},
+            },
+        )
+    ]
+    assert dispatch_calls == [(db, "user-1")]
+
+
+@pytest.mark.asyncio
+async def test_web_wait_job_answer_uses_cookie_user_scope():
+    job = SimpleNamespace(
+        id="job-1",
+        answer={"type": "answer", "sdp": "v=0\r\n"},
+        state="answer_ready",
+        last_error=None,
+    )
+
+    response = await web_jobs.api_wait_job_answer(
+        "job-1",
+        wait_seconds=0,
+        db=FakeDb(job),
+        current_user=UserData(id="user-1", role="user", roles=["user"]),
+    )
+
+    assert response.job_id == "job-1"
+    assert response.answer == {"type": "answer", "sdp": "v=0\r\n"}
+
+    with pytest.raises(HTTPException) as error:
+        await web_jobs.api_wait_job_answer(
+            "job-1",
+            wait_seconds=0,
+            db=FakeDb(None),
+            current_user=UserData(id="other-user", role="user", roles=["user"]),
         )
 
     assert error.value.status_code == 404

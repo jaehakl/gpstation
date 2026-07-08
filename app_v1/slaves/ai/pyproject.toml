@@ -33,6 +33,14 @@ gpstation-v1-sdk = { path = "../../sdk", develop = true, extras = ["slave"] }
 torch = { version = "2.7.0+cu128", source = "pytorch-gpu" }
 llama-cpp-python = { version = "^0.3.28", source = "llama-cpp-python-cu130" }
 
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0,<10.0"
+pytest-asyncio = ">=1.0,<2.0"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

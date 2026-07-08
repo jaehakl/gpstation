@@ -1,6 +1,6 @@
 # GP Station v1 Slave Executables
 
-`slaves/` contains independent slave executable projects. The default built-in app is `ai`, which exposes LLM, SDXL text-to-image, and embedding handlers through the persistent worker/job runtime.
+`slaves/` contains independent slave executable projects. The default built-in app is `ai`, which exposes LLM, streaming chat, SDXL text-to-image, and embedding handlers through the persistent worker/job runtime.
 
 ## Install
 
@@ -33,6 +33,7 @@ Manifest files require `id`, `name`, and `module`. They may also set `startup_ti
 `ai` supports these job handler types:
 
 - `ai.llm`: payload `{"system_prompt":"...", "prompt":"...", "max_tokens":512, "temperature":0.5}` returns `{"answer":"..."}`
+- `ai.chat`: first payload `{"system_prompt":"...", "prompt":"...", "max_tokens":512, "temperature":0.5}` returns `{"answer":"...", "context_window":4096, "prompt_tokens":123, "max_response_tokens":512, "remaining_tokens":3456, "cache_enabled":true}` and streams `ai.chat.delta` events. Keep the job session open with `autoFinish:false`; later calls in that session can send only `{"prompt":"..."}` to continue the conversation.
 - `ai.embeddings`: payload `{"text":"..."}` returns `{"embedding":[...], "dimensions":123}`
 - `ai.sdxl.t2i`: payload `{"prompts":["..."], "format":"png"}` returns image metadata in the JSON payload and each generated image as a DataChannel file attachment.
 

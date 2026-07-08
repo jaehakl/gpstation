@@ -1,4 +1,4 @@
-import { KeyRound, LayoutDashboard, ListChecks, LogIn, LogOut, Monitor, User, Users } from 'lucide-react';
+import { KeyRound, LayoutDashboard, ListChecks, LogIn, LogOut, MessageCircle, Monitor, User, Users } from 'lucide-react';
 import { type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 
@@ -10,6 +10,7 @@ type AppShellProps = {
 
 const navItems = [
   { href: '/', label: '대시보드', icon: LayoutDashboard, roles: ['admin', 'user'] },
+  { href: '/chat', label: 'AI Chat', icon: MessageCircle, roles: ['admin', 'user'] },
   { href: '/jobs', label: 'Job Queue', icon: ListChecks, roles: ['admin', 'user'] },
   { href: '/launchers', label: 'Launcher', icon: Monitor, roles: ['admin', 'user'] },
   { href: '/users', label: '회원 관리', icon: Users, roles: ['admin'] },

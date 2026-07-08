@@ -8,7 +8,7 @@
 - `launcher/`: 사용자의 머신에서 실행됩니다. 서버 control WebSocket에 연결하고, `slaves/ai` worker subprocess를 유지하면서 job을 실행합니다.
 - `sdk/`: Python slave runtime과 공통 protocol model을 제공합니다.
 - `sdk/master/js/`: 브라우저 master용 TypeScript SDK입니다. `runJob`과 job 조회 API를 제공합니다.
-- `slaves/ai/`: `ai.llm`, `ai.embeddings`, `ai.sdxl.t2i` handler를 제공하는 기본 slave app입니다.
+- `slaves/ai/`: `ai.llm`, `ai.chat`, `ai.embeddings`, `ai.sdxl.t2i` handler를 제공하는 기본 slave app입니다.
 - `masters/ai/`: AI job 흐름을 브라우저에서 테스트하는 Vite 앱입니다.
 - `website/`: Google OAuth 로그인, Access Token 발급, Launcher/Job 관리 콘솔입니다.
 
@@ -62,6 +62,36 @@ const result = await client.runJob(
   },
   { slaveAppId: 'ai' },
 );
+```
+
+Streaming chat처럼 같은 WebRTC job session에서 이어지는 호출이 필요하면 `autoFinish:false`로 session을 유지합니다.
+
+```ts
+const first = await client.runJob(
+  'ai.chat',
+  {
+    system_prompt: '친절하게 답하세요.',
+    prompt: '짧게 자기소개를 해줘',
+    max_tokens: 128,
+  },
+  {
+    slaveAppId: 'ai',
+    autoFinish: false,
+    onEvent: (event) => {
+      if (event.type === 'ai.chat.delta') {
+        console.log(event.payload);
+      }
+    },
+  },
+);
+
+const followup = await first.session.call('ai.chat', {
+  prompt: '방금 답변을 한 문장으로 요약해줘',
+});
+
+console.log(followup.payload.remaining_tokens);
+
+await first.session.finish();
 ```
 
 SDK는 WebRTC offer를 만든 뒤 `POST /v1/jobs`로 job을 생성합니다. 서버는 사용자의 idle launcher를 찾아 `job.start` control message를 보냅니다.

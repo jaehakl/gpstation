@@ -124,7 +124,9 @@ export type ConnectDiagnosticEvent = {
 
 export type GpStationClientOptions = {
   apiBaseUrl: string;
-  token: string;
+  token?: string;
+  authMode?: 'bearer' | 'cookie';
+  jobApiPrefix?: string;
   rtcConfig?: RTCConfiguration;
 };
 

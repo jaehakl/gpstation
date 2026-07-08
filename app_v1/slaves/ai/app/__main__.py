@@ -2,25 +2,27 @@ from __future__ import annotations
 
 import base64
 import time
+from typing import Any
 
 from sdk.slave import DataChannelAttachment, DataChannelMessage, SlaveApp, SlaveContext, run_app
 
 from app.logging import log, log_exception
 from app.model_runtime.embedding import warmup_embedding_import
 from app.model_runtime.image import warmup_sdxl_imports
+from app.model_runtime.llm_chat import prepare_chat_messages, prune_chat_messages
 from app.model_runtime.llm import warmup_llm_import
-from app.models import EmbeddingRequest, LlmRequest, SdxlT2IRequest
+from app.models import ChatRequest, EmbeddingRequest, LlmRequest, SdxlT2IRequest
 from app.service.embedding import generate_embedding
 from app.service.image import generate_sdxl_t2i_images
-from app.service.llm import generate_llm_answer
+from app.service.llm import generate_chat_answer, generate_llm_answer
 from app.settings import settings
 
 
-app = SlaveApp()
+app = SlaveApp(memory={})
 
 
 @app.initialize
-async def initialize(memory: None, context: SlaveContext) -> None:
+async def initialize(memory: dict[str, Any] | None, context: SlaveContext) -> None:
     try:
         model_name = (settings.embedding_model_name or settings.embedding_model_path).strip()
         if model_name:
@@ -50,7 +52,7 @@ async def initialize(memory: None, context: SlaveContext) -> None:
 
 
 @app.handler("ai.llm")
-async def ai_llm(message: DataChannelMessage, memory: None, context: SlaveContext) -> DataChannelMessage:
+async def ai_llm(message: DataChannelMessage, memory: dict[str, Any] | None, context: SlaveContext) -> DataChannelMessage:
     started_at = time.perf_counter()
     try:
         reject_request_attachments(message)
@@ -77,8 +79,42 @@ async def ai_llm(message: DataChannelMessage, memory: None, context: SlaveContex
         raise
 
 
+@app.handler("ai.chat")
+async def ai_chat(message: DataChannelMessage, memory: dict[str, Any] | None, context: SlaveContext) -> DataChannelMessage:
+    started_at = time.perf_counter()
+    try:
+        reject_request_attachments(message)
+        request = ChatRequest.model_validate(message.payload)
+        state, messages = prepare_chat_messages(memory, context.session_id, request)
+        log(
+            "ai.chat start "
+            f"session={context.session_id} "
+            f"history_messages={len(messages)} "
+            f"prompt_chars={len(request.prompt)} "
+            f"max_tokens={request.max_tokens} "
+            f"temperature={request.temperature}"
+        )
+
+        async def emit_delta(delta: str) -> None:
+            await context.emit_event("ai.chat.delta", {"delta": delta})
+
+        response = await generate_chat_answer(request, messages, emit_delta)
+        state["messages"] = prune_chat_messages(messages + [{"role": "assistant", "content": response.answer}])
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        log(f"ai.chat complete session={context.session_id} duration_ms={duration_ms} answer_chars={len(response.answer)}")
+        return DataChannelMessage(
+            id=message.id,
+            type="ai.chat.result",
+            payload=response.model_dump(),
+        )
+    except Exception as exc:
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        log_exception(f"ai.chat failed session={context.session_id} duration_ms={duration_ms}", exc)
+        raise
+
+
 @app.handler("ai.embeddings")
-async def ai_embeddings(message: DataChannelMessage, memory: None, context: SlaveContext) -> DataChannelMessage:
+async def ai_embeddings(message: DataChannelMessage, memory: dict[str, Any] | None, context: SlaveContext) -> DataChannelMessage:
     started_at = time.perf_counter()
     try:
         reject_request_attachments(message)
@@ -104,7 +140,7 @@ async def ai_embeddings(message: DataChannelMessage, memory: None, context: Slav
 
 
 @app.handler("ai.sdxl.t2i")
-async def ai_sdxl_t2i(message: DataChannelMessage, memory: None, context: SlaveContext) -> DataChannelMessage:
+async def ai_sdxl_t2i(message: DataChannelMessage, memory: dict[str, Any] | None, context: SlaveContext) -> DataChannelMessage:
     started_at = time.perf_counter()
     try:
         reject_request_attachments(message)
