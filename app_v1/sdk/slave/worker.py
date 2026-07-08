@@ -36,11 +36,13 @@ JOB_RESULT_ACK_TIMEOUT_SECONDS = 5.0
 @dataclass
 class WorkerJobPeerState:
     ready_event: asyncio.Event = field(default_factory=asyncio.Event)
-    result_ack_event: asyncio.Event = field(default_factory=asyncio.Event)
     closed_event: asyncio.Event = field(default_factory=asyncio.Event)
+    finish_event: asyncio.Event = field(default_factory=asyncio.Event)
+    call_queue: asyncio.Queue[dict[str, Any]] = field(default_factory=asyncio.Queue)
+    result_ack_events: dict[str, asyncio.Event] = field(default_factory=dict)
     channel_holder: dict[str, Any] = field(default_factory=dict)
-    ready_payload: dict[str, Any] = field(default_factory=lambda: {"input": None})
     ready_error: dict[str, str] = field(default_factory=dict)
+    call_in_progress: bool = False
 
 
 async def _run_worker_stdio(*, app: SlaveApp) -> None:
@@ -191,6 +193,7 @@ def create_worker_job_peer(
     rtc_configuration: Any,
     prepared_peer: PreparedWorkerPeer | None,
     job_id: str,
+    handler_type: str,
     job_started_at: float,
 ) -> tuple[Any, WorkerJobPeerState, bool]:
     if prepared_peer is not None:
@@ -204,10 +207,10 @@ def create_worker_job_peer(
         pc = rtc_peer_connection_cls(rtc_configuration)
         used_prepared_peer = False
         log(f"job peer connection created: id={job_id} duration_ms={elapsed_ms(job_started_at)}")
-    return pc, attach_worker_job_peer_handlers(pc, job_id, job_started_at), used_prepared_peer
+    return pc, attach_worker_job_peer_handlers(pc, job_id, handler_type, job_started_at), used_prepared_peer
 
 
-def attach_worker_job_peer_handlers(pc: Any, job_id: str, job_started_at: float) -> WorkerJobPeerState:
+def attach_worker_job_peer_handlers(pc: Any, job_id: str, handler_type: str, job_started_at: float) -> WorkerJobPeerState:
     state = WorkerJobPeerState()
 
     @pc.on("datachannel")
@@ -219,21 +222,57 @@ def attach_worker_job_peer_handlers(pc: Any, job_id: str, job_started_at: float)
         def on_message(raw_message: Any) -> None:
             try:
                 if isinstance(raw_message, str):
-                    is_ready_message, input_payload, error_detail = parse_job_ready_message(raw_message, job_id)
-                    if is_ready_message:
-                        if error_detail is not None:
-                            state.ready_error["detail"] = error_detail
+                    payload = json.loads(raw_message)
+                    kind = payload.get("kind")
+                    if kind == "job.ready":
+                        if str(payload.get("id")) != job_id:
+                            state.ready_error["detail"] = f"job.ready id mismatch: expected {job_id}, got {payload.get('id')}"
                         else:
-                            state.ready_payload["input"] = input_payload
                             log(f"job ready received: id={job_id} duration_ms={elapsed_ms(job_started_at)}")
+                            if "input" in payload:
+                                state.call_queue.put_nowait(
+                                    {
+                                        "id": job_id,
+                                        "type": handler_type,
+                                        "payload": payload.get("input"),
+                                    }
+                                )
                         state.ready_event.set()
                         return
-                    payload = json.loads(raw_message)
-                    if payload.get("kind") == "job.result.ack" and str(payload.get("id")) == job_id:
-                        state.result_ack_event.set()
+                    if kind == "job.call":
+                        call_id = str(payload.get("id") or "")
+                        call_type = payload.get("type")
+                        if not state.ready_event.is_set():
+                            state.ready_error["detail"] = f"expected job.ready before {kind}"
+                            state.ready_event.set()
+                            return
+                        if not call_id or not isinstance(call_type, str) or not call_type:
+                            send_job_error(channel, call_id or job_id, "invalid_call", "job.call requires id and type")
+                            return
+                        if state.call_in_progress or not state.call_queue.empty():
+                            send_job_error(channel, call_id, "worker_busy", "worker is already processing a job call")
+                            return
+                        state.call_queue.put_nowait(
+                            {
+                                "id": call_id,
+                                "type": call_type,
+                                "payload": payload.get("payload"),
+                            }
+                        )
+                        return
+                    if kind == "job.result.ack":
+                        ack_event = state.result_ack_events.get(str(payload.get("id") or ""))
+                        if ack_event is not None:
+                            ack_event.set()
+                        return
+                    if kind == "job.finish":
+                        if str(payload.get("id")) != job_id:
+                            log(f"job finish id mismatch: expected {job_id}, got {payload.get('id')}")
+                            return
+                        state.finish_event.set()
                         return
                     if not state.ready_event.is_set():
-                        state.ready_error["detail"] = f"expected job.ready before {payload.get('kind') or 'unknown message'}"
+                        state.ready_error["detail"] = f"expected job.ready before {kind or 'unknown message'}"
                         state.ready_event.set()
                         return
                 log(f"unsupported worker job datachannel message: {raw_message}")
@@ -314,6 +353,7 @@ async def run_worker_job(
             rtc_configuration,
             prepared_peer,
             job_id,
+            handler_type,
             job_started_at,
         )
         try:
@@ -334,6 +374,7 @@ async def run_worker_job(
                 rtc_configuration,
                 None,
                 job_id,
+                handler_type,
                 job_started_at,
             )
             answer_sdp = await build_worker_job_answer(
@@ -368,17 +409,8 @@ async def run_worker_job(
         if channel is None:
             raise RuntimeError("datachannel was not opened")
         emit({"type": "job.running", "job_id": job_id})
-        response = await app.dispatch(
-            DataChannelMessage(id=job_id, type=handler_type, payload=state.ready_payload.get("input"), attachments=[]),
-            context,
-        )
-        if response is None:
-            response = DataChannelMessage(id=job_id, type=f"{handler_type}.result", payload=None)
-        send_job_result(channel, job_id, response)
-        log(f"job result sent: id={job_id}")
-        log(f"job result ack wait: id={job_id} timeout_s={JOB_RESULT_ACK_TIMEOUT_SECONDS:g}")
-        await wait_for_job_result_ack(job_id, state.result_ack_event, state.closed_event)
-        log(f"job result ack received: id={job_id}")
+        await run_worker_job_session(app, context, channel, state, job_id)
+        channel.send(json.dumps({"kind": "job.finished", "id": job_id}, ensure_ascii=False))
         emit(
             {
                 "type": "job.result",
@@ -411,6 +443,112 @@ async def run_worker_job(
     finally:
         if pc is not None:
             await pc.close()
+
+
+async def run_worker_job_session(
+    app: SlaveApp,
+    base_context: SlaveContext,
+    channel: Any,
+    state: WorkerJobPeerState,
+    job_id: str,
+) -> None:
+    while True:
+        call_task = asyncio.create_task(state.call_queue.get())
+        finish_task = asyncio.create_task(state.finish_event.wait())
+        closed_task = asyncio.create_task(state.closed_event.wait())
+        try:
+            done, pending = await asyncio.wait(
+                {call_task, finish_task, closed_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            if closed_task in done and state.closed_event.is_set():
+                raise RuntimeError(f"peer connection closed before job finish: {job_id}")
+            if finish_task in done and state.finish_event.is_set():
+                log(f"job finish received: id={job_id}")
+                return
+            if call_task in done:
+                await run_worker_job_call(app, base_context, channel, state, call_task.result())
+        finally:
+            for task in (call_task, finish_task, closed_task):
+                if not task.done():
+                    task.cancel()
+
+
+async def run_worker_job_call(
+    app: SlaveApp,
+    base_context: SlaveContext,
+    channel: Any,
+    state: WorkerJobPeerState,
+    call: dict[str, Any],
+) -> None:
+    call_id = str(call["id"])
+    call_type = str(call["type"])
+    state.call_in_progress = True
+
+    async def emit_event(event_type: str, payload: Any = None) -> None:
+        channel.send(
+            json.dumps(
+                {
+                    "kind": "job.event",
+                    "id": call_id,
+                    "type": event_type,
+                    "payload": payload,
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    try:
+        try:
+            response = await app.dispatch(
+                DataChannelMessage(
+                    id=call_id,
+                    type=call_type,
+                    payload=call.get("payload"),
+                    attachments=[],
+                ),
+                SlaveContext(
+                    session_id=base_context.session_id,
+                    ttl_seconds=base_context.ttl_seconds,
+                    call_id=call_id,
+                    _event_sender=emit_event,
+                ),
+            )
+        except Exception as exc:
+            log(f"job call failed: id={call_id} type={call_type} error={exc}")
+            send_job_error(channel, call_id, "job_error", str(exc))
+            return
+
+        if response is None:
+            response = DataChannelMessage(id=call_id, type=f"{call_type}.result", payload=None)
+        ack_event = asyncio.Event()
+        state.result_ack_events[call_id] = ack_event
+        try:
+            send_job_result(channel, call_id, response)
+            log(f"job call result sent: id={call_id} type={call_type}")
+            log(f"job result ack wait: id={call_id} timeout_s={JOB_RESULT_ACK_TIMEOUT_SECONDS:g}")
+            await wait_for_job_result_ack(call_id, ack_event, state.closed_event)
+            log(f"job result ack received: id={call_id}")
+        finally:
+            state.result_ack_events.pop(call_id, None)
+    finally:
+        state.call_in_progress = False
+
+
+def send_job_error(channel: Any, call_id: str, code: str, detail: str) -> None:
+    channel.send(
+        json.dumps(
+            {
+                "kind": "job.error",
+                "id": call_id,
+                "code": code,
+                "detail": detail,
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 def parse_job_ready_message(raw_message: str, job_id: str) -> tuple[bool, Any, str | None]:

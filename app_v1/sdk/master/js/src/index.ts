@@ -1,4 +1,4 @@
-export { GpStationClient } from './client.js';
+export { GpStationClient, GpStationJobSession } from './client.js';
 export { DEFAULT_RTC_ICE_CANDIDATE_POOL_SIZE, DEFAULT_RTC_ICE_SERVERS } from './constants.js';
 export { parseRtcIceServersJson, summarizeSdpCandidates } from './rtc.js';
 export type {
@@ -9,12 +9,17 @@ export type {
   ConnectDiagnosticEvent,
   ConnectOptions,
   GpStationClientOptions,
+  JobEvent,
   JobAnswerWaitResult,
   JobConnectionPrewarmOptions,
   JobCreateResult,
   JobDescriptor,
+  JobSession,
+  JobSessionCallOptions,
+  JobSessionFinishOptions,
   LauncherView,
   ReceivedFile,
   RunJobOptions,
+  RunJobSessionResult,
   SignalPayload,
 } from './types.js';

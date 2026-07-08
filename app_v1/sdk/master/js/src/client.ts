@@ -14,9 +14,14 @@ import type {
   JobAnswerWaitResult,
   JobConnectionPrewarmOptions,
   JobCreateResult,
+  JobEvent,
+  JobSession,
+  JobSessionCallOptions,
+  JobSessionFinishOptions,
   LauncherView,
   PreparedJobConnection,
   RunJobOptions,
+  RunJobSessionResult,
 } from './types.js';
 
 class RunJobAttemptError extends Error {
@@ -27,6 +32,51 @@ class RunJobAttemptError extends Error {
   ) {
     super(message);
     this.name = 'RunJobAttemptError';
+  }
+}
+
+export class GpStationJobSession implements JobSession {
+  private callIndex = 0;
+
+  constructor(
+    readonly jobId: string,
+    private readonly peer: GpStationJobPeer,
+    private readonly defaultTimeoutMs: number,
+    private readonly defaultOnEvent?: (event: JobEvent) => void,
+  ) {}
+
+  get closed(): boolean {
+    return this.peer.closed;
+  }
+
+  async call<TInput = unknown, TResult = unknown>(
+    handlerType: string,
+    input?: TInput,
+    options: JobSessionCallOptions = {},
+  ): Promise<CallResult<TResult>> {
+    this.callIndex += 1;
+    const callId = this.callIndex === 1 ? this.jobId : `${this.jobId}:${this.callIndex}`;
+    return await this.peer.call<TResult>(
+      callId,
+      handlerType,
+      input === undefined ? null : input,
+      options.timeoutMs ?? this.defaultTimeoutMs,
+      (event) => {
+        this.defaultOnEvent?.(event);
+        options.onEvent?.(event);
+      },
+    );
+  }
+
+  async finish(options: JobSessionFinishOptions = {}): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    await this.peer.finish(this.jobId, options.timeoutMs ?? this.defaultTimeoutMs);
+  }
+
+  close(): void {
+    this.peer.close();
   }
 }
 
@@ -74,13 +124,24 @@ export class GpStationClient {
   async runJob<TInput = unknown, TResult = unknown>(
     handlerType: string,
     input?: TInput,
+    options?: RunJobOptions & { autoFinish?: true },
+  ): Promise<CallResult<TResult>>;
+  async runJob<TInput = unknown, TResult = unknown>(
+    handlerType: string,
+    input: TInput | undefined,
+    options: RunJobOptions & { autoFinish: false },
+  ): Promise<RunJobSessionResult<TResult>>;
+  async runJob<TInput = unknown, TResult = unknown>(
+    handlerType: string,
+    input?: TInput,
     options: RunJobOptions = {},
-  ): Promise<CallResult<TResult>> {
+  ): Promise<CallResult<TResult> | RunJobSessionResult<TResult>> {
     const status = options.onStatus ?? (() => undefined);
     const diagnostic = options.onDiagnostic ?? (() => undefined);
     const timeoutMs = options.timeoutMs ?? 60000;
     const slaveAppId = options.slaveAppId ?? 'ai';
     const rtcConfig = rtcConfigWithDefaults(options.rtcConfig ?? this.rtcConfig);
+    const autoFinish = options.autoFinish ?? true;
     try {
       return await this.runJobAttempt<TInput, TResult>({
         handlerType,
@@ -101,7 +162,7 @@ export class GpStationClient {
       if (attemptError.inputSent) {
         diagnostic({
           stage: 'job-retry',
-          message: 'retry skipped after input sent',
+          message: 'retry skipped after job call sent',
         });
         throw attemptError;
       }
@@ -123,7 +184,9 @@ export class GpStationClient {
         attempt: 1,
       });
     } finally {
-      this.prewarmJobConnection({ slaveAppId, rtcConfig, onDiagnostic: diagnostic });
+      if (autoFinish) {
+        this.prewarmJobConnection({ slaveAppId, rtcConfig, onDiagnostic: diagnostic });
+      }
     }
   }
 
@@ -137,15 +200,18 @@ export class GpStationClient {
     slaveAppId: string;
     rtcConfig: RTCConfiguration;
     attempt: number;
-  }): Promise<CallResult<TResult>> {
+  }): Promise<CallResult<TResult> | RunJobSessionResult<TResult>> {
     const { handlerType, input, options, status, diagnostic, timeoutMs, slaveAppId, rtcConfig, attempt } = params;
+    const autoFinish = options.autoFinish ?? true;
     const prepared = this.takePrewarmedJobConnection(slaveAppId, rtcConfig);
     const prewarmHit = prepared !== undefined;
     const peerConnection = prepared?.peerConnection ?? new RTCPeerConnection(rtcConfig);
     const dataChannel = prepared?.dataChannel ?? peerConnection.createDataChannel('gpstation.v1', { ordered: true });
     const jobPeer = new GpStationJobPeer(peerConnection, dataChannel, diagnostic);
+    let session: GpStationJobSession | undefined;
     let jobId: string | undefined;
     let inputSent = false;
+    let finishStarted = false;
     const runStartedAt = Date.now();
     if (prepared) {
       registerPreparedJobConnectionDiagnostics(prepared, diagnostic);
@@ -236,18 +302,38 @@ export class GpStationClient {
         prewarmHit,
         dataChannelOpenMs,
       });
-      dataChannel.send(JSON.stringify({ kind: 'job.ready', id: created.job.id, input: input === undefined ? null : input }));
-      inputSent = true;
-      emitDiagnostic(peerConnection, dataChannel, diagnostic, {
-        stage: 'job-ready',
-        message: input === undefined ? 'sent job ready' : 'sent job input',
-        elapsedMs: Date.now() - runStartedAt,
-        prewarmHit,
-      });
+      session = new GpStationJobSession(created.job.id, jobPeer, timeoutMs, options.onEvent);
+      jobPeer.sendReady(created.job.id);
+
       status('waiting for result');
-      return await jobPeer.waitForResult<TResult>(created.job.id, timeoutMs);
+      const firstResultPromise = session.call<TInput, TResult>(handlerType, input, {
+        timeoutMs,
+        onEvent: options.onEvent,
+      });
+      inputSent = true;
+      const firstResult = await firstResultPromise;
+      if (!autoFinish) {
+        return { ...firstResult, session };
+      }
+
+      status('finishing job');
+      finishStarted = true;
+      await session.finish({ timeoutMs });
+      return firstResult;
     } catch (error) {
-      peerConnection.close();
+      if (session && !session.closed) {
+        if (inputSent && !finishStarted) {
+          try {
+            await session.finish({ timeoutMs });
+          } catch {
+            session.close();
+          }
+        } else {
+          session.close();
+        }
+      } else {
+        peerConnection.close();
+      }
       const detail = error instanceof Error ? error.message : String(error);
       throw new RunJobAttemptError(jobId ? `job ${jobId} failed: ${detail}` : detail, jobId, inputSent);
     }

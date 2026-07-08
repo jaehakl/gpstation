@@ -62,6 +62,37 @@ export type CallResult<T = unknown> = {
   files: ReceivedFile[];
 };
 
+export type JobEvent = {
+  id?: string;
+  type?: string;
+  payload?: unknown;
+};
+
+export type JobSessionCallOptions = {
+  timeoutMs?: number;
+  onEvent?: (event: JobEvent) => void;
+};
+
+export type JobSessionFinishOptions = {
+  timeoutMs?: number;
+};
+
+export type JobSession = {
+  readonly jobId: string;
+  readonly closed: boolean;
+  call<TInput = unknown, TResult = unknown>(
+    handlerType: string,
+    input?: TInput,
+    options?: JobSessionCallOptions,
+  ): Promise<CallResult<TResult>>;
+  finish(options?: JobSessionFinishOptions): Promise<void>;
+  close(): void;
+};
+
+export type RunJobSessionResult<T = unknown> = CallResult<T> & {
+  session: JobSession;
+};
+
 export type CandidateSummary = {
   host: number;
   srflx: number;
@@ -107,6 +138,8 @@ export type RunJobOptions = ConnectOptions & {
   slaveAppId?: string;
   rtcConfig?: RTCConfiguration;
   onJobCreated?: (job: JobDescriptor) => void;
+  autoFinish?: boolean;
+  onEvent?: (event: JobEvent) => void;
 };
 
 export type JobConnectionPrewarmOptions = {

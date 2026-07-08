@@ -54,14 +54,14 @@ npm run dev
 브라우저 master는 JS SDK의 `runJob`을 호출합니다.
 
 ```ts
-const result = await client.runJob({
-  slaveAppId: 'ai',
-  handlerType: 'ai.llm',
-  payload: {
+const result = await client.runJob(
+  'ai.llm',
+  {
     prompt: '짧게 자기소개를 해줘',
     max_tokens: 128,
   },
-});
+  { slaveAppId: 'ai' },
+);
 ```
 
 SDK는 WebRTC offer를 만든 뒤 `POST /v1/jobs`로 job을 생성합니다. 서버는 사용자의 idle launcher를 찾아 `job.start` control message를 보냅니다.

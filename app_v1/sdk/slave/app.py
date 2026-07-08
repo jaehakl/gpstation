@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sdk.protocol.messages import DataChannelMessage
@@ -12,6 +12,13 @@ from sdk.protocol.messages import DataChannelMessage
 class SlaveContext:
     session_id: str
     ttl_seconds: int
+    call_id: str | None = None
+    _event_sender: Callable[[str, Any], Awaitable[None]] | None = field(default=None, repr=False, compare=False)
+
+    async def emit_event(self, event_type: str, payload: Any = None) -> None:
+        if self._event_sender is None:
+            return
+        await self._event_sender(event_type, payload)
 
 
 @dataclass(frozen=True)

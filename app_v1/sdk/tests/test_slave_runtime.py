@@ -11,6 +11,7 @@ from sdk.protocol.constants import DATA_CHANNEL_LABEL
 from sdk.slave import DataChannelAttachment, DataChannelMessage, SlaveApp, SlaveContext
 from sdk.slave.runtime import (
     CHUNK_SIZE,
+    attach_worker_job_peer_handlers,
     configure_aioice_gather_timeout,
     emit,
     load_rtc_ice_gather_timeout_seconds,
@@ -33,6 +34,38 @@ class DummyChannel:
 
     def send(self, message: str | bytes) -> None:
         self.sent.append(message)
+
+
+class FakeDataChannel:
+    label = DATA_CHANNEL_LABEL
+
+    def __init__(self) -> None:
+        self.sent: list[str | bytes] = []
+        self.handlers = {}
+
+    def on(self, name):
+        def decorator(func):
+            self.handlers[name] = func
+            return func
+
+        return decorator
+
+    def send(self, message: str | bytes) -> None:
+        self.sent.append(message)
+
+
+class FakePeerConnection:
+    connectionState = "connected"
+
+    def __init__(self) -> None:
+        self.handlers = {}
+
+    def on(self, name):
+        def decorator(func):
+            self.handlers[name] = func
+            return func
+
+        return decorator
 
 
 class FakeAioIceConnection:
@@ -306,6 +339,60 @@ def test_parse_job_ready_message_reports_malformed_frame():
     assert "malformed job.ready frame" in error
 
 
+def test_datachannel_ready_then_call_enqueues_call():
+    pc = FakePeerConnection()
+    state = attach_worker_job_peer_handlers(pc, "job-1", "ai.llm", 0.0)
+    channel = FakeDataChannel()
+
+    pc.handlers["datachannel"](channel)
+    channel.handlers["message"](json.dumps({"kind": "job.ready", "id": "job-1"}))
+    channel.handlers["message"](
+        json.dumps({"kind": "job.call", "id": "call-1", "type": "ai.embeddings", "payload": {"text": "hello"}})
+    )
+
+    assert state.ready_event.is_set()
+    assert state.call_queue.get_nowait() == {
+        "id": "call-1",
+        "type": "ai.embeddings",
+        "payload": {"text": "hello"},
+    }
+
+
+def test_datachannel_legacy_ready_input_enqueues_first_call():
+    pc = FakePeerConnection()
+    state = attach_worker_job_peer_handlers(pc, "job-1", "ai.llm", 0.0)
+    channel = FakeDataChannel()
+
+    pc.handlers["datachannel"](channel)
+    channel.handlers["message"](json.dumps({"kind": "job.ready", "id": "job-1", "input": {"prompt": "hello"}}))
+
+    assert state.ready_event.is_set()
+    assert state.call_queue.get_nowait() == {
+        "id": "job-1",
+        "type": "ai.llm",
+        "payload": {"prompt": "hello"},
+    }
+
+
+def test_datachannel_rejects_overlapping_call():
+    pc = FakePeerConnection()
+    state = attach_worker_job_peer_handlers(pc, "job-1", "ai.llm", 0.0)
+    channel = FakeDataChannel()
+
+    pc.handlers["datachannel"](channel)
+    channel.handlers["message"](json.dumps({"kind": "job.ready", "id": "job-1"}))
+    channel.handlers["message"](json.dumps({"kind": "job.call", "id": "call-1", "type": "ai.llm"}))
+    channel.handlers["message"](json.dumps({"kind": "job.call", "id": "call-2", "type": "ai.llm"}))
+
+    assert state.call_queue.get_nowait()["id"] == "call-1"
+    assert json.loads(channel.sent[0]) == {
+        "kind": "job.error",
+        "id": "call-2",
+        "code": "worker_busy",
+        "detail": "worker is already processing a job call",
+    }
+
+
 @pytest.mark.asyncio
 async def test_wait_for_job_result_ack_succeeds_when_ack_arrives():
     ack_event = asyncio.Event()
@@ -346,6 +433,20 @@ async def test_initialize_hook_runs_with_memory_and_context():
     await app.run_initialize(context)
 
     assert memory["initialized_for"] == "session-1"
+
+
+@pytest.mark.asyncio
+async def test_slave_context_emit_event_uses_sender():
+    events = []
+
+    async def send_event(event_type, payload):
+        events.append((event_type, payload))
+
+    context = SlaveContext(session_id="session-1", ttl_seconds=60, call_id="call-1", _event_sender=send_event)
+
+    await context.emit_event("token", {"text": "hello"})
+
+    assert events == [("token", {"text": "hello"})]
 
 
 def test_send_job_result_sends_attachment_chunks():
