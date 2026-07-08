@@ -13,7 +13,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "prepare": "npm run build",
+    "prepare": "npx --yes --package typescript@6.0.3 tsc -p tsconfig.build.json",
     "test": "npm run build && node --test tests/client-event.test.mjs",
     "typecheck": "tsc --noEmit"
   },
