@@ -28,6 +28,7 @@ type ChatPayload = {
   prompt: string;
   max_tokens?: number;
   temperature?: number;
+  enable_thinking?: boolean;
 };
 
 type ChatMessage = {
@@ -54,6 +55,7 @@ export default function ChatPage() {
   const [prompt, setPrompt] = useState('');
   const [maxTokens, setMaxTokens] = useState('8192');
   const [temperature, setTemperature] = useState('1.0');
+  const [enableThinking, setEnableThinking] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [context, setContext] = useState<ChatResponse | null>(null);
   const [session, setSession] = useState<JobSession | null>(null);
@@ -168,6 +170,7 @@ export default function ChatPage() {
         prompt: trimmedPrompt,
         max_tokens: parseOptionalInt(maxTokens, 'max tokens'),
         temperature: parseOptionalFloat(temperature, 'temperature'),
+        enable_thinking: enableThinking,
       };
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : String(nextError));
@@ -351,6 +354,14 @@ export default function ChatPage() {
                 <input value={temperature} inputMode="decimal" onChange={(event) => setTemperature(event.target.value)} />
               </label>
             </div>
+            <label className="checkField">
+              <input
+                type="checkbox"
+                checked={enableThinking}
+                onChange={(event) => setEnableThinking(event.target.checked)}
+              />
+              <span>Allow Thinking</span>
+            </label>
           </div>
         </div>
       ) : null}
@@ -393,7 +404,7 @@ function AssistantMessageContent({ content, streaming }: { content: string; stre
 }
 
 function parseAssistantThinkParts(content: string, streaming: boolean): AssistantThinkParts | null {
-  const thinkTagPattern = /<\/?think\s*>/gi;
+  const thinkTagPattern = /<\/?think\s*>|<\|channel>|<channel\|>/gi;
   const parts: AssistantThinkParts = {
     visible: '',
     thinking: '',
@@ -410,7 +421,7 @@ function parseAssistantThinkParts(content: string, streaming: boolean): Assistan
     } else {
       parts.visible += segment;
     }
-    inThinking = !match[0].startsWith('</');
+    inThinking = isThinkingStartMarker(match[0]);
     index = match.index + match[0].length;
     match = thinkTagPattern.exec(content);
   }
@@ -427,6 +438,11 @@ function parseAssistantThinkParts(content: string, streaming: boolean): Assistan
   parts.thinkingInProgress = inThinking;
 
   return parts;
+}
+
+function isThinkingStartMarker(marker: string): boolean {
+  const normalized = marker.toLowerCase();
+  return normalized === '<|channel>' || normalized.startsWith('<think');
 }
 
 function parseTextThinkParts(content: string, streaming: boolean): AssistantThinkParts | null {

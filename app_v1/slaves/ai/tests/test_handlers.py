@@ -243,10 +243,57 @@ class AiHandlerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(str(error.exception), "system_prompt cannot change within an active ai.chat session")
 
+    async def test_chat_handler_allows_enable_thinking_change_in_active_session(self) -> None:
+        requests = []
+
+        async def generate_chat_answer(request, messages, on_delta):
+            requests.append(request)
+            return ChatResponse(
+                answer=f"answer {len(requests)}",
+                context_window=4096,
+                prompt_tokens=10,
+                max_response_tokens=512,
+                remaining_tokens=4000,
+                cache_enabled=True,
+            )
+
+        with patch.object(ai_slave, "generate_chat_answer", generate_chat_answer):
+            await ai_slave.app.dispatch(
+                DataChannelMessage(
+                    id="call-1",
+                    type="ai.chat",
+                    payload={
+                        "system_prompt": "Stay concise.",
+                        "prompt": "First question.",
+                        "enable_thinking": False,
+                    },
+                ),
+                context(),
+            )
+            await ai_slave.app.dispatch(
+                DataChannelMessage(
+                    id="call-2",
+                    type="ai.chat",
+                    payload={
+                        "prompt": "Second question.",
+                        "enable_thinking": True,
+                    },
+                ),
+                context(),
+            )
+
+        self.assertIs(requests[0].enable_thinking, False)
+        self.assertIs(requests[1].enable_thinking, True)
+
     def test_chat_request_accepts_korean_text(self) -> None:
         request = ChatRequest(system_prompt="친절하게 답하세요.", prompt="한글 질문입니다.")
 
         self.assertEqual(request.prompt, "한글 질문입니다.")
+
+    def test_chat_request_accepts_enable_thinking(self) -> None:
+        request = ChatRequest(system_prompt="system", prompt="prompt", enable_thinking=True)
+
+        self.assertIs(request.enable_thinking, True)
 
     def test_chat_request_rejects_surrogate_text(self) -> None:
         with self.assertRaises(ValueError) as error:

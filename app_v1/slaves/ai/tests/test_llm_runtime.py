@@ -28,9 +28,11 @@ class FakeStreamingLlm:
         self.n_tokens = 24
         self.cache = None
         self.set_cache_calls = 0
+        self.enable_thinking_override = None
 
     def create_chat_completion(self, **kwargs):
         self.kwargs = kwargs
+        self.enable_thinking_override = getattr(self, "_gpstation_enable_thinking_override", None)
         return iter(self.chunks)
 
     def set_cache(self, cache):
@@ -63,7 +65,7 @@ def config() -> llm_runtime.PromptLlmConfig:
         n_ubatch=512,
         offload_kqv=True,
         enable_thinking=False,
-        model_key=("fake.gguf", "", "", 4096, 0, 0, None, None, None, (), True, False, 512, 512, True, False),
+        model_key=("fake.gguf", "", "", 4096, 0, 0, None, None, None, (), True, False, 512, 512, True),
         max_tokens=32,
         temperature=0.25,
         top_p=0.9,
@@ -137,9 +139,9 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.n_batch, 256)
         self.assertEqual(config.n_ubatch, 128)
         self.assertIs(config.offload_kqv, False)
-        self.assertEqual(config.model_key[10:], (False, True, 256, 128, False, False))
+        self.assertEqual(config.model_key[10:], (False, True, 256, 128, False))
 
-    def test_build_prompt_llm_config_uses_enable_thinking_setting(self) -> None:
+    def test_build_prompt_llm_config_uses_enable_thinking_setting_without_changing_model_key(self) -> None:
         with TemporaryDirectory() as temp_dir:
             model_path = Path(temp_dir) / "fake.gguf"
             model_path.write_bytes(b"fake")
@@ -147,12 +149,19 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
             with (
                 patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
                 patch.object(llm_runtime.settings, "llm_use_max_gpu", False),
+                patch.object(llm_runtime.settings, "llm_enable_thinking", False),
+            ):
+                disabled_config = llm_runtime.build_prompt_llm_config()
+            with (
+                patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
+                patch.object(llm_runtime.settings, "llm_use_max_gpu", False),
                 patch.object(llm_runtime.settings, "llm_enable_thinking", True),
             ):
-                config = llm_runtime.build_prompt_llm_config()
+                enabled_config = llm_runtime.build_prompt_llm_config()
 
-        self.assertIs(config.enable_thinking, True)
-        self.assertEqual(config.model_key[-1], True)
+        self.assertIs(disabled_config.enable_thinking, False)
+        self.assertIs(enabled_config.enable_thinking, True)
+        self.assertEqual(disabled_config.model_key, enabled_config.model_key)
 
     def test_settings_rejects_non_positive_batch_sizes(self) -> None:
         with self.assertRaises(ValidationError):
@@ -263,7 +272,6 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 512,
                 256,
                 True,
-                False,
             ),
             max_tokens=32,
             temperature=0.25,
@@ -323,6 +331,22 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(calls[0]["enable_thinking"], True)
 
+    def test_llm_chat_handler_uses_request_enable_thinking_override(self) -> None:
+        calls = []
+
+        def base_handler(**kwargs):
+            calls.append(kwargs)
+            return {"ok": True}
+
+        class FakeLlama:
+            _chat_handlers = {"chat_template.default": base_handler}
+            chat_format = "qwen"
+            _gpstation_enable_thinking_override = False
+
+        llm_runtime._create_llm_chat_handler(True)(llama=FakeLlama(), messages=[])
+
+        self.assertIs(calls[0]["enable_thinking"], False)
+
     def test_get_prompt_llm_wraps_llama_context_creation_failure(self) -> None:
         try:
             with (
@@ -364,6 +388,7 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 [{"role": "user", "content": "hello"}],
                 max_tokens=32,
                 temperature=0.25,
+                enable_thinking=True,
                 on_delta=on_delta,
             )
 
@@ -379,6 +404,8 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_llm.kwargs["messages"], [{"role": "user", "content": "hello"}])
         self.assertEqual(fake_llm.kwargs["max_tokens"], 32)
         self.assertEqual(fake_llm.kwargs["temperature"], 0.25)
+        self.assertIs(fake_llm.enable_thinking_override, True)
+        self.assertFalse(hasattr(fake_llm, "_gpstation_enable_thinking_override"))
 
     async def test_generate_chat_with_llm_rejects_empty_answer(self) -> None:
         fake_llm = FakeStreamingLlm(

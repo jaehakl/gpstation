@@ -75,6 +75,7 @@ async def generate_chat_with_llm(
     messages: list[dict[str, str]],
     max_tokens: int | None = None,
     temperature: float | None = None,
+    enable_thinking: bool | None = None,
     on_delta: Callable[[str], Awaitable[None]] | None = None,
 ) -> ChatGenerationResult:
     config = build_prompt_llm_config(max_tokens=max_tokens, temperature=temperature)
@@ -85,6 +86,7 @@ async def generate_chat_with_llm(
                 _generate_chat_with_llm_locked,
                 config,
                 messages,
+                enable_thinking,
                 loop,
                 on_delta,
             )
@@ -96,6 +98,7 @@ async def generate_chat_with_llm(
 def _generate_chat_with_llm_locked(
     config: Any,
     messages: list[dict[str, str]],
+    enable_thinking: bool | None,
     loop: asyncio.AbstractEventLoop,
     on_delta: Callable[[str], Awaitable[None]] | None,
 ) -> ChatGenerationResult:
@@ -107,23 +110,34 @@ def _generate_chat_with_llm_locked(
         "LLM chat stream start "
         f"max_tokens={max_response_tokens} "
         f"temperature={config.temperature} "
+        f"enable_thinking={config.enable_thinking if enable_thinking is None else enable_thinking} "
         f"cache_enabled={cache_enabled}"
     )
-    chunks = llm.create_chat_completion(
-        messages=messages,
-        max_tokens=max_response_tokens,
-        temperature=config.temperature,
-        top_p=config.top_p,
-        stream=True,
-    )
     answer_parts: list[str] = []
-    for chunk in chunks:
-        delta = _extract_chat_delta_content(chunk)
-        if not delta:
-            continue
-        answer_parts.append(delta)
-        if on_delta is not None:
-            asyncio.run_coroutine_threadsafe(on_delta(delta), loop).result()
+    had_previous_override = hasattr(llm, "_gpstation_enable_thinking_override")
+    previous_override = getattr(llm, "_gpstation_enable_thinking_override", None)
+    if enable_thinking is not None:
+        setattr(llm, "_gpstation_enable_thinking_override", enable_thinking)
+    try:
+        chunks = llm.create_chat_completion(
+            messages=messages,
+            max_tokens=max_response_tokens,
+            temperature=config.temperature,
+            top_p=config.top_p,
+            stream=True,
+        )
+        for chunk in chunks:
+            delta = _extract_chat_delta_content(chunk)
+            if not delta:
+                continue
+            answer_parts.append(delta)
+            if on_delta is not None:
+                asyncio.run_coroutine_threadsafe(on_delta(delta), loop).result()
+    finally:
+        if had_previous_override:
+            setattr(llm, "_gpstation_enable_thinking_override", previous_override)
+        elif hasattr(llm, "_gpstation_enable_thinking_override"):
+            delattr(llm, "_gpstation_enable_thinking_override")
     answer = "".join(answer_parts)
     used_tokens = _get_llm_token_count(llm)
     if prompt_tokens == 0:

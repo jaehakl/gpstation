@@ -26,6 +26,7 @@ async def generate_chat_answer(
         messages,
         max_tokens=request.max_tokens,
         temperature=request.temperature,
+        enable_thinking=request.enable_thinking,
         on_delta=on_delta,
     )
     return ChatResponse(

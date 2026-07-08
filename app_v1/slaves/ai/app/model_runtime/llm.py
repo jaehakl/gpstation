@@ -58,7 +58,6 @@ PromptLlmModelKey = tuple[
     int,
     int,
     bool,
-    bool,
 ]
 _prompt_llm_model_key: PromptLlmModelKey | None = None
 _prompt_llm: Any | None = None
@@ -231,7 +230,6 @@ def build_prompt_llm_config(
         n_batch,
         n_ubatch,
         offload_kqv,
-        enable_thinking,
     )
     return PromptLlmConfig(
         model_path=model_path_value,
@@ -407,7 +405,11 @@ def _create_llm_chat_handler(enable_thinking: bool) -> Any:
     def chat_handler(**kwargs: Any) -> Any:
         llama = kwargs.get("llama")
         base_handler = _resolve_llm_chat_handler(llama)
-        kwargs.setdefault("enable_thinking", enable_thinking)
+        request_enable_thinking = getattr(llama, "_gpstation_enable_thinking_override", None)
+        if isinstance(request_enable_thinking, bool):
+            kwargs["enable_thinking"] = request_enable_thinking
+        else:
+            kwargs.setdefault("enable_thinking", enable_thinking)
         return base_handler(**kwargs)
 
     return chat_handler

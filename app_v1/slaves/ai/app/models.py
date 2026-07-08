@@ -34,6 +34,7 @@ class ChatRequest(BaseModel):
     prompt: str
     max_tokens: int | None = None
     temperature: float | None = None
+    enable_thinking: bool | None = None
 
     @field_validator("system_prompt", "prompt")
     @classmethod
