@@ -13,6 +13,7 @@ import { API_URL } from '../../api/api';
 import { useAuthStore } from '../../stores/authStore';
 
 const CHAT_TIMEOUT_MS = 600_000;
+const CHAT_SCROLL_BOTTOM_THRESHOLD_PX = 48;
 
 type ChatResponse = {
   answer: string;
@@ -66,7 +67,10 @@ export default function ChatPage() {
 
   const messageIdRef = useRef(0);
   const activeAssistantMessageIdRef = useRef<number | null>(null);
+  const transcriptRef = useRef<HTMLDivElement | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const transcriptAtBottomRef = useRef(true);
+  const forceTranscriptScrollRef = useRef(false);
   const sessionRef = useRef<JobSession | null>(null);
 
   const client = useMemo(
@@ -86,7 +90,12 @@ export default function ChatPage() {
   }, [session]);
 
   useEffect(() => {
+    if (!forceTranscriptScrollRef.current && !transcriptAtBottomRef.current) {
+      return;
+    }
     transcriptEndRef.current?.scrollIntoView({ block: 'end' });
+    forceTranscriptScrollRef.current = false;
+    transcriptAtBottomRef.current = true;
   }, [messages, busy]);
 
   useEffect(() => {
@@ -150,6 +159,15 @@ export default function ChatPage() {
     }
   }
 
+  function handleTranscriptScroll() {
+    const element = transcriptRef.current;
+    if (!element) {
+      return;
+    }
+    transcriptAtBottomRef.current =
+      element.scrollHeight - element.scrollTop - element.clientHeight <= CHAT_SCROLL_BOTTOM_THRESHOLD_PX;
+  }
+
   async function callChat() {
     const trimmedPrompt = prompt.trim();
     if (!trimmedPrompt) {
@@ -196,6 +214,7 @@ export default function ChatPage() {
     };
 
     activeAssistantMessageIdRef.current = assistantMessageId;
+    forceTranscriptScrollRef.current = true;
     setBusy(true);
     setError(null);
     setStatus('waiting for result');
@@ -245,6 +264,11 @@ export default function ChatPage() {
     if (!currentSession || currentSession.closed) {
       sessionRef.current = null;
       setSession(null);
+      setMessages([]);
+      setContext(null);
+      setPrompt('');
+      activeAssistantMessageIdRef.current = null;
+      setError(null);
       setStatus('closed');
       return;
     }
@@ -253,19 +277,17 @@ export default function ChatPage() {
     setStatus('closing');
     try {
       await currentSession.finish({ timeoutMs: CHAT_TIMEOUT_MS });
+    } catch {
+      currentSession.close();
+    } finally {
+      sessionRef.current = null;
+      setSession(null);
       setMessages([]);
       setContext(null);
       setPrompt('');
       activeAssistantMessageIdRef.current = null;
       setError(null);
       setStatus('closed');
-    } catch (nextError) {
-      currentSession.close();
-      setError(nextError instanceof Error ? nextError.message : String(nextError));
-      setStatus('failed');
-    } finally {
-      sessionRef.current = null;
-      setSession(null);
       setBusy(false);
     }
   }
@@ -277,7 +299,7 @@ export default function ChatPage() {
           <span>{formatChatContext(context, chatOpen ? 'session open' : status)}</span>
           {error ? <strong>{error}</strong> : null}
         </div>
-        <div className="chatTranscript">
+        <div className="chatTranscript" ref={transcriptRef} onScroll={handleTranscriptScroll}>
           {messages.map((item) => (
             <div key={item.id} className={`chatMessage ${item.role}`}>
               <div className={item.role === 'user' ? 'chatBubble' : 'chatMarkdown'}>

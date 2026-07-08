@@ -32,6 +32,7 @@ export class GpStationJobPeer {
   private finishResolve?: () => void;
   private finishReject?: (reason: Error) => void;
   private finishTimer?: ReturnType<typeof setTimeout>;
+  private finishSent = false;
   private isClosed = false;
 
   constructor(
@@ -132,7 +133,14 @@ export class GpStationJobPeer {
       }, timeoutMs);
       this.finishResolve = resolve;
       this.finishReject = reject;
-      this.dataChannel.send(JSON.stringify({ kind: 'job.finish', id: jobId }));
+      try {
+        this.dataChannel.send(JSON.stringify({ kind: 'job.finish', id: jobId }));
+        this.finishSent = true;
+      } catch (error) {
+        this.clearFinish();
+        reject(asError(error));
+        return;
+      }
       emitDiagnostic(this.peerConnection, this.dataChannel, this.diagnostic, {
         stage: 'job-finish',
         message: 'sent job finish',
@@ -265,6 +273,10 @@ export class GpStationJobPeer {
 
   private rejectOpenWork(error: Error): void {
     this.rejectPendingCall(error);
+    if (this.finishResolve && this.finishSent) {
+      this.resolveFinish('job finish completed after data channel closed');
+      return;
+    }
     this.rejectFinish(error);
   }
 
@@ -301,9 +313,10 @@ export class GpStationJobPeer {
     this.finishResolve = undefined;
     this.finishReject = undefined;
     this.finishTimer = undefined;
+    this.finishSent = false;
   }
 
-  private resolveFinish(): void {
+  private resolveFinish(message = 'received job finished'): void {
     if (!this.finishResolve) {
       return;
     }
@@ -311,7 +324,7 @@ export class GpStationJobPeer {
     this.clearFinish();
     emitDiagnostic(this.peerConnection, this.dataChannel, this.diagnostic, {
       stage: 'job-finished',
-      message: 'received job finished',
+      message,
     });
     resolve();
   }
