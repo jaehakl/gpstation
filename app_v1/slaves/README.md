@@ -11,7 +11,7 @@ poetry install
 
 `ai/` reads UTF-8 settings from `app_v1/slaves/ai/.env`. Copy `env.example` first and set local model values:
 
-- `LLM_MODEL_PATH` and `LLM_USE_MAX_GPU` for `ai.llm`
+- `LLM_MODEL_PATH`, `LLM_USE_MAX_GPU`, and `LLM_ENABLE_THINKING` for `ai.llm`
 - `SDXL_CKPT_PATH` for `ai.sdxl.t2i`
 - `EMBEDDING_MODEL_NAME` or `EMBEDDING_MODEL_PATH` for `ai.embeddings`
 

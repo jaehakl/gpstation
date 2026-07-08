@@ -43,6 +43,10 @@ type AssistantThinkParts = {
   thinkingInProgress: boolean;
 };
 
+const THINKING_TEXT_HEADER_PATTERN =
+  /^\s*(?:here(?:'|’)?s\s+a\s+thinking\s+process|thinking\s+process|thought\s+process)\s*:\s*/i;
+const THINKING_ANSWER_HEADER_PATTERN = /(?:^|\n)\s*(?:final\s+answer|answer|response)\s*:\s*/i;
+
 export default function ChatPage() {
   const user = useAuthStore((state) => state.user);
   const authReady = useAuthStore((state) => state.authReady);
@@ -275,7 +279,7 @@ export default function ChatPage() {
             <div key={item.id} className={`chatMessage ${item.role}`}>
               <div className={item.role === 'user' ? 'chatBubble' : 'chatMarkdown'}>
                 {item.role === 'assistant' ? (
-                  <AssistantMessageContent content={item.content || (item.streaming ? '...' : '')} />
+                  <AssistantMessageContent content={item.content || (item.streaming ? '...' : '')} streaming={item.streaming} />
                 ) : (
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
@@ -354,7 +358,41 @@ export default function ChatPage() {
   );
 }
 
-function AssistantMessageContent({ content }: { content: string }) {
+function AssistantMessageContent({ content, streaming }: { content: string; streaming: boolean }) {
+  const parts = parseAssistantThinkParts(content, streaming);
+
+  if (!parts) {
+    return (
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
+        rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+      >
+        {formatChatMarkdown(content, 'assistant')}
+      </ReactMarkdown>
+    );
+  }
+
+  return (
+    <>
+      {parts.thinking || parts.thinkingInProgress ? (
+        <details className="thinkBlock">
+          <summary className="thinkSummary">{parts.thinkingInProgress ? '생각 과정 생성 중' : '생각 과정'}</summary>
+          <div className="thinkContent">{parts.thinking.trim() || '아직 생각 과정이 생성되는 중입니다.'}</div>
+        </details>
+      ) : null}
+      {parts.visible ? (
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
+          rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+        >
+          {formatChatMarkdown(parts.visible, 'assistant')}
+        </ReactMarkdown>
+      ) : null}
+    </>
+  );
+}
+
+function parseAssistantThinkParts(content: string, streaming: boolean): AssistantThinkParts | null {
   const thinkTagPattern = /<\/?think\s*>/gi;
   const parts: AssistantThinkParts = {
     visible: '',
@@ -378,14 +416,7 @@ function AssistantMessageContent({ content }: { content: string }) {
   }
 
   if (index === 0) {
-    return (
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
-        rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
-      >
-        {formatChatMarkdown(content, 'assistant')}
-      </ReactMarkdown>
-    );
+    return parseTextThinkParts(content, streaming);
   }
 
   if (inThinking) {
@@ -395,24 +426,30 @@ function AssistantMessageContent({ content }: { content: string }) {
   }
   parts.thinkingInProgress = inThinking;
 
-  return (
-    <>
-      {parts.thinking || parts.thinkingInProgress ? (
-        <details className="thinkBlock">
-          <summary className="thinkSummary">{parts.thinkingInProgress ? '생각 과정 생성 중' : '생각 과정'}</summary>
-          <div className="thinkContent">{parts.thinking.trim() || '아직 생각 과정이 생성되는 중입니다.'}</div>
-        </details>
-      ) : null}
-      {parts.visible ? (
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
-          rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
-        >
-          {formatChatMarkdown(parts.visible, 'assistant')}
-        </ReactMarkdown>
-      ) : null}
-    </>
-  );
+  return parts;
+}
+
+function parseTextThinkParts(content: string, streaming: boolean): AssistantThinkParts | null {
+  const headerMatch = THINKING_TEXT_HEADER_PATTERN.exec(content);
+  if (!headerMatch) {
+    return null;
+  }
+
+  const remainder = content.slice(headerMatch[0].length);
+  const answerMatch = THINKING_ANSWER_HEADER_PATTERN.exec(remainder);
+  if (!answerMatch) {
+    return {
+      visible: '',
+      thinking: remainder,
+      thinkingInProgress: streaming,
+    };
+  }
+
+  return {
+    visible: remainder.slice(answerMatch.index + answerMatch[0].length),
+    thinking: remainder.slice(0, answerMatch.index),
+    thinkingInProgress: false,
+  };
 }
 
 function readChatDelta(payload: unknown): string {

@@ -58,6 +58,7 @@ PromptLlmModelKey = tuple[
     int,
     int,
     bool,
+    bool,
 ]
 _prompt_llm_model_key: PromptLlmModelKey | None = None
 _prompt_llm: Any | None = None
@@ -82,6 +83,7 @@ class PromptLlmConfig:
     n_batch: int
     n_ubatch: int
     offload_kqv: bool
+    enable_thinking: bool
     model_key: PromptLlmModelKey
     max_tokens: int
     temperature: float
@@ -212,6 +214,7 @@ def build_prompt_llm_config(
     n_batch = settings.llm_n_batch
     n_ubatch = settings.llm_n_ubatch
     offload_kqv = settings.llm_offload_kqv
+    enable_thinking = settings.llm_enable_thinking
     model_key = (
         model_path_value,
         repo_id,
@@ -228,6 +231,7 @@ def build_prompt_llm_config(
         n_batch,
         n_ubatch,
         offload_kqv,
+        enable_thinking,
     )
     return PromptLlmConfig(
         model_path=model_path_value,
@@ -245,6 +249,7 @@ def build_prompt_llm_config(
         n_batch=n_batch,
         n_ubatch=n_ubatch,
         offload_kqv=offload_kqv,
+        enable_thinking=enable_thinking,
         model_key=model_key,
         max_tokens=resolved_max_tokens,
         temperature=resolved_temperature,
@@ -398,6 +403,34 @@ def _generate_prompt_with_llm_locked(
     return content if isinstance(content, str) else ""
 
 
+def _create_llm_chat_handler(enable_thinking: bool) -> Any:
+    def chat_handler(**kwargs: Any) -> Any:
+        llama = kwargs.get("llama")
+        base_handler = _resolve_llm_chat_handler(llama)
+        kwargs.setdefault("enable_thinking", enable_thinking)
+        return base_handler(**kwargs)
+
+    return chat_handler
+
+
+def _resolve_llm_chat_handler(llama: Any) -> Any:
+    metadata_handlers = getattr(llama, "_chat_handlers", {})
+    if isinstance(metadata_handlers, dict):
+        default_handler = metadata_handlers.get("chat_template.default")
+        if default_handler is not None:
+            return default_handler
+        chat_format = getattr(llama, "chat_format", None)
+        if chat_format:
+            format_handler = metadata_handlers.get(chat_format)
+            if format_handler is not None:
+                return format_handler
+
+    chat_format = getattr(llama, "chat_format", None) or "llama-2"
+    from llama_cpp import llama_chat_format
+
+    return llama_chat_format.get_chat_completion_handler(chat_format)
+
+
 def _get_prompt_llm_locked(config: PromptLlmConfig) -> Any:
     global _prompt_llm_model_key, _prompt_llm
 
@@ -426,6 +459,7 @@ def _get_prompt_llm_locked(config: PromptLlmConfig) -> Any:
             "n_batch": config.n_batch,
             "n_ubatch": config.n_ubatch,
             "offload_kqv": config.offload_kqv,
+            "chat_handler": _create_llm_chat_handler(config.enable_thinking),
             "verbose": False,
         }
         if config.n_threads > 0:
@@ -450,7 +484,8 @@ def _get_prompt_llm_locked(config: PromptLlmConfig) -> Any:
             f"swa_full={config.swa_full} "
             f"n_batch={config.n_batch} "
             f"n_ubatch={config.n_ubatch} "
-            f"offload_kqv={config.offload_kqv}"
+            f"offload_kqv={config.offload_kqv} "
+            f"enable_thinking={config.enable_thinking}"
         )
         try:
             if config.model_path:

@@ -62,7 +62,8 @@ def config() -> llm_runtime.PromptLlmConfig:
         n_batch=512,
         n_ubatch=512,
         offload_kqv=True,
-        model_key=("fake.gguf", "", "", 4096, 0, 0, None, None, None, (), True, False, 512, 512, True),
+        enable_thinking=False,
+        model_key=("fake.gguf", "", "", 4096, 0, 0, None, None, None, (), True, False, 512, 512, True, False),
         max_tokens=32,
         temperature=0.25,
         top_p=0.9,
@@ -136,7 +137,22 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.n_batch, 256)
         self.assertEqual(config.n_ubatch, 128)
         self.assertIs(config.offload_kqv, False)
-        self.assertEqual(config.model_key[10:], (False, True, 256, 128, False))
+        self.assertEqual(config.model_key[10:], (False, True, 256, 128, False, False))
+
+    def test_build_prompt_llm_config_uses_enable_thinking_setting(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "fake.gguf"
+            model_path.write_bytes(b"fake")
+
+            with (
+                patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
+                patch.object(llm_runtime.settings, "llm_use_max_gpu", False),
+                patch.object(llm_runtime.settings, "llm_enable_thinking", True),
+            ):
+                config = llm_runtime.build_prompt_llm_config()
+
+        self.assertIs(config.enable_thinking, True)
+        self.assertEqual(config.model_key[-1], True)
 
     def test_settings_rejects_non_positive_batch_sizes(self) -> None:
         with self.assertRaises(ValidationError):
@@ -230,6 +246,7 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
             n_batch=512,
             n_ubatch=256,
             offload_kqv=True,
+            enable_thinking=False,
             model_key=(
                 "fake.gguf",
                 "",
@@ -246,6 +263,7 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 512,
                 256,
                 True,
+                False,
             ),
             max_tokens=32,
             temperature=0.25,
@@ -266,8 +284,44 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(FakePromptLlm.kwargs["n_batch"], 512)
             self.assertEqual(FakePromptLlm.kwargs["n_ubatch"], 256)
             self.assertIs(FakePromptLlm.kwargs["offload_kqv"], True)
+            self.assertTrue(callable(FakePromptLlm.kwargs["chat_handler"]))
         finally:
             llm_runtime.release_llm_runtime()
+
+    def test_llm_chat_handler_injects_enable_thinking_into_metadata_template(self) -> None:
+        calls = []
+
+        def base_handler(**kwargs):
+            calls.append(kwargs)
+            return {"ok": True}
+
+        class FakeLlama:
+            _chat_handlers = {"chat_template.default": base_handler}
+            chat_format = "qwen"
+
+        handler = llm_runtime._create_llm_chat_handler(False)
+
+        result = handler(llama=FakeLlama(), messages=[{"role": "user", "content": "hello"}], stream=True)
+
+        self.assertEqual(result, {"ok": True})
+        self.assertIs(calls[0]["enable_thinking"], False)
+        self.assertEqual(calls[0]["messages"], [{"role": "user", "content": "hello"}])
+        self.assertIs(calls[0]["stream"], True)
+
+    def test_llm_chat_handler_respects_enable_thinking_true(self) -> None:
+        calls = []
+
+        def base_handler(**kwargs):
+            calls.append(kwargs)
+            return {"ok": True}
+
+        class FakeLlama:
+            _chat_handlers = {"chat_template.default": base_handler}
+            chat_format = "qwen"
+
+        llm_runtime._create_llm_chat_handler(True)(llama=FakeLlama(), messages=[])
+
+        self.assertIs(calls[0]["enable_thinking"], True)
 
     def test_get_prompt_llm_wraps_llama_context_creation_failure(self) -> None:
         try:

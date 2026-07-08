@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     llm_n_batch: int = Field(default=512, ge=1)
     llm_n_ubatch: int = Field(default=512, ge=1)
     llm_offload_kqv: bool = True
+    llm_enable_thinking: bool = False
     sdxl_ckpt_path: str = ""
     embedding_model_name: str = ""
     embedding_model_path: str = ""
