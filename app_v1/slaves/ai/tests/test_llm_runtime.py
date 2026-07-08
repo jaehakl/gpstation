@@ -6,9 +6,11 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from app.model_runtime import llm as llm_runtime
 from app.model_runtime import llm_chat
+from app.settings import Settings
 
 
 class NullAsyncContext:
@@ -55,7 +57,12 @@ def config() -> llm_runtime.PromptLlmConfig:
         split_mode=None,
         tensor_split=None,
         lease_device_ids=(),
-        model_key=("fake.gguf", "", "", 4096, 0, 0, None, None, None, ()),
+        flash_attn=True,
+        swa_full=False,
+        n_batch=512,
+        n_ubatch=512,
+        offload_kqv=True,
+        model_key=("fake.gguf", "", "", 4096, 0, 0, None, None, None, (), True, False, 512, 512, True),
         max_tokens=32,
         temperature=0.25,
         top_p=0.9,
@@ -70,6 +77,11 @@ class FakePromptLlm:
 
     def close(self):
         return None
+
+
+class FakeFailingPromptLlm:
+    def __init__(self, **kwargs):
+        raise ValueError("Failed to create llama_context")
 
 
 class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
@@ -103,6 +115,35 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.context_size, 8192)
         self.assertEqual(config.model_key[3], 8192)
 
+    def test_build_prompt_llm_config_uses_context_memory_settings(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "fake.gguf"
+            model_path.write_bytes(b"fake")
+
+            with (
+                patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
+                patch.object(llm_runtime.settings, "llm_use_max_gpu", False),
+                patch.object(llm_runtime.settings, "llm_flash_attn", False),
+                patch.object(llm_runtime.settings, "llm_swa_full", True),
+                patch.object(llm_runtime.settings, "llm_n_batch", 256),
+                patch.object(llm_runtime.settings, "llm_n_ubatch", 128),
+                patch.object(llm_runtime.settings, "llm_offload_kqv", False),
+            ):
+                config = llm_runtime.build_prompt_llm_config()
+
+        self.assertIs(config.flash_attn, False)
+        self.assertIs(config.swa_full, True)
+        self.assertEqual(config.n_batch, 256)
+        self.assertEqual(config.n_ubatch, 128)
+        self.assertIs(config.offload_kqv, False)
+        self.assertEqual(config.model_key[10:], (False, True, 256, 128, False))
+
+    def test_settings_rejects_non_positive_batch_sizes(self) -> None:
+        with self.assertRaises(ValidationError):
+            Settings(llm_n_batch=0)
+        with self.assertRaises(ValidationError):
+            Settings(llm_n_ubatch=0)
+
     def test_build_prompt_llm_config_uses_multi_gpu_split_settings(self) -> None:
         with TemporaryDirectory() as temp_dir:
             model_path = Path(temp_dir) / "fake.gguf"
@@ -122,8 +163,8 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.split_mode, llm_runtime.LLM_SPLIT_MODE_LAYER)
         self.assertEqual(config.tensor_split, (1.0, 1.0))
         self.assertEqual(config.lease_device_ids, (0, 1))
-        self.assertEqual(config.model_key[-2], (1.0, 1.0))
-        self.assertEqual(config.model_key[-1], (0, 1))
+        self.assertEqual(config.model_key[8], (1.0, 1.0))
+        self.assertEqual(config.model_key[9], (0, 1))
 
     def test_build_prompt_llm_config_supports_tensor_split_mode(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -184,7 +225,28 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
             split_mode=llm_runtime.LLM_SPLIT_MODE_LAYER,
             tensor_split=(1.0, 1.0),
             lease_device_ids=(0, 1),
-            model_key=("fake.gguf", "", "", 4096, -1, 0, 0, llm_runtime.LLM_SPLIT_MODE_LAYER, (1.0, 1.0), (0, 1)),
+            flash_attn=True,
+            swa_full=False,
+            n_batch=512,
+            n_ubatch=256,
+            offload_kqv=True,
+            model_key=(
+                "fake.gguf",
+                "",
+                "",
+                4096,
+                -1,
+                0,
+                0,
+                llm_runtime.LLM_SPLIT_MODE_LAYER,
+                (1.0, 1.0),
+                (0, 1),
+                True,
+                False,
+                512,
+                256,
+                True,
+            ),
             max_tokens=32,
             temperature=0.25,
             top_p=0.9,
@@ -199,6 +261,28 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(FakePromptLlm.kwargs["main_gpu"], 0)
             self.assertEqual(FakePromptLlm.kwargs["split_mode"], llm_runtime.LLM_SPLIT_MODE_LAYER)
             self.assertEqual(FakePromptLlm.kwargs["tensor_split"], [1.0, 1.0])
+            self.assertIs(FakePromptLlm.kwargs["flash_attn"], True)
+            self.assertIs(FakePromptLlm.kwargs["swa_full"], False)
+            self.assertEqual(FakePromptLlm.kwargs["n_batch"], 512)
+            self.assertEqual(FakePromptLlm.kwargs["n_ubatch"], 256)
+            self.assertIs(FakePromptLlm.kwargs["offload_kqv"], True)
+        finally:
+            llm_runtime.release_llm_runtime()
+
+    def test_get_prompt_llm_wraps_llama_context_creation_failure(self) -> None:
+        try:
+            with (
+                patch.object(llm_runtime, "_load_llama_cls", return_value=FakeFailingPromptLlm),
+                self.assertRaises(HTTPException) as error,
+            ):
+                llm_runtime._get_prompt_llm_locked(config())
+
+            self.assertEqual(error.exception.status_code, 503)
+            self.assertIn("Failed to create llama_context", error.exception.detail)
+            self.assertIn("context_size=4096", error.exception.detail)
+            self.assertIn("flash_attn=True", error.exception.detail)
+            self.assertIn("swa_full=False", error.exception.detail)
+            self.assertIn("LLM_CONTEXT_SIZE", error.exception.detail)
         finally:
             llm_runtime.release_llm_runtime()
 

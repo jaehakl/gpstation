@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     llm_split_mode: str = "layer"
     llm_tensor_split: str = ""
     llm_main_gpu: int = Field(default=0, ge=0)
+    llm_flash_attn: bool = True
+    llm_swa_full: bool = False
+    llm_n_batch: int = Field(default=512, ge=1)
+    llm_n_ubatch: int = Field(default=512, ge=1)
+    llm_offload_kqv: bool = True
     sdxl_ckpt_path: str = ""
     embedding_model_name: str = ""
     embedding_model_path: str = ""

@@ -53,6 +53,11 @@ PromptLlmModelKey = tuple[
     int | None,
     tuple[float, ...] | None,
     tuple[int, ...],
+    bool,
+    bool,
+    int,
+    int,
+    bool,
 ]
 _prompt_llm_model_key: PromptLlmModelKey | None = None
 _prompt_llm: Any | None = None
@@ -72,6 +77,11 @@ class PromptLlmConfig:
     split_mode: int | None
     tensor_split: tuple[float, ...] | None
     lease_device_ids: tuple[int, ...]
+    flash_attn: bool
+    swa_full: bool
+    n_batch: int
+    n_ubatch: int
+    offload_kqv: bool
     model_key: PromptLlmModelKey
     max_tokens: int
     temperature: float
@@ -197,6 +207,11 @@ def build_prompt_llm_config(
         cuda_device_count=cuda_device_count,
     )
     context_size = settings.llm_context_size
+    flash_attn = settings.llm_flash_attn
+    swa_full = settings.llm_swa_full
+    n_batch = settings.llm_n_batch
+    n_ubatch = settings.llm_n_ubatch
+    offload_kqv = settings.llm_offload_kqv
     model_key = (
         model_path_value,
         repo_id,
@@ -208,6 +223,11 @@ def build_prompt_llm_config(
         split_mode,
         tensor_split,
         lease_device_ids,
+        flash_attn,
+        swa_full,
+        n_batch,
+        n_ubatch,
+        offload_kqv,
     )
     return PromptLlmConfig(
         model_path=model_path_value,
@@ -220,6 +240,11 @@ def build_prompt_llm_config(
         split_mode=split_mode,
         tensor_split=tensor_split,
         lease_device_ids=lease_device_ids,
+        flash_attn=flash_attn,
+        swa_full=swa_full,
+        n_batch=n_batch,
+        n_ubatch=n_ubatch,
+        offload_kqv=offload_kqv,
         model_key=model_key,
         max_tokens=resolved_max_tokens,
         temperature=resolved_temperature,
@@ -396,6 +421,11 @@ def _get_prompt_llm_locked(config: PromptLlmConfig) -> Any:
         llama_kwargs: dict[str, Any] = {
             "n_ctx": config.context_size,
             "n_gpu_layers": config.n_gpu_layers,
+            "flash_attn": config.flash_attn,
+            "swa_full": config.swa_full,
+            "n_batch": config.n_batch,
+            "n_ubatch": config.n_ubatch,
+            "offload_kqv": config.offload_kqv,
             "verbose": False,
         }
         if config.n_threads > 0:
@@ -415,19 +445,44 @@ def _get_prompt_llm_locked(config: PromptLlmConfig) -> Any:
             f"context_size={config.context_size} "
             f"split_mode={config.split_mode} "
             f"tensor_split={config.tensor_split} "
-            f"lease_device_ids={config.lease_device_ids}"
+            f"lease_device_ids={config.lease_device_ids} "
+            f"flash_attn={config.flash_attn} "
+            f"swa_full={config.swa_full} "
+            f"n_batch={config.n_batch} "
+            f"n_ubatch={config.n_ubatch} "
+            f"offload_kqv={config.offload_kqv}"
         )
-        if config.model_path:
-            _prompt_llm = Llama(
-                model_path=config.model_path,
-                **llama_kwargs,
-            )
-        else:
-            _prompt_llm = Llama.from_pretrained(
-                repo_id=config.repo_id,
-                filename=config.model_filename,
-                **llama_kwargs,
-            )
+        try:
+            if config.model_path:
+                _prompt_llm = Llama(
+                    model_path=config.model_path,
+                    **llama_kwargs,
+                )
+            else:
+                _prompt_llm = Llama.from_pretrained(
+                    repo_id=config.repo_id,
+                    filename=config.model_filename,
+                    **llama_kwargs,
+                )
+        except ValueError as exc:
+            if "Failed to create llama_context" not in str(exc):
+                raise
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Failed to create llama_context with LLM config: "
+                    f"context_size={config.context_size}, "
+                    f"split_mode={config.split_mode}, "
+                    f"tensor_split={config.tensor_split}, "
+                    f"flash_attn={config.flash_attn}, "
+                    f"swa_full={config.swa_full}, "
+                    f"n_batch={config.n_batch}, "
+                    f"n_ubatch={config.n_ubatch}, "
+                    f"offload_kqv={config.offload_kqv}. "
+                    "Hint: lower LLM_CONTEXT_SIZE, enable LLM_FLASH_ATTN, "
+                    "disable LLM_SWA_FULL, or lower LLM_N_BATCH/LLM_N_UBATCH."
+                ),
+            ) from exc
         _prompt_llm_model_key = model_key
         log(f"LLM model loaded model={model_ref}")
     return _prompt_llm
