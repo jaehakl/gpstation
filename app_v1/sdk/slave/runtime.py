@@ -1,149 +1,66 @@
 from __future__ import annotations
 
-import argparse
 import asyncio
-import contextlib
-import inspect
-import json
-import os
-import sys
-import time
-from collections.abc import Awaitable, Callable, Iterator
-from dataclasses import dataclass, field
-from typing import Any
 
-from sdk.protocol.constants import DATA_CHANNEL_LABEL
-from sdk.protocol.messages import DataChannelAttachment, DataChannelMessage
-
-CHUNK_SIZE = 16 * 1024
-JOB_RESULT_ACK_TIMEOUT_SECONDS = 5.0
-RTC_ICE_SERVERS_ENV = "GPSTATION_V1_RTC_ICE_SERVERS_JSON"
-RTC_ICE_GATHER_TIMEOUT_ENV = "GPSTATION_V1_RTC_ICE_GATHER_TIMEOUT_SECONDS"
-RTC_MEMORY_CACHE_ENABLED_ENV = "GPSTATION_V1_RTC_MEMORY_CACHE_ENABLED"
-DEFAULT_RTC_ICE_SERVERS = [{"urls": "stun:stun.l.google.com:19302"}]
-DEFAULT_STUN_ICE_GATHER_TIMEOUT_SECONDS = 1.0
-DEFAULT_TURN_ICE_GATHER_TIMEOUT_SECONDS = 5.0
-
-
-@dataclass(frozen=True)
-class SlaveContext:
-    session_id: str
-    ttl_seconds: int
-
-
-@dataclass(frozen=True)
-class MessageHandler:
-    message_type: str
-    handle: Callable[
-        [DataChannelMessage, Any, SlaveContext],
-        DataChannelMessage | Awaitable[DataChannelMessage | None] | None,
-    ]
-
-
-@dataclass
-class PendingAttachment:
-    meta: DataChannelAttachment
-    chunks: list[bytes] = field(default_factory=list)
-    received_size: int = 0
-    next_index: int = 0
-    complete: bool = False
-
-
-@dataclass
-class PendingCall:
-    id: str
-    type: str
-    payload: Any
-    attachments: dict[str, PendingAttachment]
-
-    def is_complete(self) -> bool:
-        return all(attachment.complete for attachment in self.attachments.values())
-
-    def to_message(self) -> DataChannelMessage:
-        attachments = [
-            DataChannelAttachment(
-                id=attachment.meta.id,
-                name=attachment.meta.name,
-                mimeType=attachment.meta.mimeType,
-                size=attachment.meta.size,
-                data=b"".join(attachment.chunks),
-            )
-            for attachment in self.attachments.values()
-        ]
-        return DataChannelMessage(id=self.id, type=self.type, payload=self.payload, attachments=attachments)
-
-
-@dataclass
-class PreparedWorkerPeer:
-    pc: Any
-    created_at: float
-
-
-@dataclass
-class WorkerJobPeerState:
-    ready_event: asyncio.Event = field(default_factory=asyncio.Event)
-    result_ack_event: asyncio.Event = field(default_factory=asyncio.Event)
-    closed_event: asyncio.Event = field(default_factory=asyncio.Event)
-    channel_holder: dict[str, Any] = field(default_factory=dict)
-    ready_payload: dict[str, Any] = field(default_factory=lambda: {"input": None})
-    ready_error: dict[str, str] = field(default_factory=dict)
-
-
-class SlaveApp:
-    def __init__(self, memory: Any = None) -> None:
-        self.memory = memory
-        self.handlers: list[MessageHandler] = []
-        self.initializer: Callable[[Any, SlaveContext], Awaitable[None] | None] | None = None
-
-    def initialize(self, func: Callable[[Any, SlaveContext], Awaitable[None] | None]) -> Callable[[Any, SlaveContext], Awaitable[None] | None]:
-        self.initializer = func
-        return func
-
-    def handler(
-        self,
-        message_type: str,
-    ) -> Callable[
-        [
-            Callable[
-                [DataChannelMessage, Any, SlaveContext],
-                DataChannelMessage | Awaitable[DataChannelMessage | None] | None,
-            ]
-        ],
-        Callable[
-            [DataChannelMessage, Any, SlaveContext],
-            DataChannelMessage | Awaitable[DataChannelMessage | None] | None,
-        ],
-    ]:
-        def decorator(
-            func: Callable[
-                [DataChannelMessage, Any, SlaveContext],
-                DataChannelMessage | Awaitable[DataChannelMessage | None] | None,
-            ],
-        ) -> Callable[
-            [DataChannelMessage, Any, SlaveContext],
-            DataChannelMessage | Awaitable[DataChannelMessage | None] | None,
-        ]:
-            self.handlers.append(MessageHandler(message_type=message_type, handle=func))
-            return func
-
-        return decorator
-
-    async def run_initialize(self, context: SlaveContext) -> None:
-        if self.initializer is None:
-            return
-        result = self.initializer(self.memory, context)
-        if inspect.isawaitable(result):
-            await result
-
-    async def dispatch(self, message: DataChannelMessage, context: SlaveContext) -> DataChannelMessage | None:
-        for handler in self.handlers:
-            if handler.message_type != message.type:
-                continue
-            response = handler.handle(message, self.memory, context)
-            if inspect.isawaitable(response):
-                response = await response
-            return response
-        raise ValueError(f"unsupported data channel message: {message.type}")
+from sdk.slave.app import MessageHandler, SlaveApp, SlaveContext
+from sdk.slave.channel import (
+    CHUNK_SIZE,
+    PendingAttachment,
+    PendingCall,
+    attachment_metadata,
+    decode_binary_frame,
+    dispatch_call,
+    encode_binary_frame,
+    error_call_id,
+    handle_binary_frame,
+    handle_control_frame,
+    handle_datachannel_message,
+    send_attachment,
+    send_error,
+    send_job_result,
+    send_response,
+)
+from sdk.slave.config import (
+    DEFAULT_RTC_ICE_SERVERS,
+    DEFAULT_STUN_ICE_GATHER_TIMEOUT_SECONDS,
+    DEFAULT_TURN_ICE_GATHER_TIMEOUT_SECONDS,
+    RTC_ICE_GATHER_TIMEOUT_ENV,
+    RTC_ICE_SERVERS_ENV,
+    RTC_MEMORY_CACHE_ENABLED_ENV,
+    build_rtc_configuration,
+    configure_aioice_gather_timeout,
+    ice_server_kwargs,
+    is_string_list,
+    iter_rtc_ice_server_urls,
+    load_rtc_ice_gather_timeout_seconds,
+    load_rtc_ice_servers,
+    load_rtc_memory_cache_enabled,
+    validate_rtc_ice_servers,
+)
+from sdk.slave.io import emit, log, parse_args, read_stdin_line
+from sdk.slave.rtc import (
+    PreparedWorkerPeer,
+    elapsed_ms,
+    format_candidate_summary,
+    maybe_await,
+    prepare_worker_peer,
+    summarize_pc_local_candidates,
+    summarize_sdp_candidates,
+    wait_for_ice_gathering,
+    warm_rtc_runtime,
+)
+from sdk.slave.worker import (
+    JOB_RESULT_ACK_TIMEOUT_SECONDS,
+    WorkerJobPeerState,
+    _run_worker_stdio,
+    attach_worker_job_peer_handlers,
+    build_worker_job_answer,
+    create_worker_job_peer,
+    drain_worker_job_task,
+    parse_job_ready_message,
+    run_worker_job,
+    wait_for_job_result_ack,
+)
 
 
 def run_app(app: SlaveApp) -> None:
@@ -153,853 +70,62 @@ def run_app(app: SlaveApp) -> None:
     asyncio.run(_run_worker_stdio(app=app))
 
 
-async def _run_worker_stdio(*, app: SlaveApp) -> None:
-    try:
-        from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
-        from aiortc.sdp import candidate_from_sdp
-        from aioice.ice import Connection as AioIceConnection
-    except Exception as exc:
-        emit({"type": "error", "code": "aiortc_import_failed", "detail": str(exc)})
-        return
-
-    try:
-        ice_servers = load_rtc_ice_servers()
-        ice_gather_timeout_seconds = load_rtc_ice_gather_timeout_seconds(ice_servers)
-        memory_cache_enabled = load_rtc_memory_cache_enabled()
-        configure_aioice_gather_timeout(AioIceConnection, ice_gather_timeout_seconds)
-        rtc_configuration = build_rtc_configuration(RTCConfiguration, RTCIceServer, ice_servers)
-        log(f"RTC ICE gather timeout: {ice_gather_timeout_seconds:g}s")
-        log(f"RTC memory cache enabled: {memory_cache_enabled}")
-    except Exception as exc:
-        emit({"type": "error", "code": "rtc_configuration_failed", "detail": str(exc)})
-        return
-
-    prepared_peer: PreparedWorkerPeer | None = None
-    prepare_task = (
-        asyncio.create_task(prepare_worker_peer(RTCPeerConnection, rtc_configuration, label="worker"))
-        if memory_cache_enabled
-        else None
-    )
-    try:
-        await app.run_initialize(SlaveContext(session_id="worker", ttl_seconds=0))
-        if prepare_task is not None:
-            try:
-                prepared_peer = await prepare_task
-            except Exception as exc:
-                memory_cache_enabled = False
-                log(f"worker ICE memory cache disabled: {exc}")
-    except Exception as exc:
-        if prepare_task is not None and not prepare_task.done():
-            prepare_task.cancel()
-        if prepare_task is not None:
-            with contextlib.suppress(asyncio.CancelledError):
-                await prepare_task
-        emit({"type": "error", "code": "initialize_failed", "detail": str(exc)})
-        return
-
-    emit({"type": "worker.ready"})
-    current_job_task: asyncio.Task[None] | None = None
-    current_job_id: str | None = None
-    stdin_task: asyncio.Task[str] | None = asyncio.create_task(asyncio.to_thread(read_stdin_line))
-    try:
-        while True:
-            wait_tasks: set[asyncio.Task[Any]] = set()
-            if stdin_task is not None:
-                wait_tasks.add(stdin_task)
-            if current_job_task is not None:
-                wait_tasks.add(current_job_task)
-            if not wait_tasks:
-                break
-            done, _pending = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
-
-            if current_job_task is not None and current_job_task in done:
-                await drain_worker_job_task(current_job_task)
-                current_job_task = None
-                current_job_id = None
-                if memory_cache_enabled and prepared_peer is None:
-                    try:
-                        prepared_peer = await prepare_worker_peer(RTCPeerConnection, rtc_configuration, label="worker")
-                    except Exception as exc:
-                        memory_cache_enabled = False
-                        log(f"worker ICE memory cache disabled: {exc}")
-
-            if stdin_task is None or stdin_task not in done:
-                continue
-
-            line = stdin_task.result()
-            stdin_task = None
-            if not line:
-                break
-            should_stop = False
-            try:
-                message = json.loads(line)
-                message_type = message.get("type")
-                if message_type == "stop":
-                    should_stop = True
-                if message_type == "job.cancel":
-                    if current_job_task is not None and current_job_id == str(message.get("job_id")):
-                        current_job_task.cancel()
-                        await drain_worker_job_task(current_job_task)
-                        current_job_task = None
-                        current_job_id = None
-                        if memory_cache_enabled and prepared_peer is None:
-                            try:
-                                prepared_peer = await prepare_worker_peer(RTCPeerConnection, rtc_configuration, label="worker")
-                            except Exception as exc:
-                                memory_cache_enabled = False
-                                log(f"worker ICE memory cache disabled: {exc}")
-                if message_type == "job.start":
-                    if current_job_task is not None and not current_job_task.done():
-                        emit(
-                            {
-                                "type": "job.error",
-                                "job_id": str(message.get("job_id") or "unknown"),
-                                "code": "worker_busy",
-                                "detail": f"worker is busy with job {current_job_id}",
-                            }
-                        )
-                    else:
-                        current_job_id = str(message["job_id"])
-                        job_prepared_peer = prepared_peer
-                        prepared_peer = None
-                        current_job_task = asyncio.create_task(
-                            run_worker_job(
-                                app=app,
-                                message=message,
-                                rtc_configuration=rtc_configuration,
-                                rtc_peer_connection_cls=RTCPeerConnection,
-                                rtc_session_description=RTCSessionDescription,
-                                candidate_from_sdp=candidate_from_sdp,
-                                ice_servers=ice_servers,
-                                prepared_peer=job_prepared_peer,
-                            )
-                        )
-            except Exception as exc:
-                emit({"type": "error", "code": "worker_runtime_error", "detail": str(exc)})
-            if should_stop:
-                break
-            stdin_task = asyncio.create_task(asyncio.to_thread(read_stdin_line))
-    finally:
-        if stdin_task is not None and not stdin_task.done():
-            stdin_task.cancel()
-        if current_job_task is not None and not current_job_task.done():
-            current_job_task.cancel()
-            await drain_worker_job_task(current_job_task)
-        if prepared_peer is not None:
-            await maybe_await(prepared_peer.pc.close())
-
-
-async def drain_worker_job_task(task: asyncio.Task[None]) -> None:
-    try:
-        await task
-    except asyncio.CancelledError:
-        return
-    except Exception as exc:
-        emit({"type": "error", "code": "worker_runtime_error", "detail": str(exc)})
-
-
-async def prepare_worker_peer(rtc_peer_connection_cls: Any, rtc_configuration: Any, *, label: str) -> PreparedWorkerPeer:
-    started_at = time.perf_counter()
-    pc = rtc_peer_connection_cls(rtc_configuration)
-    try:
-        create_sctp_transport = getattr(pc, "_RTCPeerConnection__createSctpTransport", None)
-        if create_sctp_transport is None:
-            raise RuntimeError("aiortc SCTP prewarm hook is unavailable")
-        create_sctp_transport()
-        ice_transports = list(getattr(pc, "_RTCPeerConnection__iceTransports", ()))
-        if not ice_transports:
-            raise RuntimeError("aiortc created no ICE transports for memory cache")
-        await asyncio.gather(*(transport.iceGatherer.gather() for transport in ice_transports))
-        log(
-            f"{label} ICE memory cache prepared duration_ms={elapsed_ms(started_at)} "
-            f"candidates: {format_candidate_summary(summarize_pc_local_candidates(pc))}"
-        )
-        return PreparedWorkerPeer(pc=pc, created_at=time.perf_counter())
-    except Exception:
-        await maybe_await(pc.close())
-        raise
-
-
-def create_worker_job_peer(
-    rtc_peer_connection_cls: Any,
-    rtc_configuration: Any,
-    prepared_peer: PreparedWorkerPeer | None,
-    job_id: str,
-    job_started_at: float,
-) -> tuple[Any, WorkerJobPeerState, bool]:
-    if prepared_peer is not None:
-        pc = prepared_peer.pc
-        used_prepared_peer = True
-        log(
-            f"job peer connection prepared cache hit: id={job_id} "
-            f"age_ms={elapsed_ms(prepared_peer.created_at)}"
-        )
-    else:
-        pc = rtc_peer_connection_cls(rtc_configuration)
-        used_prepared_peer = False
-        log(f"job peer connection created: id={job_id} duration_ms={elapsed_ms(job_started_at)}")
-    return pc, attach_worker_job_peer_handlers(pc, job_id, job_started_at), used_prepared_peer
-
-
-def attach_worker_job_peer_handlers(pc: Any, job_id: str, job_started_at: float) -> WorkerJobPeerState:
-    state = WorkerJobPeerState()
-
-    @pc.on("datachannel")
-    def on_datachannel(channel: Any) -> None:
-        log(f"job datachannel: {channel.label}")
-        state.channel_holder["channel"] = channel
-
-        @channel.on("message")
-        def on_message(raw_message: Any) -> None:
-            try:
-                if isinstance(raw_message, str):
-                    is_ready_message, input_payload, error_detail = parse_job_ready_message(raw_message, job_id)
-                    if is_ready_message:
-                        if error_detail is not None:
-                            state.ready_error["detail"] = error_detail
-                        else:
-                            state.ready_payload["input"] = input_payload
-                            log(f"job ready received: id={job_id} duration_ms={elapsed_ms(job_started_at)}")
-                        state.ready_event.set()
-                        return
-                    payload = json.loads(raw_message)
-                    if payload.get("kind") == "job.result.ack" and str(payload.get("id")) == job_id:
-                        state.result_ack_event.set()
-                        return
-                    if not state.ready_event.is_set():
-                        state.ready_error["detail"] = f"expected job.ready before {payload.get('kind') or 'unknown message'}"
-                        state.ready_event.set()
-                        return
-                log(f"unsupported worker job datachannel message: {raw_message}")
-            except Exception as exc:
-                if not state.ready_event.is_set():
-                    state.ready_error["detail"] = f"malformed job.ready frame: {exc}"
-                    state.ready_event.set()
-                    return
-                log(f"job datachannel message error: {exc}")
-
-        @channel.on("close")
-        def on_close() -> None:
-            log("job datachannel closed")
-            state.closed_event.set()
-
-        @channel.on("error")
-        def on_error(error: Exception | None = None) -> None:
-            log(f"job datachannel error: {error}")
-            state.closed_event.set()
-
-    @pc.on("connectionstatechange")
-    async def on_connectionstatechange() -> None:
-        log(f"job peer connection state: {pc.connectionState}")
-        if pc.connectionState in {"closed", "failed", "disconnected"}:
-            state.closed_event.set()
-
-    return state
-
-
-async def build_worker_job_answer(
-    pc: Any,
-    offer: dict[str, Any],
-    rtc_session_description: Any,
-    ice_servers: list[dict[str, Any]],
-    job_id: str,
-) -> str:
-    log(f"job offer candidates: {format_candidate_summary(summarize_sdp_candidates(offer['sdp']))}")
-    remote_started_at = time.perf_counter()
-    await pc.setRemoteDescription(rtc_session_description(sdp=offer["sdp"], type="offer"))
-    log(f"job remote offer set: id={job_id} duration_ms={elapsed_ms(remote_started_at)}")
-    answer_started_at = time.perf_counter()
-    answer = await pc.createAnswer()
-    log(f"job answer created: id={job_id} duration_ms={elapsed_ms(answer_started_at)}")
-    local_started_at = time.perf_counter()
-    await pc.setLocalDescription(answer)
-    log(f"job local answer set and ICE gathered: id={job_id} duration_ms={elapsed_ms(local_started_at)}")
-    log(f"job post-setLocal ICE state: id={job_id} state={pc.iceGatheringState}")
-    answer_summary = summarize_sdp_candidates(pc.localDescription.sdp)
-    log(f"job answer candidates: {format_candidate_summary(answer_summary)}")
-    has_stun_server = any(url.startswith(("stun:", "stuns:")) for url in iter_rtc_ice_server_urls(ice_servers))
-    if answer_summary["srflx"] == 0 and has_stun_server:
-        log(
-            f"job {job_id} warning: no srflx ICE candidates gathered; "
-            f"consider increasing {RTC_ICE_GATHER_TIMEOUT_ENV}"
-        )
-    return pc.localDescription.sdp
-
-
-async def run_worker_job(
-    *,
-    app: SlaveApp,
-    message: dict[str, Any],
-    rtc_configuration: Any,
-    rtc_peer_connection_cls: Any,
-    rtc_session_description: Any,
-    candidate_from_sdp: Any,
-    ice_servers: list[dict[str, Any]],
-    prepared_peer: PreparedWorkerPeer | None = None,
-) -> None:
-    job_id = str(message["job_id"])
-    handler_type = str(message["handler_type"])
-    context = SlaveContext(session_id=job_id, ttl_seconds=0)
-    pc = None
-    state: WorkerJobPeerState | None = None
-    try:
-        job_started_at = time.perf_counter()
-        pc, state, used_prepared_peer = create_worker_job_peer(
-            rtc_peer_connection_cls,
-            rtc_configuration,
-            prepared_peer,
-            job_id,
-            job_started_at,
-        )
-        try:
-            answer_sdp = await build_worker_job_answer(
-                pc,
-                message["offer"],
-                rtc_session_description,
-                ice_servers,
-                job_id,
-            )
-        except Exception as exc:
-            if not used_prepared_peer:
-                raise
-            log(f"job prepared peer failed before answer: id={job_id} error={exc}; retrying cold peer")
-            await maybe_await(pc.close())
-            pc, state, _used_prepared_peer = create_worker_job_peer(
-                rtc_peer_connection_cls,
-                rtc_configuration,
-                None,
-                job_id,
-                job_started_at,
-            )
-            answer_sdp = await build_worker_job_answer(
-                pc,
-                message["offer"],
-                rtc_session_description,
-                ice_servers,
-                job_id,
-            )
-        emit(
-            {
-                "type": "job.answer",
-                "job_id": job_id,
-                "answer": {"type": "answer", "sdp": answer_sdp},
-            }
-        )
-        log(f"job answer emitted: id={job_id} duration_ms={elapsed_ms(job_started_at)}")
-
-        ready_wait_started_at = time.perf_counter()
-        ready_task = asyncio.create_task(state.ready_event.wait())
-        closed_task = asyncio.create_task(state.closed_event.wait())
-        done, pending = await asyncio.wait({ready_task, closed_task}, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-        if closed_task in done and not state.ready_event.is_set():
-            raise RuntimeError("peer connection closed before job ready")
-        if state.ready_error:
-            raise RuntimeError(state.ready_error["detail"])
-        log(f"job ready wait complete: id={job_id} duration_ms={elapsed_ms(ready_wait_started_at)}")
-
-        channel = state.channel_holder.get("channel")
-        if channel is None:
-            raise RuntimeError("datachannel was not opened")
-        emit({"type": "job.running", "job_id": job_id})
-        response = await app.dispatch(
-            DataChannelMessage(id=job_id, type=handler_type, payload=state.ready_payload.get("input"), attachments=[]),
-            context,
-        )
-        if response is None:
-            response = DataChannelMessage(id=job_id, type=f"{handler_type}.result", payload=None)
-        send_job_result(channel, job_id, response)
-        log(f"job result sent: id={job_id}")
-        log(f"job result ack wait: id={job_id} timeout_s={JOB_RESULT_ACK_TIMEOUT_SECONDS:g}")
-        await wait_for_job_result_ack(job_id, state.result_ack_event, state.closed_event)
-        log(f"job result ack received: id={job_id}")
-        emit(
-            {
-                "type": "job.result",
-                "job_id": job_id,
-            }
-        )
-    except asyncio.CancelledError:
-        log(f"job cancelled: id={job_id}")
-        channel = state.channel_holder.get("channel") if state is not None else None
-        if channel is not None:
-            try:
-                channel.send(
-                    json.dumps(
-                        {"kind": "job.error", "id": job_id, "code": "cancelled", "detail": "job cancelled"},
-                        ensure_ascii=False,
-                    )
-                )
-            except Exception:
-                pass
-        emit({"type": "job.cancelled", "job_id": job_id, "reason": "cancelled"})
-    except Exception as exc:
-        log(f"job failed: id={job_id} error={exc}")
-        channel = state.channel_holder.get("channel") if state is not None else None
-        if channel is not None:
-            try:
-                channel.send(json.dumps({"kind": "job.error", "id": job_id, "detail": str(exc)}, ensure_ascii=False))
-            except Exception:
-                pass
-        emit({"type": "job.error", "job_id": job_id, "code": "job_error", "detail": str(exc)})
-    finally:
-        if pc is not None:
-            await pc.close()
-
-
-def parse_job_ready_message(raw_message: str, job_id: str) -> tuple[bool, Any, str | None]:
-    try:
-        payload = json.loads(raw_message)
-    except Exception as exc:
-        return True, None, f"malformed job.ready frame: {exc}"
-    if payload.get("kind") != "job.ready":
-        return False, None, None
-    if str(payload.get("id")) != job_id:
-        return True, None, f"job.ready id mismatch: expected {job_id}, got {payload.get('id')}"
-    return True, payload.get("input"), None
-
-
-async def wait_for_job_result_ack(
-    job_id: str,
-    ack_event: asyncio.Event,
-    closed_event: asyncio.Event,
-    timeout_seconds: float = JOB_RESULT_ACK_TIMEOUT_SECONDS,
-) -> None:
-    ack_task = asyncio.create_task(ack_event.wait())
-    closed_task = asyncio.create_task(closed_event.wait())
-    try:
-        done, pending = await asyncio.wait({ack_task, closed_task}, timeout=timeout_seconds, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-        if not done:
-            raise RuntimeError(f"result delivery ack timeout: {job_id}")
-        if ack_task in done and ack_event.is_set():
-            return
-        raise RuntimeError(f"data channel closed before result delivery ack: {job_id}")
-    finally:
-        for task in (ack_task, closed_task):
-            if not task.done():
-                task.cancel()
-
-
-async def warm_rtc_runtime(rtc_peer_connection_cls: Any, rtc_configuration: Any, *, label: str) -> None:
-    started_at = time.perf_counter()
-    pc = None
-    try:
-        pc = rtc_peer_connection_cls(rtc_configuration)
-        pc.createDataChannel(DATA_CHANNEL_LABEL)
-        offer = await maybe_await(pc.createOffer())
-        await maybe_await(pc.setLocalDescription(offer))
-        await wait_for_ice_gathering(pc)
-        sdp = getattr(getattr(pc, "localDescription", None), "sdp", "") or ""
-        log(
-            f"{label} ICE warmup complete state={pc.iceGatheringState} "
-            f"duration_ms={elapsed_ms(started_at)} candidates: {format_candidate_summary(summarize_sdp_candidates(sdp))}"
-        )
-    except Exception as exc:
-        log(f"{label} ICE warmup failed duration_ms={elapsed_ms(started_at)} error={exc}")
-    finally:
-        if pc is not None:
-            await maybe_await(pc.close())
-
-
-async def maybe_await(value: Any) -> Any:
-    if inspect.isawaitable(value):
-        return await value
-    return value
-
-
-def build_rtc_configuration(
-    rtc_configuration_cls: Any,
-    rtc_ice_server_cls: Any,
-    ice_servers: list[dict[str, Any]] | None = None,
-) -> Any:
-    servers = ice_servers if ice_servers is not None else load_rtc_ice_servers()
-    return rtc_configuration_cls(
-        iceServers=[
-            rtc_ice_server_cls(**ice_server_kwargs(item))
-            for item in servers
-        ]
-    )
-
-
-def load_rtc_ice_servers() -> list[dict[str, Any]]:
-    raw_value = os.environ.get(RTC_ICE_SERVERS_ENV, "").strip()
-    if not raw_value:
-        return [dict(item) for item in DEFAULT_RTC_ICE_SERVERS]
-    try:
-        parsed = json.loads(raw_value)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{RTC_ICE_SERVERS_ENV} must be valid JSON: {exc.msg}") from exc
-    return validate_rtc_ice_servers(parsed)
-
-
-def load_rtc_ice_gather_timeout_seconds(ice_servers: list[dict[str, Any]]) -> float:
-    raw_value = os.environ.get(RTC_ICE_GATHER_TIMEOUT_ENV, "").strip()
-    if raw_value:
-        try:
-            timeout_seconds = float(raw_value)
-        except ValueError as exc:
-            raise ValueError(f"{RTC_ICE_GATHER_TIMEOUT_ENV} must be a positive number") from exc
-        if timeout_seconds <= 0:
-            raise ValueError(f"{RTC_ICE_GATHER_TIMEOUT_ENV} must be a positive number")
-        return timeout_seconds
-    if any(url.startswith(("turn:", "turns:")) for url in iter_rtc_ice_server_urls(ice_servers)):
-        return DEFAULT_TURN_ICE_GATHER_TIMEOUT_SECONDS
-    return DEFAULT_STUN_ICE_GATHER_TIMEOUT_SECONDS
-
-
-def load_rtc_memory_cache_enabled() -> bool:
-    raw_value = os.environ.get(RTC_MEMORY_CACHE_ENABLED_ENV, "").strip().lower()
-    if not raw_value:
-        return True
-    if raw_value in {"1", "true", "yes", "on"}:
-        return True
-    if raw_value in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(f"{RTC_MEMORY_CACHE_ENABLED_ENV} must be true or false")
-
-
-def configure_aioice_gather_timeout(aioice_connection_cls: Any, timeout_seconds: float) -> None:
-    original = getattr(aioice_connection_cls, "_gpstation_original_get_component_candidates", None)
-    if original is None:
-        original = aioice_connection_cls.get_component_candidates
-        setattr(aioice_connection_cls, "_gpstation_original_get_component_candidates", original)
-
-    async def get_component_candidates(self: Any, component: int, addresses: list[str], timeout: float = 5) -> Any:
-        effective_timeout = timeout_seconds if timeout == DEFAULT_TURN_ICE_GATHER_TIMEOUT_SECONDS else timeout
-        return await original(self, component=component, addresses=addresses, timeout=effective_timeout)
-
-    aioice_connection_cls.get_component_candidates = get_component_candidates
-    setattr(aioice_connection_cls, "_gpstation_ice_gather_timeout_seconds", timeout_seconds)
-
-
-def validate_rtc_ice_servers(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        raise ValueError(f"{RTC_ICE_SERVERS_ENV} must be a JSON array")
-    servers: list[dict[str, Any]] = []
-    for index, item in enumerate(value):
-        if not isinstance(item, dict):
-            raise ValueError(f"{RTC_ICE_SERVERS_ENV}[{index}] must be an object")
-        urls = item.get("urls")
-        if not (isinstance(urls, str) or is_string_list(urls)):
-            raise ValueError(f"{RTC_ICE_SERVERS_ENV}[{index}].urls must be a string or string array")
-        server = {"urls": urls}
-        for key in ("username", "credential", "credentialType"):
-            optional_value = item.get(key)
-            if optional_value is None:
-                continue
-            if not isinstance(optional_value, str):
-                raise ValueError(f"{RTC_ICE_SERVERS_ENV}[{index}].{key} must be a string")
-            server[key] = optional_value
-        servers.append(server)
-    return servers
-
-
-def ice_server_kwargs(server: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in server.items() if key in {"urls", "username", "credential", "credentialType"}}
-
-
-def is_string_list(value: Any) -> bool:
-    return isinstance(value, list) and all(isinstance(item, str) for item in value)
-
-
-def iter_rtc_ice_server_urls(ice_servers: list[dict[str, Any]]) -> Iterator[str]:
-    for server in ice_servers:
-        urls = server.get("urls")
-        items = urls if isinstance(urls, list) else [urls]
-        for item in items:
-            if isinstance(item, str):
-                yield item.lower()
-
-
-def summarize_sdp_candidates(sdp: str) -> dict[str, int]:
-    summary = {"host": 0, "srflx": 0, "relay": 0, "prflx": 0, "unknown": 0, "total": 0}
-    for line in sdp.splitlines():
-        if not line.startswith("a=candidate:"):
-            continue
-        summary["total"] += 1
-        parts = line.split()
-        candidate_type = parts[parts.index("typ") + 1] if "typ" in parts and parts.index("typ") + 1 < len(parts) else "unknown"
-        if candidate_type in {"host", "srflx", "relay", "prflx"}:
-            summary[candidate_type] += 1
-        else:
-            summary["unknown"] += 1
-    return summary
-
-
-def summarize_pc_local_candidates(pc: Any) -> dict[str, int]:
-    summary = {"host": 0, "srflx": 0, "relay": 0, "prflx": 0, "unknown": 0, "total": 0}
-    for ice_transport in getattr(pc, "_RTCPeerConnection__iceTransports", ()):
-        for candidate in ice_transport.iceGatherer.getLocalCandidates():
-            summary["total"] += 1
-            candidate_type = getattr(candidate, "type", "unknown")
-            if candidate_type in {"host", "srflx", "relay", "prflx"}:
-                summary[candidate_type] += 1
-            else:
-                summary["unknown"] += 1
-    return summary
-
-
-def format_candidate_summary(summary: dict[str, int]) -> str:
-    return (
-        f"total={summary['total']} host={summary['host']} srflx={summary['srflx']} "
-        f"relay={summary['relay']} prflx={summary['prflx']} unknown={summary['unknown']}"
-    )
-
-
-def elapsed_ms(started_at: float) -> int:
-    return round((time.perf_counter() - started_at) * 1000)
-
-
-async def wait_for_ice_gathering(pc: Any) -> None:
-    if pc.iceGatheringState == "complete":
-        return
-    loop = asyncio.get_running_loop()
-    done = loop.create_future()
-
-    @pc.on("icegatheringstatechange")
-    def on_icegatheringstatechange() -> None:
-        if pc.iceGatheringState == "complete" and not done.done():
-            done.set_result(None)
-
-    try:
-        await asyncio.wait_for(done, timeout=5)
-    except TimeoutError:
-        return
-
-
-async def handle_datachannel_message(
-    channel: Any,
-    raw_message: Any,
-    app: SlaveApp,
-    context: SlaveContext,
-    pending_calls: dict[str, PendingCall] | None = None,
-) -> None:
-    calls = pending_calls if pending_calls is not None else {}
-    try:
-        if channel.label != DATA_CHANNEL_LABEL:
-            raise ValueError(f"unsupported data channel label: {channel.label}")
-        if isinstance(raw_message, str):
-            await handle_control_frame(channel, raw_message, app, context, calls)
-            return
-        await handle_binary_frame(channel, raw_message, app, context, calls)
-    except Exception as exc:
-        log(f"datachannel error: {exc}")
-        send_error(channel, error_call_id(raw_message), str(exc))
-
-
-async def handle_control_frame(
-    channel: Any,
-    raw_message: str,
-    app: SlaveApp,
-    context: SlaveContext,
-    pending_calls: dict[str, PendingCall],
-) -> None:
-    frame = json.loads(raw_message)
-    if frame.get("kind") != "call.request":
-        raise ValueError(f"unsupported data channel frame: {frame.get('kind')}")
-    call_id = str(frame["id"])
-    attachments = {
-        str(item["id"]): PendingAttachment(
-            meta=DataChannelAttachment(
-                id=str(item["id"]),
-                name=item.get("name"),
-                mimeType=item.get("mimeType"),
-                size=int(item.get("size") or 0),
-            )
-        )
-        for item in frame.get("attachments", [])
-    }
-    call = PendingCall(id=call_id, type=str(frame["type"]), payload=frame.get("payload"), attachments=attachments)
-    if not attachments:
-        await dispatch_call(channel, app, context, call)
-        return
-    pending_calls[call_id] = call
-
-
-async def handle_binary_frame(
-    channel: Any,
-    raw_message: Any,
-    app: SlaveApp,
-    context: SlaveContext,
-    pending_calls: dict[str, PendingCall],
-) -> None:
-    header, body = decode_binary_frame(raw_message)
-    if header.get("kind") != "attachment.chunk":
-        raise ValueError(f"unsupported binary frame: {header.get('kind')}")
-    call_id = str(header["callId"])
-    attachment_id = str(header["attachmentId"])
-    call = pending_calls.get(call_id)
-    if call is None:
-        raise ValueError(f"unknown call for attachment chunk: {call_id}")
-    attachment = call.attachments.get(attachment_id)
-    if attachment is None:
-        raise ValueError(f"unknown attachment chunk: {attachment_id}")
-    index = int(header["index"])
-    if index != attachment.next_index:
-        raise ValueError(f"out-of-order attachment chunk: {attachment_id}")
-    if attachment.complete:
-        raise ValueError(f"attachment chunk after final: {attachment_id}")
-
-    attachment.chunks.append(body)
-    attachment.received_size += len(body)
-    attachment.next_index += 1
-    attachment.complete = bool(header.get("final"))
-
-    expected_size = attachment.meta.size or 0
-    if attachment.received_size > expected_size:
-        raise ValueError(f"attachment exceeded declared size: {attachment_id}")
-    if attachment.complete and attachment.received_size != expected_size:
-        raise ValueError(f"attachment size mismatch: {attachment_id}")
-
-    if call.is_complete():
-        pending_calls.pop(call_id, None)
-        await dispatch_call(channel, app, context, call)
-
-
-async def dispatch_call(channel: Any, app: SlaveApp, context: SlaveContext, call: PendingCall) -> None:
-    started_at = time.perf_counter()
-    log(f"call dispatch start: id={call.id} type={call.type} attachments={len(call.attachments)}")
-    try:
-        response = await app.dispatch(call.to_message(), context)
-        if response is None:
-            response = DataChannelMessage(id=call.id, type=f"{call.type}.result", payload=None)
-        send_response(channel, response)
-        duration_ms = int((time.perf_counter() - started_at) * 1000)
-        log(f"call dispatch complete: id={call.id} type={call.type} duration_ms={duration_ms}")
-    except Exception as exc:
-        duration_ms = int((time.perf_counter() - started_at) * 1000)
-        log(f"call dispatch failed: id={call.id} type={call.type} duration_ms={duration_ms} error={exc}")
-        send_error(channel, call.id, str(exc))
-
-
-def send_response(channel: Any, message: DataChannelMessage) -> None:
-    attachments = [attachment_metadata(attachment) for attachment in message.attachments]
-    channel.send(
-        json.dumps(
-            {
-                "kind": "call.response",
-                "id": message.id,
-                "type": message.type,
-                "payload": message.payload,
-                "attachments": attachments,
-            },
-            ensure_ascii=False,
-        )
-    )
-    for attachment in message.attachments:
-        send_attachment(channel, message.id, attachment)
-
-
-def send_job_result(channel: Any, job_id: str, message: DataChannelMessage) -> None:
-    attachments = [attachment_metadata(attachment) for attachment in message.attachments]
-    channel.send(
-        json.dumps(
-            {
-                "kind": "job.result",
-                "id": job_id,
-                "type": message.type,
-                "payload": message.payload,
-                "attachments": attachments,
-            },
-            ensure_ascii=False,
-        )
-    )
-    for attachment in message.attachments:
-        send_attachment(channel, job_id, attachment)
-
-
-def send_error(channel: Any, call_id: str, detail: str, code: str = "call_error") -> None:
-    channel.send(json.dumps({"kind": "call.error", "id": call_id, "code": code, "detail": detail}, ensure_ascii=False))
-
-
-def send_attachment(channel: Any, call_id: str, attachment: DataChannelAttachment) -> None:
-    data = attachment.data
-    if not data:
-        channel.send(encode_binary_frame({"kind": "attachment.chunk", "callId": call_id, "attachmentId": attachment.id, "index": 0, "final": True}, b""))
-        return
-    index = 0
-    for offset in range(0, len(data), CHUNK_SIZE):
-        chunk = data[offset : offset + CHUNK_SIZE]
-        final = offset + CHUNK_SIZE >= len(data)
-        channel.send(
-            encode_binary_frame(
-                {
-                    "kind": "attachment.chunk",
-                    "callId": call_id,
-                    "attachmentId": attachment.id,
-                    "index": index,
-                    "final": final,
-                },
-                chunk,
-            )
-        )
-        index += 1
-
-
-def attachment_metadata(attachment: DataChannelAttachment) -> dict[str, Any]:
-    metadata: dict[str, Any] = {"id": attachment.id, "size": attachment.size or len(attachment.data)}
-    if attachment.name is not None:
-        metadata["name"] = attachment.name
-    if attachment.mimeType is not None:
-        metadata["mimeType"] = attachment.mimeType
-    return metadata
-
-
-def encode_binary_frame(header: dict[str, Any], body: bytes) -> bytes:
-    header_bytes = json.dumps(header, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    return len(header_bytes).to_bytes(4, "big") + header_bytes + body
-
-
-def decode_binary_frame(raw_message: Any) -> tuple[dict[str, Any], bytes]:
-    data = bytes(raw_message)
-    if len(data) < 4:
-        raise ValueError("binary frame is too short")
-    header_length = int.from_bytes(data[:4], "big")
-    if header_length <= 0 or len(data) < 4 + header_length:
-        raise ValueError("invalid binary frame header length")
-    header = json.loads(data[4 : 4 + header_length].decode("utf-8"))
-    return header, data[4 + header_length :]
-
-
-def error_call_id(raw_message: Any) -> str:
-    try:
-        if isinstance(raw_message, str):
-            return str(json.loads(raw_message).get("id") or "error")
-        header, _body = decode_binary_frame(raw_message)
-        return str(header.get("callId") or "error")
-    except Exception:
-        return "error"
-
-
-def read_stdin_line() -> str:
-    buffer = getattr(sys.stdin, "buffer", None)
-    if buffer is None:
-        return sys.stdin.readline()
-    raw_line = buffer.readline()
-    if not raw_line:
-        return ""
-    return raw_line.decode("utf-8")
-
-
-def emit(message: dict[str, Any]) -> None:
-    line = json.dumps(message, ensure_ascii=False) + "\n"
-    buffer = getattr(sys.stdout, "buffer", None)
-    if buffer is None:
-        sys.stdout.write(line)
-        sys.stdout.flush()
-        return
-    buffer.write(line.encode("utf-8"))
-    buffer.flush()
-
-
-def log(message: str) -> None:
-    print(message, file=sys.stderr, flush=True)
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--worker", action="store_true")
-    return parser.parse_args()
+__all__ = [
+    "CHUNK_SIZE",
+    "DEFAULT_RTC_ICE_SERVERS",
+    "DEFAULT_STUN_ICE_GATHER_TIMEOUT_SECONDS",
+    "DEFAULT_TURN_ICE_GATHER_TIMEOUT_SECONDS",
+    "JOB_RESULT_ACK_TIMEOUT_SECONDS",
+    "MessageHandler",
+    "PendingAttachment",
+    "PendingCall",
+    "PreparedWorkerPeer",
+    "RTC_ICE_GATHER_TIMEOUT_ENV",
+    "RTC_ICE_SERVERS_ENV",
+    "RTC_MEMORY_CACHE_ENABLED_ENV",
+    "SlaveApp",
+    "SlaveContext",
+    "WorkerJobPeerState",
+    "_run_worker_stdio",
+    "attach_worker_job_peer_handlers",
+    "attachment_metadata",
+    "build_rtc_configuration",
+    "build_worker_job_answer",
+    "configure_aioice_gather_timeout",
+    "create_worker_job_peer",
+    "decode_binary_frame",
+    "dispatch_call",
+    "drain_worker_job_task",
+    "elapsed_ms",
+    "emit",
+    "encode_binary_frame",
+    "error_call_id",
+    "format_candidate_summary",
+    "handle_binary_frame",
+    "handle_control_frame",
+    "handle_datachannel_message",
+    "ice_server_kwargs",
+    "is_string_list",
+    "iter_rtc_ice_server_urls",
+    "load_rtc_ice_gather_timeout_seconds",
+    "load_rtc_ice_servers",
+    "load_rtc_memory_cache_enabled",
+    "log",
+    "maybe_await",
+    "parse_args",
+    "parse_job_ready_message",
+    "prepare_worker_peer",
+    "read_stdin_line",
+    "run_app",
+    "run_worker_job",
+    "send_attachment",
+    "send_error",
+    "send_job_result",
+    "send_response",
+    "summarize_pc_local_candidates",
+    "summarize_sdp_candidates",
+    "validate_rtc_ice_servers",
+    "wait_for_ice_gathering",
+    "wait_for_job_result_ack",
+    "warm_rtc_runtime",
+]
