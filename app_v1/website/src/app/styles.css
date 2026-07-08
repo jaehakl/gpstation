@@ -650,6 +650,39 @@ tbody tr:last-child td {
   padding: 2px 0;
 }
 
+.thinkBlock {
+  margin: 0 0 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.thinkSummary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 950;
+  padding: 8px 10px;
+}
+
+.thinkSummary::marker {
+  color: var(--accent);
+}
+
+.thinkContent {
+  max-height: 260px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  padding: 10px;
+  white-space: pre-wrap;
+}
+
 .chatBubble > :first-child,
 .chatMarkdown > :first-child {
   margin-top: 0;

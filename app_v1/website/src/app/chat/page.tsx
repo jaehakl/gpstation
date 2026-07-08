@@ -37,6 +37,12 @@ type ChatMessage = {
   streaming: boolean;
 };
 
+type AssistantThinkParts = {
+  visible: string;
+  thinking: string;
+  thinkingInProgress: boolean;
+};
+
 export default function ChatPage() {
   const user = useAuthStore((state) => state.user);
   const authReady = useAuthStore((state) => state.authReady);
@@ -268,12 +274,16 @@ export default function ChatPage() {
           {messages.map((item) => (
             <div key={item.id} className={`chatMessage ${item.role}`}>
               <div className={item.role === 'user' ? 'chatBubble' : 'chatMarkdown'}>
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
-                  rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
-                >
-                  {formatChatMarkdown(item.content || (item.streaming ? '...' : ''), item.role)}
-                </ReactMarkdown>
+                {item.role === 'assistant' ? (
+                  <AssistantMessageContent content={item.content || (item.streaming ? '...' : '')} />
+                ) : (
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
+                    rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+                  >
+                    {formatChatMarkdown(item.content || (item.streaming ? '...' : ''), item.role)}
+                  </ReactMarkdown>
+                )}
               </div>
             </div>
           ))}
@@ -341,6 +351,67 @@ export default function ChatPage() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function AssistantMessageContent({ content }: { content: string }) {
+  const thinkTagPattern = /<\/?think\s*>/gi;
+  const parts: AssistantThinkParts = {
+    visible: '',
+    thinking: '',
+    thinkingInProgress: false,
+  };
+  let inThinking = false;
+  let index = 0;
+  let match = thinkTagPattern.exec(content);
+
+  while (match !== null) {
+    const segment = content.slice(index, match.index);
+    if (inThinking) {
+      parts.thinking += segment;
+    } else {
+      parts.visible += segment;
+    }
+    inThinking = !match[0].startsWith('</');
+    index = match.index + match[0].length;
+    match = thinkTagPattern.exec(content);
+  }
+
+  if (index === 0) {
+    return (
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
+        rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+      >
+        {formatChatMarkdown(content, 'assistant')}
+      </ReactMarkdown>
+    );
+  }
+
+  if (inThinking) {
+    parts.thinking += content.slice(index);
+  } else {
+    parts.visible += content.slice(index);
+  }
+  parts.thinkingInProgress = inThinking;
+
+  return (
+    <>
+      {parts.thinking || parts.thinkingInProgress ? (
+        <details className="thinkBlock">
+          <summary className="thinkSummary">{parts.thinkingInProgress ? '생각 과정 생성 중' : '생각 과정'}</summary>
+          <div className="thinkContent">{parts.thinking.trim() || '아직 생각 과정이 생성되는 중입니다.'}</div>
+        </details>
+      ) : null}
+      {parts.visible ? (
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
+          rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+        >
+          {formatChatMarkdown(parts.visible, 'assistant')}
+        </ReactMarkdown>
+      ) : null}
+    </>
   );
 }
 
