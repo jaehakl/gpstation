@@ -5,6 +5,7 @@ import ctypes
 import gc
 import importlib.util
 import json
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,7 +13,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 from app.logging import log
-from app.model_runtime.gpu_residency import acquire_gpu_model, get_llm_cuda_device_id
+from app.model_runtime.gpu_residency import acquire_gpu_model_multi, get_cuda_device_count
 from app.settings import settings
 
 #LLM_REPO_ID = "LGAI-EXAONE/EXAONE-4.0-1.2B-GGUF"
@@ -30,9 +31,29 @@ LLM_MAX_MAX_TOKENS = 1024
 LLM_MIN_TEMPERATURE = 0.0
 LLM_MAX_TEMPERATURE = 2.0
 LLM_SPLIT_MODE_NONE = 0
+LLM_SPLIT_MODE_LAYER = 1
+LLM_SPLIT_MODE_ROW = 2
+LLM_SPLIT_MODE_TENSOR = 3
+LLM_SPLIT_MODE_NAMES = {
+    "none": LLM_SPLIT_MODE_NONE,
+    "layer": LLM_SPLIT_MODE_LAYER,
+    "row": LLM_SPLIT_MODE_ROW,
+    "tensor": LLM_SPLIT_MODE_TENSOR,
+}
 
 _prompt_llm_lock = asyncio.Lock()
-PromptLlmModelKey = tuple[str, str, str, int, int, int, int | None, int | None]
+PromptLlmModelKey = tuple[
+    str,
+    str,
+    str,
+    int,
+    int,
+    int,
+    int | None,
+    int | None,
+    tuple[float, ...] | None,
+    tuple[int, ...],
+]
 _prompt_llm_model_key: PromptLlmModelKey | None = None
 _prompt_llm: Any | None = None
 _llm_dll_directory_handles: list[Any] = []
@@ -49,6 +70,8 @@ class PromptLlmConfig:
     n_threads: int
     main_gpu: int | None
     split_mode: int | None
+    tensor_split: tuple[float, ...] | None
+    lease_device_ids: tuple[int, ...]
     model_key: PromptLlmModelKey
     max_tokens: int
     temperature: float
@@ -62,7 +85,7 @@ async def generate_prompt_with_llm(
     response_format_json: bool = True,
 ) -> str:
     config = build_prompt_llm_config(max_tokens=max_tokens, temperature=temperature)
-    async with acquire_gpu_model("llm", config.main_gpu, config.model_key, release_llm_runtime):
+    async with acquire_gpu_model_multi("llm", config.lease_device_ids, config.model_key, release_llm_runtime):
         async with _prompt_llm_lock:
             return await asyncio.to_thread(
                 _generate_prompt_with_llm_locked,
@@ -152,9 +175,27 @@ def build_prompt_llm_config(
         )
 
     use_gpu = settings.llm_use_max_gpu
-    main_gpu = get_llm_cuda_device_id(use_gpu)
+    cuda_device_count = get_cuda_device_count() if use_gpu else 0
+    main_gpu = _resolve_llm_main_gpu(use_gpu, cuda_device_count)
     n_gpu_layers = -1 if use_gpu else 0
-    split_mode = LLM_SPLIT_MODE_NONE if main_gpu is not None else None
+    split_mode = _parse_llm_split_mode(settings.llm_split_mode) if main_gpu is not None else None
+    tensor_split = _parse_llm_tensor_split(settings.llm_tensor_split) if main_gpu is not None else None
+    if split_mode == LLM_SPLIT_MODE_NONE:
+        tensor_split = None
+    if tensor_split is not None and cuda_device_count > 0 and len(tensor_split) > cuda_device_count:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"LLM_TENSOR_SPLIT specifies {len(tensor_split)} GPUs, "
+                f"but only {cuda_device_count} CUDA device(s) are visible"
+            ),
+        )
+    lease_device_ids = _resolve_llm_lease_device_ids(
+        main_gpu=main_gpu,
+        split_mode=split_mode,
+        tensor_split=tensor_split,
+        cuda_device_count=cuda_device_count,
+    )
     context_size = settings.llm_context_size
     model_key = (
         model_path_value,
@@ -165,6 +206,8 @@ def build_prompt_llm_config(
         LLM_N_THREADS,
         main_gpu,
         split_mode,
+        tensor_split,
+        lease_device_ids,
     )
     return PromptLlmConfig(
         model_path=model_path_value,
@@ -175,11 +218,69 @@ def build_prompt_llm_config(
         n_threads=LLM_N_THREADS,
         main_gpu=main_gpu,
         split_mode=split_mode,
+        tensor_split=tensor_split,
+        lease_device_ids=lease_device_ids,
         model_key=model_key,
         max_tokens=resolved_max_tokens,
         temperature=resolved_temperature,
         top_p=LLM_TOP_P,
     )
+
+
+def _resolve_llm_main_gpu(use_gpu: bool, cuda_device_count: int) -> int | None:
+    if not use_gpu or cuda_device_count <= 0:
+        return None
+    main_gpu = settings.llm_main_gpu
+    if main_gpu >= cuda_device_count:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"LLM_MAIN_GPU must be less than visible CUDA device count {cuda_device_count}",
+        )
+    return main_gpu
+
+
+def _parse_llm_split_mode(value: str) -> int:
+    normalized = (value or "layer").strip().lower()
+    split_mode = LLM_SPLIT_MODE_NAMES.get(normalized)
+    if split_mode is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="LLM_SPLIT_MODE must be one of: none, layer, row, tensor",
+        )
+    return split_mode
+
+
+def _parse_llm_tensor_split(value: str) -> tuple[float, ...] | None:
+    if not value.strip():
+        return None
+    try:
+        tensor_split = tuple(float(part.strip()) for part in value.split(",") if part.strip())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="LLM_TENSOR_SPLIT must be a comma-separated list of positive numbers",
+        ) from exc
+    if not tensor_split or any(not math.isfinite(part) or part <= 0 for part in tensor_split):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="LLM_TENSOR_SPLIT must be a comma-separated list of positive numbers",
+        )
+    return tensor_split
+
+
+def _resolve_llm_lease_device_ids(
+    main_gpu: int | None,
+    split_mode: int | None,
+    tensor_split: tuple[float, ...] | None,
+    cuda_device_count: int,
+) -> tuple[int, ...]:
+    if main_gpu is None or cuda_device_count <= 0:
+        return ()
+    if split_mode == LLM_SPLIT_MODE_NONE:
+        return (main_gpu,)
+    if tensor_split is not None:
+        return tuple(range(len(tensor_split)))
+    return tuple(range(cuda_device_count))
 
 
 def reset_llm_runtime_for_tests() -> None:
@@ -303,13 +404,18 @@ def _get_prompt_llm_locked(config: PromptLlmConfig) -> Any:
             llama_kwargs["main_gpu"] = config.main_gpu
         if config.split_mode is not None:
             llama_kwargs["split_mode"] = config.split_mode
+        if config.tensor_split is not None and config.split_mode != LLM_SPLIT_MODE_NONE:
+            llama_kwargs["tensor_split"] = list(config.tensor_split)
 
         log(
             "loading LLM model "
             f"model={model_ref} "
             f"main_gpu={config.main_gpu} "
             f"n_gpu_layers={config.n_gpu_layers} "
-            f"context_size={config.context_size}"
+            f"context_size={config.context_size} "
+            f"split_mode={config.split_mode} "
+            f"tensor_split={config.tensor_split} "
+            f"lease_device_ids={config.lease_device_ids}"
         )
         if config.model_path:
             _prompt_llm = Llama(

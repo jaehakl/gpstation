@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import HTTPException, status
 
 from app.logging import log
-from app.model_runtime.gpu_residency import acquire_gpu_model
+from app.model_runtime.gpu_residency import acquire_gpu_model_multi
 from app.model_runtime.llm import build_prompt_llm_config, release_llm_runtime
 from app.model_runtime import llm as llm_runtime
 from app.models import ChatRequest
@@ -79,7 +79,7 @@ async def generate_chat_with_llm(
 ) -> ChatGenerationResult:
     config = build_prompt_llm_config(max_tokens=max_tokens, temperature=temperature)
     loop = asyncio.get_running_loop()
-    async with acquire_gpu_model("llm", config.main_gpu, config.model_key, release_llm_runtime):
+    async with acquire_gpu_model_multi("llm", config.lease_device_ids, config.model_key, release_llm_runtime):
         async with llm_runtime._prompt_llm_lock:
             result = await asyncio.to_thread(
                 _generate_chat_with_llm_locked,

@@ -53,11 +53,23 @@ def config() -> llm_runtime.PromptLlmConfig:
         n_threads=0,
         main_gpu=None,
         split_mode=None,
-        model_key=("fake.gguf", "", "", 4096, 0, 0, None, None),
+        tensor_split=None,
+        lease_device_ids=(),
+        model_key=("fake.gguf", "", "", 4096, 0, 0, None, None, None, ()),
         max_tokens=32,
         temperature=0.25,
         top_p=0.9,
     )
+
+
+class FakePromptLlm:
+    kwargs = None
+
+    def __init__(self, **kwargs):
+        self.__class__.kwargs = kwargs
+
+    def close(self):
+        return None
 
 
 class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
@@ -91,6 +103,105 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.context_size, 8192)
         self.assertEqual(config.model_key[3], 8192)
 
+    def test_build_prompt_llm_config_uses_multi_gpu_split_settings(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "fake.gguf"
+            model_path.write_bytes(b"fake")
+
+            with (
+                patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
+                patch.object(llm_runtime.settings, "llm_use_max_gpu", True),
+                patch.object(llm_runtime.settings, "llm_context_size", 8192),
+                patch.object(llm_runtime.settings, "llm_split_mode", "layer"),
+                patch.object(llm_runtime.settings, "llm_tensor_split", "1,1"),
+                patch.object(llm_runtime.settings, "llm_main_gpu", 0),
+                patch.object(llm_runtime, "get_cuda_device_count", return_value=2),
+            ):
+                config = llm_runtime.build_prompt_llm_config()
+
+        self.assertEqual(config.split_mode, llm_runtime.LLM_SPLIT_MODE_LAYER)
+        self.assertEqual(config.tensor_split, (1.0, 1.0))
+        self.assertEqual(config.lease_device_ids, (0, 1))
+        self.assertEqual(config.model_key[-2], (1.0, 1.0))
+        self.assertEqual(config.model_key[-1], (0, 1))
+
+    def test_build_prompt_llm_config_supports_tensor_split_mode(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "fake.gguf"
+            model_path.write_bytes(b"fake")
+
+            with (
+                patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
+                patch.object(llm_runtime.settings, "llm_use_max_gpu", True),
+                patch.object(llm_runtime.settings, "llm_split_mode", "tensor"),
+                patch.object(llm_runtime.settings, "llm_tensor_split", "1,1"),
+                patch.object(llm_runtime.settings, "llm_main_gpu", 0),
+                patch.object(llm_runtime, "get_cuda_device_count", return_value=2),
+            ):
+                config = llm_runtime.build_prompt_llm_config()
+
+        self.assertEqual(config.split_mode, llm_runtime.LLM_SPLIT_MODE_TENSOR)
+        self.assertEqual(config.tensor_split, (1.0, 1.0))
+        self.assertEqual(config.lease_device_ids, (0, 1))
+
+    def test_build_prompt_llm_config_rejects_invalid_split_settings(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "fake.gguf"
+            model_path.write_bytes(b"fake")
+
+            with (
+                patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
+                patch.object(llm_runtime.settings, "llm_use_max_gpu", True),
+                patch.object(llm_runtime.settings, "llm_split_mode", "bad"),
+                patch.object(llm_runtime.settings, "llm_main_gpu", 0),
+                patch.object(llm_runtime, "get_cuda_device_count", return_value=2),
+            ):
+                with self.assertRaises(HTTPException) as error:
+                    llm_runtime.build_prompt_llm_config()
+            self.assertEqual(error.exception.status_code, 400)
+
+            with (
+                patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
+                patch.object(llm_runtime.settings, "llm_use_max_gpu", True),
+                patch.object(llm_runtime.settings, "llm_split_mode", "layer"),
+                patch.object(llm_runtime.settings, "llm_tensor_split", "1,nope"),
+                patch.object(llm_runtime.settings, "llm_main_gpu", 0),
+                patch.object(llm_runtime, "get_cuda_device_count", return_value=2),
+            ):
+                with self.assertRaises(HTTPException) as error:
+                    llm_runtime.build_prompt_llm_config()
+            self.assertEqual(error.exception.status_code, 400)
+
+    def test_get_prompt_llm_passes_multi_gpu_kwargs(self) -> None:
+        config = llm_runtime.PromptLlmConfig(
+            model_path="fake.gguf",
+            repo_id="",
+            model_filename="",
+            context_size=4096,
+            n_gpu_layers=-1,
+            n_threads=0,
+            main_gpu=0,
+            split_mode=llm_runtime.LLM_SPLIT_MODE_LAYER,
+            tensor_split=(1.0, 1.0),
+            lease_device_ids=(0, 1),
+            model_key=("fake.gguf", "", "", 4096, -1, 0, 0, llm_runtime.LLM_SPLIT_MODE_LAYER, (1.0, 1.0), (0, 1)),
+            max_tokens=32,
+            temperature=0.25,
+            top_p=0.9,
+        )
+
+        try:
+            with patch.object(llm_runtime, "_load_llama_cls", return_value=FakePromptLlm):
+                llm_runtime._get_prompt_llm_locked(config)
+
+            self.assertEqual(FakePromptLlm.kwargs["n_ctx"], 4096)
+            self.assertEqual(FakePromptLlm.kwargs["n_gpu_layers"], -1)
+            self.assertEqual(FakePromptLlm.kwargs["main_gpu"], 0)
+            self.assertEqual(FakePromptLlm.kwargs["split_mode"], llm_runtime.LLM_SPLIT_MODE_LAYER)
+            self.assertEqual(FakePromptLlm.kwargs["tensor_split"], [1.0, 1.0])
+        finally:
+            llm_runtime.release_llm_runtime()
+
     async def test_generate_chat_with_llm_streams_ordered_deltas_and_returns_answer(self) -> None:
         fake_llm = FakeStreamingLlm(
             [
@@ -107,7 +218,7 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(llm_chat, "build_prompt_llm_config", return_value=config()),
-            patch.object(llm_chat, "acquire_gpu_model", return_value=NullAsyncContext()),
+            patch.object(llm_chat, "acquire_gpu_model_multi", return_value=NullAsyncContext()),
             patch.object(llm_runtime, "_get_prompt_llm_locked", return_value=fake_llm),
             patch.object(llm_chat, "_create_chat_ram_cache", return_value=FakeCache()),
         ):
@@ -141,7 +252,7 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(llm_chat, "build_prompt_llm_config", return_value=config()),
-            patch.object(llm_chat, "acquire_gpu_model", return_value=NullAsyncContext()),
+            patch.object(llm_chat, "acquire_gpu_model_multi", return_value=NullAsyncContext()),
             patch.object(llm_runtime, "_get_prompt_llm_locked", return_value=fake_llm),
             patch.object(llm_chat, "_create_chat_ram_cache", return_value=FakeCache()),
         ):

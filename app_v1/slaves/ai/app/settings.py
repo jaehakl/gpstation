@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     llm_model_path: str = ""
     llm_use_max_gpu: bool = True
     llm_context_size: int = Field(default=4096, ge=512)
+    llm_split_mode: str = "layer"
+    llm_tensor_split: str = ""
+    llm_main_gpu: int = Field(default=0, ge=0)
     sdxl_ckpt_path: str = ""
     embedding_model_name: str = ""
     embedding_model_path: str = ""

@@ -143,6 +143,62 @@ class GpuResidencyTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(released, [])
 
+    async def test_multi_gpu_lease_releases_models_on_all_participating_devices(self) -> None:
+        released: list[tuple[str, int]] = []
+
+        with patch.object(gpu_residency, "get_cuda_device_count", return_value=2):
+            async with gpu_residency.acquire_gpu_model(
+                "llm",
+                0,
+                ("llm-a",),
+                lambda device_id: released.append(("llm-a", device_id)),
+            ):
+                pass
+            async with gpu_residency.acquire_gpu_model(
+                "image",
+                1,
+                ("image-a",),
+                lambda device_id: released.append(("image-a", device_id)),
+            ):
+                pass
+            async with gpu_residency.acquire_gpu_model_multi(
+                "llm",
+                (1, 0),
+                ("llm-b",),
+                lambda device_id: released.append(("llm-b", device_id)),
+            ):
+                pass
+
+        self.assertEqual(released, [("llm-a", 0), ("image-a", 1)])
+
+    async def test_single_gpu_lease_releases_multi_gpu_model_once_and_clears_all_devices(self) -> None:
+        released: list[tuple[str, int]] = []
+
+        with patch.object(gpu_residency, "get_cuda_device_count", return_value=2):
+            async with gpu_residency.acquire_gpu_model_multi(
+                "llm",
+                (0, 1),
+                ("llm-a",),
+                lambda device_id: released.append(("llm-a", device_id)),
+            ):
+                pass
+            async with gpu_residency.acquire_gpu_model(
+                "image",
+                1,
+                ("image-a",),
+                lambda device_id: released.append(("image-a", device_id)),
+            ):
+                pass
+            async with gpu_residency.acquire_gpu_model(
+                "image",
+                0,
+                ("image-b",),
+                lambda device_id: released.append(("image-b", device_id)),
+            ):
+                pass
+
+        self.assertEqual(released, [("llm-a", 1)])
+
 
 class SdxlT2IRequestTest(unittest.TestCase):
     def test_request_model_does_not_expose_manual_device_id(self) -> None:
