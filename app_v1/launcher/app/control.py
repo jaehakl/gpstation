@@ -124,8 +124,6 @@ async def handle_server_message(manager: WorkerManager, message: dict[str, Any])
     if message_type == "worker.reset":
         await manager.reset_worker(str(message.get("reason") or "reset requested"))
         return
-    if message_type == "pong":
-        return
     if message_type == "error":
         print(f"Server control error: {message.get('detail') or message}", flush=True)
         return

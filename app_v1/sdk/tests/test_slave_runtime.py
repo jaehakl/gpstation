@@ -4,7 +4,6 @@ import asyncio
 import json
 import sys
 from io import BytesIO
-from types import SimpleNamespace
 
 import pytest
 
@@ -13,9 +12,6 @@ from sdk.slave import DataChannelAttachment, DataChannelMessage, SlaveApp, Slave
 from sdk.slave.runtime import (
     CHUNK_SIZE,
     configure_aioice_gather_timeout,
-    decode_binary_frame,
-    encode_binary_frame,
-    handle_datachannel_message,
     emit,
     load_rtc_ice_gather_timeout_seconds,
     load_rtc_memory_cache_enabled,
@@ -25,7 +21,6 @@ from sdk.slave.runtime import (
     read_stdin_line,
     send_job_result,
     summarize_sdp_candidates,
-    warm_rtc_runtime,
     wait_for_job_result_ack,
 )
 
@@ -38,33 +33,6 @@ class DummyChannel:
 
     def send(self, message: str | bytes) -> None:
         self.sent.append(message)
-
-
-class FakeWarmPeerConnection:
-    created_with = None
-    data_channel_label = None
-    closed = False
-
-    def __init__(self, configuration) -> None:
-        self.configuration = configuration
-        self.iceGatheringState = "complete"
-        self.localDescription = SimpleNamespace(sdp="")
-        FakeWarmPeerConnection.created_with = configuration
-        FakeWarmPeerConnection.closed = False
-
-    def createDataChannel(self, label: str) -> None:
-        FakeWarmPeerConnection.data_channel_label = label
-
-    async def createOffer(self):
-        return SimpleNamespace(type="offer", sdp="v=0")
-
-    async def setLocalDescription(self, _offer) -> None:
-        self.localDescription = SimpleNamespace(
-            sdp="\r\n".join(["v=0", "a=candidate:1 1 udp 1 10.0.0.2 5000 typ host"])
-        )
-
-    async def close(self) -> None:
-        FakeWarmPeerConnection.closed = True
 
 
 class FakeAioIceConnection:
@@ -263,20 +231,6 @@ def test_summarize_sdp_candidates_counts_candidate_types():
     assert summary == {"host": 1, "srflx": 1, "relay": 1, "prflx": 1, "unknown": 1, "total": 5}
 
 
-@pytest.mark.asyncio
-async def test_warm_rtc_runtime_creates_offer_gathers_and_closes(capsys):
-    configuration = object()
-
-    await warm_rtc_runtime(FakeWarmPeerConnection, configuration, label="test")
-
-    assert FakeWarmPeerConnection.created_with is configuration
-    assert FakeWarmPeerConnection.data_channel_label == DATA_CHANNEL_LABEL
-    assert FakeWarmPeerConnection.closed is True
-    captured = capsys.readouterr()
-    assert "test ICE warmup complete" in captured.err
-    assert "host=1" in captured.err
-
-
 def test_send_job_result_uses_job_result_envelope():
     channel = DummyChannel()
 
@@ -394,320 +348,54 @@ async def test_initialize_hook_runs_with_memory_and_context():
     assert memory["initialized_for"] == "session-1"
 
 
-@pytest.mark.asyncio
-async def test_json_only_call_dispatches_response_frame():
-    app = SlaveApp(memory={})
+def test_send_job_result_sends_attachment_chunks():
     channel = DummyChannel()
+    data = bytes(index % 251 for index in range(CHUNK_SIZE + 3))
 
-    @app.handler("sync.request")
-    def sync_handler(message, memory, context):
-        return DataChannelMessage(id=message.id, type="sync.result", payload=message.payload)
-
-    await handle_datachannel_message(
+    send_job_result(
         channel,
-        json.dumps(
-            {
-                "kind": "call.request",
-                "id": "sync-1",
-                "type": "sync.request",
-                "payload": {"value": 1},
-                "attachments": [],
-            }
-        ),
-        app,
-        SlaveContext(session_id="session-1", ttl_seconds=60),
-    )
-
-    response = json.loads(channel.sent[0])
-    assert response == {
-        "kind": "call.response",
-        "id": "sync-1",
-        "type": "sync.result",
-        "payload": {"value": 1},
-        "attachments": [],
-    }
-
-
-@pytest.mark.asyncio
-async def test_call_dispatch_logs_to_stderr_without_stdout(capsys):
-    app = SlaveApp(memory={})
-    channel = DummyChannel()
-
-    @app.handler("sync.request")
-    def sync_handler(message, memory, context):
-        return DataChannelMessage(id=message.id, type="sync.result", payload=message.payload)
-
-    await handle_datachannel_message(
-        channel,
-        json.dumps(
-            {
-                "kind": "call.request",
-                "id": "sync-1",
-                "type": "sync.request",
-                "payload": {"value": 1},
-                "attachments": [],
-            }
-        ),
-        app,
-        SlaveContext(session_id="session-1", ttl_seconds=60),
-    )
-
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "call dispatch start" in captured.err
-    assert "call dispatch complete" in captured.err
-    assert json.loads(channel.sent[0])["kind"] == "call.response"
-
-
-@pytest.mark.asyncio
-async def test_call_dispatch_failure_logs_to_stderr_without_stdout(capsys):
-    app = SlaveApp(memory={})
-    channel = DummyChannel()
-
-    @app.handler("sync.request")
-    def sync_handler(message, memory, context):
-        raise ValueError("boom")
-
-    await handle_datachannel_message(
-        channel,
-        json.dumps(
-            {
-                "kind": "call.request",
-                "id": "sync-1",
-                "type": "sync.request",
-                "payload": {"value": 1},
-                "attachments": [],
-            }
-        ),
-        app,
-        SlaveContext(session_id="session-1", ttl_seconds=60),
-    )
-
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "call dispatch failed" in captured.err
-    assert json.loads(channel.sent[0])["kind"] == "call.error"
-
-
-@pytest.mark.asyncio
-async def test_call_with_attachment_assembles_bytes_and_sends_response_chunks():
-    app = SlaveApp(memory={})
-    channel = DummyChannel()
-    pending_calls = {}
-
-    @app.handler("file.request")
-    async def file_handler(message, memory, context):
-        assert message.attachments[0].data == b"hello file"
-        return DataChannelMessage(
-            id=message.id,
+        "job-1",
+        DataChannelMessage(
+            id="job-1",
             type="file.result",
-            payload={"count": len(message.attachments)},
-            attachments=[
-                DataChannelAttachment(
-                    id="out-1",
-                    name="copy.txt",
-                    mimeType="text/plain",
-                    data=message.attachments[0].data,
-                )
-            ],
-        )
-
-    await handle_datachannel_message(
-        channel,
-        json.dumps(
-            {
-                "kind": "call.request",
-                "id": "file-1",
-                "type": "file.request",
-                "payload": None,
-                "attachments": [{"id": "in-1", "name": "in.txt", "mimeType": "text/plain", "size": 10}],
-            }
-        ),
-        app,
-        SlaveContext(session_id="session-1", ttl_seconds=60),
-        pending_calls,
-    )
-    assert channel.sent == []
-
-    await handle_datachannel_message(
-        channel,
-        encode_binary_frame(
-            {"kind": "attachment.chunk", "callId": "file-1", "attachmentId": "in-1", "index": 0, "final": True},
-            b"hello file",
-        ),
-        app,
-        SlaveContext(session_id="session-1", ttl_seconds=60),
-        pending_calls,
-    )
-
-    response = json.loads(channel.sent[0])
-    assert response["kind"] == "call.response"
-    assert response["payload"] == {"count": 1}
-    assert response["attachments"] == [{"id": "out-1", "size": 10, "name": "copy.txt", "mimeType": "text/plain"}]
-    header, body = decode_binary_frame(channel.sent[1])
-    assert header == {"kind": "attachment.chunk", "callId": "file-1", "attachmentId": "out-1", "index": 0, "final": True}
-    assert body == b"hello file"
-
-
-@pytest.mark.asyncio
-async def test_large_attachment_roundtrip_uses_multiple_chunks():
-    app = SlaveApp(memory={})
-    channel = DummyChannel()
-    pending_calls = {}
-    data = bytes(index % 251 for index in range((64 * 1024) + 123))
-
-    @app.handler("large.request")
-    def large_handler(message, memory, context):
-        assert message.attachments[0].data == data
-        return DataChannelMessage(
-            id=message.id,
-            type="large.result",
-            payload={"bytes": len(message.attachments[0].data)},
+            payload={"ok": True},
             attachments=[
                 DataChannelAttachment(
                     id="out-large",
                     name="large.bin",
                     mimeType="application/octet-stream",
-                    data=message.attachments[0].data,
+                    data=data,
                 )
             ],
-        )
-
-    await handle_datachannel_message(
-        channel,
-        json.dumps(
-            {
-                "kind": "call.request",
-                "id": "large-1",
-                "type": "large.request",
-                "payload": None,
-                "attachments": [{"id": "in-large", "name": "large.bin", "size": len(data)}],
-            }
         ),
-        app,
-        SlaveContext(session_id="session-1", ttl_seconds=60),
-        pending_calls,
     )
 
-    for index, offset in enumerate(range(0, len(data), CHUNK_SIZE)):
-        chunk = data[offset : offset + CHUNK_SIZE]
-        await handle_datachannel_message(
-            channel,
-            encode_binary_frame(
-                {
-                    "kind": "attachment.chunk",
-                    "callId": "large-1",
-                    "attachmentId": "in-large",
-                    "index": index,
-                    "final": offset + CHUNK_SIZE >= len(data),
-                },
-                chunk,
-            ),
-            app,
-            SlaveContext(session_id="session-1", ttl_seconds=60),
-            pending_calls,
-        )
-
     response = json.loads(channel.sent[0])
-    assert response["payload"] == {"bytes": len(data)}
-    assert response["attachments"] == [
-        {"id": "out-large", "size": len(data), "name": "large.bin", "mimeType": "application/octet-stream"}
-    ]
+    assert response == {
+        "kind": "job.result",
+        "id": "job-1",
+        "type": "file.result",
+        "payload": {"ok": True},
+        "attachments": [
+            {"id": "out-large", "size": len(data), "name": "large.bin", "mimeType": "application/octet-stream"}
+        ],
+    }
 
     chunks = []
     for index, message in enumerate(channel.sent[1:]):
-        header, body = decode_binary_frame(message)
-        assert header["callId"] == "large-1"
-        assert header["attachmentId"] == "out-large"
-        assert header["index"] == index
-        assert header["final"] is (index == len(channel.sent[1:]) - 1)
+        frame = bytes(message)
+        header_length = int.from_bytes(frame[:4], "big")
+        header = json.loads(frame[4 : 4 + header_length].decode("utf-8"))
+        body = frame[4 + header_length :]
+        assert header == {
+            "kind": "attachment.chunk",
+            "callId": "job-1",
+            "attachmentId": "out-large",
+            "index": index,
+            "final": index == 1,
+        }
         assert len(body) <= CHUNK_SIZE
         chunks.append(body)
-    assert len(chunks) > 1
+
+    assert len(chunks) == 2
     assert b"".join(chunks) == data
-
-
-@pytest.mark.asyncio
-async def test_unknown_message_type_sends_call_error():
-    app = SlaveApp(memory={})
-    channel = DummyChannel()
-
-    await handle_datachannel_message(
-        channel,
-        json.dumps(
-            {
-                "kind": "call.request",
-                "id": "missing-1",
-                "type": "missing.request",
-                "payload": None,
-                "attachments": [],
-            }
-        ),
-        app,
-        SlaveContext(session_id="session-1", ttl_seconds=60),
-    )
-
-    payload = json.loads(channel.sent[0])
-    assert payload["kind"] == "call.error"
-    assert payload["id"] == "missing-1"
-    assert "missing.request" in payload["detail"]
-
-
-@pytest.mark.asyncio
-async def test_malformed_attachment_chunk_sends_error():
-    app = SlaveApp(memory={})
-    channel = DummyChannel()
-    pending_calls = {}
-
-    await handle_datachannel_message(
-        channel,
-        json.dumps(
-            {
-                "kind": "call.request",
-                "id": "file-1",
-                "type": "file.request",
-                "payload": None,
-                "attachments": [{"id": "in-1", "size": 1}],
-            }
-        ),
-        app,
-        SlaveContext(session_id="session-1", ttl_seconds=60),
-        pending_calls,
-    )
-    await handle_datachannel_message(
-        channel,
-        encode_binary_frame(
-            {"kind": "attachment.chunk", "callId": "file-1", "attachmentId": "in-1", "index": 1, "final": True},
-            b"x",
-        ),
-        app,
-        SlaveContext(session_id="session-1", ttl_seconds=60),
-        pending_calls,
-    )
-
-    payload = json.loads(channel.sent[0])
-    assert payload["kind"] == "call.error"
-    assert payload["id"] == "file-1"
-    assert "out-of-order" in payload["detail"]
-
-
-@pytest.mark.asyncio
-async def test_unknown_attachment_chunk_sends_error_with_chunk_call_id():
-    app = SlaveApp(memory={})
-    channel = DummyChannel()
-
-    await handle_datachannel_message(
-        channel,
-        encode_binary_frame(
-            {"kind": "attachment.chunk", "callId": "missing-1", "attachmentId": "in-1", "index": 0, "final": True},
-            b"x",
-        ),
-        app,
-        SlaveContext(session_id="session-1", ttl_seconds=60),
-        {},
-    )
-
-    payload = json.loads(channel.sent[0])
-    assert payload["kind"] == "call.error"
-    assert payload["id"] == "missing-1"
-    assert "unknown call" in payload["detail"]

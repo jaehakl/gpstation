@@ -1,18 +1,21 @@
-from sdk.protocol.constants import CONTROL_WS_PATH, DATA_CHANNEL_LABEL
+from sdk.protocol.constants import DATA_CHANNEL_LABEL
 from sdk.protocol.messages import (
-    ControlMessage,
     DataChannelAttachment,
     DataChannelMessage,
+    LauncherToServerMessage,
+    ServerToLauncherMessage,
     SignalPayload,
-    parse_control_message,
+    parse_launcher_message,
+    parse_server_message,
 )
 
 __all__ = [
-    "CONTROL_WS_PATH",
     "DATA_CHANNEL_LABEL",
-    "ControlMessage",
     "DataChannelAttachment",
     "DataChannelMessage",
+    "LauncherToServerMessage",
+    "ServerToLauncherMessage",
     "SignalPayload",
-    "parse_control_message",
+    "parse_launcher_message",
+    "parse_server_message",
 ]

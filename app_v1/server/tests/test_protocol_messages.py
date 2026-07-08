@@ -2,11 +2,16 @@ import pytest
 from pydantic import ValidationError
 
 from app.models import JobCreateRequest
-from sdk.protocol.messages import DataChannelAttachment, DataChannelMessage, parse_control_message
+from sdk.protocol.messages import (
+    DataChannelAttachment,
+    DataChannelMessage,
+    parse_launcher_message,
+    parse_server_message,
+)
 
 
 def test_parse_launcher_hello_message():
-    message = parse_control_message(
+    message = parse_launcher_message(
         {
             "type": "launcher.hello",
             "launcher_name": "desktop-4090",
@@ -28,7 +33,7 @@ def test_parse_launcher_hello_message():
 
 
 def test_parse_launcher_accepted_capabilities():
-    message = parse_control_message(
+    message = parse_server_message(
         {
             "type": "launcher.accepted",
             "launcher_id": "launcher-1",
@@ -43,7 +48,7 @@ def test_parse_launcher_accepted_capabilities():
 
 def test_parse_rejects_extra_fields():
     try:
-        parse_control_message({"type": "ping", "extra": True})
+        parse_launcher_message({"type": "launcher.heartbeat", "extra": True})
     except ValidationError as exc:
         assert "extra" in str(exc)
     else:
@@ -51,7 +56,7 @@ def test_parse_rejects_extra_fields():
 
 
 def test_parse_job_log_message():
-    message = parse_control_message(
+    message = parse_launcher_message(
         {
             "type": "job.log",
             "job_id": "job-1",
@@ -68,7 +73,7 @@ def test_parse_job_log_message():
 
 
 def test_parse_launcher_heartbeat_with_worker_state():
-    message = parse_control_message(
+    message = parse_launcher_message(
         {
             "type": "launcher.heartbeat",
             "status": "busy",
@@ -86,7 +91,7 @@ def test_parse_launcher_heartbeat_with_worker_state():
 
 
 def test_parse_job_start_message():
-    message = parse_control_message(
+    message = parse_server_message(
         {
             "type": "job.start",
             "job_id": "job-1",
@@ -102,7 +107,7 @@ def test_parse_job_start_message():
 
 def test_parse_job_start_rejects_input_body():
     with pytest.raises(ValidationError):
-        parse_control_message(
+        parse_server_message(
             {
                 "type": "job.start",
                 "job_id": "job-1",
@@ -112,6 +117,24 @@ def test_parse_job_start_rejects_input_body():
                 "offer": {"type": "offer", "sdp": "v=0\r\n"},
             }
         )
+
+
+def test_launcher_parser_rejects_server_to_launcher_message():
+    with pytest.raises(ValidationError):
+        parse_launcher_message(
+            {
+                "type": "job.start",
+                "job_id": "job-1",
+                "handler_type": "ai.llm",
+                "slave_app_id": "ai",
+                "offer": {"type": "offer", "sdp": "v=0\r\n"},
+            }
+        )
+
+
+def test_server_parser_rejects_launcher_to_server_message():
+    with pytest.raises(ValidationError):
+        parse_server_message({"type": "launcher.heartbeat"})
 
 
 def test_job_create_request_rejects_input_body():

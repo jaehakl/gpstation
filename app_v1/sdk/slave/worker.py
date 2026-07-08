@@ -46,7 +46,6 @@ class WorkerJobPeerState:
 async def _run_worker_stdio(*, app: SlaveApp) -> None:
     try:
         from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
-        from aiortc.sdp import candidate_from_sdp
         from aioice.ice import Connection as AioIceConnection
     except Exception as exc:
         emit({"type": "error", "code": "aiortc_import_failed", "detail": str(exc)})
@@ -159,7 +158,6 @@ async def _run_worker_stdio(*, app: SlaveApp) -> None:
                                 rtc_configuration=rtc_configuration,
                                 rtc_peer_connection_cls=RTCPeerConnection,
                                 rtc_session_description=RTCSessionDescription,
-                                candidate_from_sdp=candidate_from_sdp,
                                 ice_servers=ice_servers,
                                 prepared_peer=job_prepared_peer,
                             )
@@ -301,7 +299,6 @@ async def run_worker_job(
     rtc_configuration: Any,
     rtc_peer_connection_cls: Any,
     rtc_session_description: Any,
-    candidate_from_sdp: Any,
     ice_servers: list[dict[str, Any]],
     prepared_peer: PreparedWorkerPeer | None = None,
 ) -> None:

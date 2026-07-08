@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sdk.protocol.messages import LauncherHello, parse_control_message
+from sdk.protocol.messages import LauncherHello, parse_launcher_message
 from app.auth import Principal, authenticate_db_authorization, require_client
 from app.db import SessionLocal, get_db
 from app.models import LauncherView
@@ -41,7 +41,7 @@ async def launcher_control(websocket: WebSocket) -> None:
         await websocket.accept()
         try:
             hello_payload = await websocket.receive_json()
-            hello = parse_control_message(hello_payload)
+            hello = parse_launcher_message(hello_payload)
             if not isinstance(hello, LauncherHello):
                 await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
                 return
@@ -91,7 +91,7 @@ async def handle_launcher_message(
     websocket: WebSocket,
     payload: dict[str, Any],
 ) -> None:
-    message = parse_control_message(payload)
+    message = parse_launcher_message(payload)
     if message.type == "launcher.heartbeat":
         await runtime.mark_heartbeat(
             launcher_id,
@@ -139,11 +139,6 @@ async def handle_launcher_message(
         await runtime.clear_launcher_worker(launcher_id)
         await dispatch_more_jobs(db)
         return
-    if message.type == "worker.reset.failed":
-        await runtime.mark_launcher_job(launcher_id, None, worker_status="error")
-        return
-    if message.type == "ping":
-        await websocket.send_json({"type": "pong", "server_time": utcnow().isoformat()})
 
 
 def extract_slave_startup_timeouts(metadata: dict[str, Any]) -> dict[str, float]:

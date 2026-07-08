@@ -6,8 +6,6 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from sdk.protocol.constants import DATA_CHANNEL_LABEL
-
 from sdk.slave.io import log
 
 
@@ -37,27 +35,6 @@ async def prepare_worker_peer(rtc_peer_connection_cls: Any, rtc_configuration: A
     except Exception:
         await maybe_await(pc.close())
         raise
-
-
-async def warm_rtc_runtime(rtc_peer_connection_cls: Any, rtc_configuration: Any, *, label: str) -> None:
-    started_at = time.perf_counter()
-    pc = None
-    try:
-        pc = rtc_peer_connection_cls(rtc_configuration)
-        pc.createDataChannel(DATA_CHANNEL_LABEL)
-        offer = await maybe_await(pc.createOffer())
-        await maybe_await(pc.setLocalDescription(offer))
-        await wait_for_ice_gathering(pc)
-        sdp = getattr(getattr(pc, "localDescription", None), "sdp", "") or ""
-        log(
-            f"{label} ICE warmup complete state={pc.iceGatheringState} "
-            f"duration_ms={elapsed_ms(started_at)} candidates: {format_candidate_summary(summarize_sdp_candidates(sdp))}"
-        )
-    except Exception as exc:
-        log(f"{label} ICE warmup failed duration_ms={elapsed_ms(started_at)} error={exc}")
-    finally:
-        if pc is not None:
-            await maybe_await(pc.close())
 
 
 async def maybe_await(value: Any) -> Any:
@@ -103,20 +80,3 @@ def format_candidate_summary(summary: dict[str, int]) -> str:
 
 def elapsed_ms(started_at: float) -> int:
     return round((time.perf_counter() - started_at) * 1000)
-
-
-async def wait_for_ice_gathering(pc: Any) -> None:
-    if pc.iceGatheringState == "complete":
-        return
-    loop = asyncio.get_running_loop()
-    done = loop.create_future()
-
-    @pc.on("icegatheringstatechange")
-    def on_icegatheringstatechange() -> None:
-        if pc.iceGatheringState == "complete" and not done.done():
-            done.set_result(None)
-
-    try:
-        await asyncio.wait_for(done, timeout=5)
-    except TimeoutError:
-        return

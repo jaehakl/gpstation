@@ -106,28 +106,10 @@ class WorkerResetDone(StrictModel):
     type: Literal["worker.reset.done"]
 
 
-class WorkerResetFailed(StrictModel):
-    type: Literal["worker.reset.failed"]
-    detail: str
-
-
-class Ping(StrictModel):
-    type: Literal["ping"]
-
-
-class Pong(StrictModel):
-    type: Literal["pong"]
-    server_time: str | None = None
-
-
-ControlMessage = Annotated[
+LauncherToServerMessage = Annotated[
     Union[
         LauncherHello,
         LauncherHeartbeat,
-        LauncherAccepted,
-        JobStart,
-        JobCancel,
-        WorkerReset,
         JobAnswer,
         JobRunning,
         JobProgress,
@@ -136,18 +118,30 @@ ControlMessage = Annotated[
         JobError,
         JobCancelled,
         WorkerResetDone,
-        WorkerResetFailed,
-        Ping,
-        Pong,
     ],
     Field(discriminator="type"),
 ]
 
-_control_adapter = TypeAdapter(ControlMessage)
+ServerToLauncherMessage = Annotated[
+    Union[
+        LauncherAccepted,
+        JobStart,
+        JobCancel,
+        WorkerReset,
+    ],
+    Field(discriminator="type"),
+]
+
+_launcher_to_server_adapter = TypeAdapter(LauncherToServerMessage)
+_server_to_launcher_adapter = TypeAdapter(ServerToLauncherMessage)
 
 
-def parse_control_message(value: Any) -> ControlMessage:
-    return _control_adapter.validate_python(value)
+def parse_launcher_message(value: Any) -> LauncherToServerMessage:
+    return _launcher_to_server_adapter.validate_python(value)
+
+
+def parse_server_message(value: Any) -> ServerToLauncherMessage:
+    return _server_to_launcher_adapter.validate_python(value)
 
 
 class DataChannelAttachment(StrictModel):
