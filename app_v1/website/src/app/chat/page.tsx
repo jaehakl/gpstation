@@ -42,7 +42,7 @@ export default function ChatPage() {
   const authReady = useAuthStore((state) => state.authReady);
   const [systemPrompt, setSystemPrompt] = useState('You are a helpful conversational assistant.');
   const [prompt, setPrompt] = useState('');
-  const [maxTokens, setMaxTokens] = useState('1024');
+  const [maxTokens, setMaxTokens] = useState('8192');
   const [temperature, setTemperature] = useState('1.0');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [context, setContext] = useState<ChatResponse | null>(null);
