@@ -322,7 +322,20 @@ export default function ChatPage() {
         <div className="chatComposer">
           <label className="field">
             <span>Prompt</span>
-            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} />
+            <textarea
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
+                  return;
+                }
+                event.preventDefault();
+                if (!busy) {
+                  void callChat();
+                }
+              }}
+              rows={4}
+            />
           </label>
           <div className="chatComposerActions">
             <button type="button" className="button primaryButton" onClick={callChat} disabled={busy}>
