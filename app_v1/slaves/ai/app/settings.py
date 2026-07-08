@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +18,7 @@ class Settings(BaseSettings):
 
     llm_model_path: str = ""
     llm_use_max_gpu: bool = True
+    llm_context_size: int = Field(default=4096, ge=512)
     sdxl_ckpt_path: str = ""
     embedding_model_name: str = ""
     embedding_model_path: str = ""

@@ -240,6 +240,11 @@ export default function ChatPage() {
     setStatus('closing');
     try {
       await currentSession.finish({ timeoutMs: CHAT_TIMEOUT_MS });
+      setMessages([]);
+      setContext(null);
+      setPrompt('');
+      activeAssistantMessageIdRef.current = null;
+      setError(null);
       setStatus('closed');
     } catch (nextError) {
       currentSession.close();

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -59,6 +61,36 @@ def config() -> llm_runtime.PromptLlmConfig:
 
 
 class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
+    def test_build_prompt_llm_config_uses_default_context_size(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "fake.gguf"
+            model_path.write_bytes(b"fake")
+
+            with (
+                patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
+                patch.object(llm_runtime.settings, "llm_use_max_gpu", False),
+                patch.object(llm_runtime.settings, "llm_context_size", llm_runtime.LLM_CONTEXT_SIZE),
+            ):
+                config = llm_runtime.build_prompt_llm_config()
+
+        self.assertEqual(config.context_size, llm_runtime.LLM_CONTEXT_SIZE)
+        self.assertEqual(config.model_key[3], llm_runtime.LLM_CONTEXT_SIZE)
+
+    def test_build_prompt_llm_config_uses_env_context_size_override(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            model_path = Path(temp_dir) / "fake.gguf"
+            model_path.write_bytes(b"fake")
+
+            with (
+                patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
+                patch.object(llm_runtime.settings, "llm_use_max_gpu", False),
+                patch.object(llm_runtime.settings, "llm_context_size", 8192),
+            ):
+                config = llm_runtime.build_prompt_llm_config()
+
+        self.assertEqual(config.context_size, 8192)
+        self.assertEqual(config.model_key[3], 8192)
+
     async def test_generate_chat_with_llm_streams_ordered_deltas_and_returns_answer(self) -> None:
         fake_llm = FakeStreamingLlm(
             [

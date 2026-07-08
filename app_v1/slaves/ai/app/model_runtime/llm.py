@@ -155,11 +155,12 @@ def build_prompt_llm_config(
     main_gpu = get_llm_cuda_device_id(use_gpu)
     n_gpu_layers = -1 if use_gpu else 0
     split_mode = LLM_SPLIT_MODE_NONE if main_gpu is not None else None
+    context_size = settings.llm_context_size
     model_key = (
         model_path_value,
         repo_id,
         model_filename,
-        LLM_CONTEXT_SIZE,
+        context_size,
         n_gpu_layers,
         LLM_N_THREADS,
         main_gpu,
@@ -169,7 +170,7 @@ def build_prompt_llm_config(
         model_path=model_path_value,
         repo_id=repo_id,
         model_filename=model_filename,
-        context_size=LLM_CONTEXT_SIZE,
+        context_size=context_size,
         n_gpu_layers=n_gpu_layers,
         n_threads=LLM_N_THREADS,
         main_gpu=main_gpu,
