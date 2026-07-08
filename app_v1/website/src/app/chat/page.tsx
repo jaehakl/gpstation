@@ -1,9 +1,13 @@
 import { Settings, Send, Square, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import rehypeKatex from 'rehype-katex';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import { Link } from 'react-router-dom';
 import { GpStationClient } from '@gpstation/v1-master-js-sdk';
 import type { JobEvent, JobSession } from '@gpstation/v1-master-js-sdk';
+import 'katex/dist/katex.min.css';
 
 import { API_URL } from '../../api/api';
 import { useAuthStore } from '../../stores/authStore';
@@ -259,7 +263,12 @@ export default function ChatPage() {
           {messages.map((item) => (
             <div key={item.id} className={`chatMessage ${item.role}`}>
               <div className={item.role === 'user' ? 'chatBubble' : 'chatMarkdown'}>
-                <ReactMarkdown>{formatChatMarkdown(item.content || (item.streaming ? '...' : ''), item.role)}</ReactMarkdown>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
+                  rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+                >
+                  {formatChatMarkdown(item.content || (item.streaming ? '...' : ''), item.role)}
+                </ReactMarkdown>
               </div>
             </div>
           ))}
@@ -352,8 +361,41 @@ function formatChatMarkdown(content: string, role: ChatMessage['role']): string 
     return content;
   }
   return withMarkdownCodeSegments(content, (segment) =>
-    segment.replace(/(?<=[^\s*_])(\*\*\*|\*\*|\*|___|__|_)(?=[가-힣])/g, '$1 '),
+    normalizeCollapsedMarkdownTables(segment).replace(
+      /(?<=[^\s*_])(\*\*\*|\*\*|\*|___|__|_)(?=\p{Script=Hangul})/gu,
+      '$1 ',
+    ),
   );
+}
+
+function normalizeCollapsedMarkdownTables(segment: string): string {
+  return segment
+    .split('\n')
+    .map((line) => {
+      if (!looksLikeCollapsedMarkdownTable(line)) {
+        return line;
+      }
+      const candidate = line.replace(/\|\s+\|/g, '|\n|');
+      return looksLikeMarkdownTable(candidate) ? candidate : line;
+    })
+    .join('\n');
+}
+
+function looksLikeCollapsedMarkdownTable(line: string): boolean {
+  const pipeCount = line.match(/\|/g)?.length ?? 0;
+  return pipeCount >= 8 && /\|\s+\|/.test(line);
+}
+
+function looksLikeMarkdownTable(content: string): boolean {
+  const rows = content
+    .split('\n')
+    .map((row) => row.trim())
+    .filter(Boolean);
+  return rows.length >= 2 && rows[0].startsWith('|') && rows[0].endsWith('|') && isMarkdownTableDivider(rows[1]);
+}
+
+function isMarkdownTableDivider(row: string): boolean {
+  return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(row);
 }
 
 function withMarkdownCodeSegments(content: string, formatText: (segment: string) => string): string {
