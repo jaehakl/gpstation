@@ -89,6 +89,8 @@ export class GpStationClient {
   private readonly jobApiPrefix: string;
   private readonly rtcConfig?: RTCConfiguration;
   private readonly prewarmedJobConnections: PreparedJobConnection[] = [];
+  private csrfToken?: string;
+  private csrfPromise?: Promise<string>;
 
   constructor(options: GpStationClientOptions) {
     this.apiBaseUrl = options.apiBaseUrl.replace(/\/+$/, '');
@@ -375,7 +377,7 @@ export class GpStationClient {
     }
   }
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  private async request<T>(path: string, init: RequestInit = {}, retryCsrf = true): Promise<T> {
     const headers = new Headers(init.headers);
     if (!headers.has('Content-Type')) {
       headers.set('Content-Type', 'application/json');
@@ -383,15 +385,59 @@ export class GpStationClient {
     if (this.authMode === 'bearer') {
       headers.set('Authorization', `Bearer ${this.token ?? ''}`);
     }
+    const csrfRequired = this.usesCsrf(path, init.method);
+    if (csrfRequired) {
+      headers.set('X-CSRF-Token', await this.ensureCsrfToken());
+    }
     const response = await fetch(`${this.apiBaseUrl}${path}`, {
       ...init,
       credentials: this.authMode === 'cookie' ? 'include' : init.credentials,
       headers,
     });
+    if (csrfRequired && retryCsrf && response.status === 403) {
+      this.csrfToken = undefined;
+      return await this.request<T>(path, init, false);
+    }
     if (!response.ok) {
       throw new Error(`${response.status} ${await response.text()}`);
     }
     return (await response.json()) as T;
+  }
+
+  private usesCsrf(path: string, method = 'GET'): boolean {
+    return (
+      this.authMode === 'cookie' &&
+      path.startsWith('/web/') &&
+      ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase())
+    );
+  }
+
+  private async ensureCsrfToken(): Promise<string> {
+    if (this.csrfToken) {
+      return this.csrfToken;
+    }
+    if (!this.csrfPromise) {
+      this.csrfPromise = this.fetchCsrfToken().finally(() => {
+        this.csrfPromise = undefined;
+      });
+    }
+    return await this.csrfPromise;
+  }
+
+  private async fetchCsrfToken(): Promise<string> {
+    const response = await fetch(`${this.apiBaseUrl}/web/auth/csrf`, {
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+    });
+    if (!response.ok) {
+      throw new Error(`${response.status} ${await response.text()}`);
+    }
+    const payload = (await response.json()) as { csrf_token?: unknown };
+    if (typeof payload.csrf_token !== 'string' || !payload.csrf_token) {
+      throw new Error('CSRF token response is missing csrf_token');
+    }
+    this.csrfToken = payload.csrf_token;
+    return payload.csrf_token;
   }
 
   private async waitJobAnswer(jobId: string, timeoutMs: number): Promise<JobAnswerWaitResult> {
