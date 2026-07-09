@@ -32,5 +32,14 @@
 
 
 ## 작동 원리
-/app_v1/tutorial.md 참고
 
+자세한 로컬 실행 순서와 API 흐름은 [app_v1/tutorial.md](app_v1/tutorial.md)를 참고한다.
+
+```mermaid
+flowchart LR
+  Master["master<br/>웹/앱 화면"] -->|"JS SDK runJob"| Server["server<br/>Orchestrator"]
+  Server <-->|"control WebSocket"| Launcher["launcher<br/>워크스테이션 상주"]
+  Launcher -->|"spawn/control"| Slave["slave app<br/>slaves/ai worker"]
+  Master <-->|"WebRTC DataChannel<br/>job payload/result/progress"| Slave
+  Server -.->|"상태 저장"| DB[("DB<br/>users/access_keys/launchers/jobs")]
+```
