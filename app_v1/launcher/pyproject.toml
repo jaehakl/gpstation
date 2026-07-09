@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-gpstation-v1-slave-launcher = "app.cli:app"
+launcher = "app.cli:app"
 
 [tool.poetry]
 packages = [
