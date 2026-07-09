@@ -132,8 +132,6 @@ async def start() -> None:
             await conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
         except Exception:
             pass
-        await conn.exec_driver_sql("DROP TABLE IF EXISTS slave_sessions CASCADE;")
-        await conn.exec_driver_sql("ALTER TABLE launchers DROP COLUMN IF EXISTS active_session_ids;")
         await conn.run_sync(Base.metadata.create_all)
 
     async with SessionLocal() as db:
