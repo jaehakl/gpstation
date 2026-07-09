@@ -438,6 +438,13 @@ h3 {
   line-height: 1.55;
 }
 
+.message a {
+  color: var(--accent-strong);
+  font-weight: 950;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .message.warn {
   border-color: #ead59f;
   background: var(--warn-soft);

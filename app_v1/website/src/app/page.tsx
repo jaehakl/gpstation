@@ -75,7 +75,16 @@ export default function DashboardPage() {
           <p className="eyebrow">Approval</p>
           <h1>관리자 승인 대기 중</h1>
           <p className="message warn" style={{ marginTop: 16 }}>
-            승인 전에는 콘솔에 접근할 수 없습니다. 관리자가 DB에서 role을 admin 또는 user로 변경하면 다시 로그인해 주세요.
+            승인 전에는 콘솔에 접근할 수 없습니다. 이용 신청은{' '}
+            <a href="mailto:jaehak@qutat.com">jaehak@qutat.com</a> 으로 문의해 주세요. 관리자가 DB에서 role을 admin 또는 user로
+            변경하면 다시 로그인해 주세요.
+          </p>
+          <p className="message warn" style={{ marginTop: 12 }}>
+            로그인 또는 승인이 어려운 경우{' '}
+            <a href="https://github.com/jaehakl/gpstation" target="_blank" rel="noreferrer">
+              jaehakl/gpstation
+            </a>{' '}
+            소스코드를 활용해 직접 GP Station 서버를 구축할 수 있습니다.
           </p>
         </section>
       </div>
