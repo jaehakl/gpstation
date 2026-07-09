@@ -1,79 +1,36 @@
-GP Station (gps.qutat.com)
+# GP Station (gps.qutat.com)
 
-<제공 가치>
+## 제공 가치
 - 고성능 컴퓨터를 Worker 로 돌려놓고, 컴퓨팅 자원이 부족한 환경(모바일, 노트북, 웹서버 등)에서 API 처럼 사용한다.
-- 대상 : 로컬 AI 모델(LLM, SDXL 등) 사용을 위해 VRAM 24 GB 이상급 컴퓨팅 파워를 보유하고 있는 리테일 사용자들.
+- 대상 : 로컬 AI 모델(LLM, SDXL 등) 사용을 위해 VRAM 24 GB 이상급 워크스테이션을 보유하고 있는 리테일 사용자.
+
+## 용어 설명
+
+#### master
+* 사용자의 웹페이지 화면
+* 챗봇, 게임, 이미지 편집, CAD/CAE Workbench 등 다양한 Retail App
+
+#### slave
+* 워크스테이션에서 실제 구체적인 작업이 돌아가는 subprocess
+* AI 추론, 생성 AI, 시뮬레이션 등 다양한 고성능 HW 요구 작업
+
+#### launcher
+* 워크스테이션에서 slave subprocess 를 실행/종료/제어하는 프로그램
+* server 와 websocket 연결을 상시 유지하며, server 의 지시에 따라 동작
+
+#### server
+* master 의 작업 요청을 받아 적절한 launcher 를 중개해주는 Ochestrator
+* master 와 slave 간 WebRTC DataChannel 연결만 시켜주며, 실제 작업 내용은 볼 수 없음
+
+#### SDK (Software Development Kit)
+- 다양한 slave app, master app 을 개발할 수 있음
+  * 연결 관련 공통 프토토콜, 로직들은 SDK 내부로 캡슐화
+- Master 측 활용
+  * SDK 의 runJob 함수를 호출하기만 하면 slave 에서 처리한 결과물 및 A/S session handler 를 return
+- Slave 측 활용
+  * SDK 의 SlaveApp 을 띄우면 알아서 다양한 master 로부터의 작업 요청이 하나씩 handler 로 들어옴
 
 
-<작업 흐름>
-1. 사용자/API가 GP Station에 session 생성 요청
-2. GP Station이 Worker 메인 앱에 session_start 명령 전송
-3. Worker 메인 앱이 worker subprocess 실행
-4. subprocess가 WebRTC PeerConnection 준비
-5. subprocess가 메인 앱에 signaling endpoint 준비 완료 보고
-6. 메인 앱이 GP Station에 session_ready 보고
-7. 사용자/API가 GP Station에서 session_id와 short-lived token을 받음
-8. 사용자/API가 GP Station signaling API/WebSocket에 접속
-9. 사용자/API와 subprocess가 GP Station을 통해 SDP/ICE 교환
-10. WebRTC DataChannel 체결
-11. 이후 사용자/API ⇄ worker subprocess 직접 통신
-12. 작업 종료 또는 timeout 시 subprocess 종료
+## 작동 원리
+/app_v1/tutorial.md 참고
 
-
-<구조도>
-
-[Worker Main App]
-      │
-      │ WebSocket control
-      ▼
-[GP Station Server]
-      ▲
-      │ signaling API/WebSocket
-      │
-[Client / Backend / Browser]
-
-연결 체결 후:
-
-[Client / Backend / Browser]
-      ⇄ WebRTC DataChannel ⇄
-[Worker Subprocess]
-
-
-<프로세스 별 동작>
-
-Worker Main App
-- GP Station과 WebSocket control channel 유지
-- session_start 수신
-- worker subprocess 생성
-- subprocess와 local IPC 연결
-- signaling 메시지 proxy
-- subprocess lifecycle 관리
-
-Worker Subprocess
-- WebRTC PeerConnection 담당
-- DataChannel 담당
-- job protocol 처리
-- 직접 client/backend/browser와 통신
-- close/cancel/progress/result 처리
-
-GP Station
-- session 생성
-- 권한 검증
-- session descriptor 제공
-- signaling relay
-- session metadata 저장
-- TTL/상태/쿼터 관리
-
-Client/Backend/Browser
-- session descriptor 조회
-- WebRTC offer 생성
-- signaling 수행
-- DataChannel로 subprocess 직접 제어
-
-
-<Server DB>
-- Users
-- AccessKey
-- Workers
-- Masters
-- Slaves
