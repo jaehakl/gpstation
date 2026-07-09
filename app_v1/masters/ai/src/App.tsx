@@ -9,7 +9,6 @@ import {
   RefreshCw,
   Send,
   Square,
-  Terminal,
   Wifi,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -95,12 +94,6 @@ type DisplayFile = ReceivedFile & {
   meta?: SdxlImageMeta;
 };
 
-type JobLogItem = {
-  time: string;
-  stream: string;
-  line: string;
-};
-
 type DiagnosticLogItem = ConnectDiagnosticEvent & {
   id: number;
   time: string;
@@ -128,9 +121,6 @@ export function App() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticLogItem[]>([]);
   const [localSdp, setLocalSdp] = useState('');
   const [remoteSdp, setRemoteSdp] = useState('');
-  const [subprocessLogs, setSubprocessLogs] = useState<JobLogItem[]>([]);
-  const [subprocessLogsBusy, setSubprocessLogsBusy] = useState(false);
-  const [subprocessLogStatus, setSubprocessLogStatus] = useState('No job');
   const [prewarmStatus, setPrewarmStatus] = useState('cold');
 
   const [llmSystemPrompt, setLlmSystemPrompt] = useState('You are a concise assistant.');
@@ -266,51 +256,6 @@ export function App() {
     };
   }, [client, prewarmAiConnection]);
 
-  const refreshJobLogs = useCallback(
-    async (showBusy = true) => {
-      if (!currentJob?.id) {
-        setSubprocessLogs([]);
-        setSubprocessLogStatus('No job');
-        return;
-      }
-      if (showBusy) {
-        setSubprocessLogsBusy(true);
-      }
-      try {
-        const items = await fetchJobLogs(apiBaseUrl, token, currentJob.id);
-        setSubprocessLogs(items);
-        setSubprocessLogStatus(`${items.length} line(s)`);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        setSubprocessLogStatus(message);
-        if (showBusy) {
-          addLog(`job log refresh failed: ${message}`);
-        }
-      } finally {
-        if (showBusy) {
-          setSubprocessLogsBusy(false);
-        }
-      }
-    },
-    [addLog, apiBaseUrl, currentJob, token],
-  );
-
-  useEffect(() => {
-    if (!currentJob?.id) {
-      return undefined;
-    }
-    const firstRefresh = window.setTimeout(() => {
-      void refreshJobLogs(false);
-    }, 0);
-    const timer = window.setInterval(() => {
-      void refreshJobLogs(false);
-    }, 3000);
-    return () => {
-      window.clearTimeout(firstRefresh);
-      window.clearInterval(timer);
-    };
-  }, [currentJob?.id, refreshJobLogs]);
-
   function setNextSdxlFiles(files: DisplayFile[]) {
     revokeFiles(sdxlFilesRef.current);
     sdxlFilesRef.current = files;
@@ -355,8 +300,6 @@ export function App() {
     setLocalSdp('');
     setRemoteSdp('');
     setCurrentJob(null);
-    setSubprocessLogs([]);
-    setSubprocessLogStatus('Creating job');
     try {
       return await client.runJob<TPayload, TResult>(handlerType, payload, {
         slaveAppId: 'ai',
@@ -364,7 +307,6 @@ export function App() {
         rtcConfig: parseRtcConfigInput(rtcIceServersJson),
         onJobCreated: (job) => {
           setCurrentJob(job);
-          setSubprocessLogStatus('Waiting for logs');
           addLog(`job: ${job.id}`);
         },
         onStatus: (nextStatus) => {
@@ -519,8 +461,6 @@ export function App() {
         setLocalSdp('');
         setRemoteSdp('');
         setCurrentJob(null);
-        setSubprocessLogs([]);
-        setSubprocessLogStatus('Creating job');
         const result = await client.runJob<ChatPayload, ChatResponse>('ai.chat', payload, {
           slaveAppId: 'ai',
           timeoutMs: CHAT_TIMEOUT_MS,
@@ -529,7 +469,6 @@ export function App() {
           onEvent: (event) => handleChatEvent(event, assistantMessageId),
           onJobCreated: (job) => {
             setCurrentJob(job);
-            setSubprocessLogStatus('Waiting for logs');
             addLog(`job: ${job.id}`);
           },
           onStatus: (nextStatus) => {
@@ -868,38 +807,6 @@ export function App() {
                 <pre className="sdpBox">{remoteSdp || 'No remote answer yet.'}</pre>
               </details>
             </div>
-
-            <div className="panel subprocessPanel">
-              <div className="panelHeader">
-                <h2>Job Logs</h2>
-                <div className="panelActions">
-                  <Terminal size={17} aria-hidden="true" />
-                  <span>{subprocessLogStatus}</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void refreshJobLogs(true);
-                    }}
-                    disabled={subprocessLogsBusy || !currentJob?.id}
-                    title="Refresh job logs"
-                  >
-                    <RefreshCw size={16} aria-hidden="true" />
-                    <span>Refresh</span>
-                  </button>
-                </div>
-              </div>
-              <div className="subprocessLogList">
-                {subprocessLogs.map((item, index) => (
-                  <div className="subprocessLogLine" key={`${item.time}-${index}`}>
-                    <span>
-                      {formatLogTime(item.time)} {item.stream}
-                    </span>
-                    <code>{item.line}</code>
-                  </div>
-                ))}
-                {subprocessLogs.length === 0 && <p className="emptyText">No job logs yet.</p>}
-              </div>
-            </div>
           </div>
         </section>
       )}
@@ -1128,39 +1035,6 @@ function parseRtcConfigInput(value: string): RTCConfiguration | undefined {
   return trimmed ? { iceServers: parseRtcIceServersJson(trimmed) } : undefined;
 }
 
-async function fetchJobLogs(apiBaseUrl: string, token: string, jobId: string): Promise<JobLogItem[]> {
-  const response = await fetch(`${trimApiBaseUrl(apiBaseUrl)}/v1/jobs/${encodeURIComponent(jobId)}/logs?limit=200`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
-  if (!response.ok) {
-    throw new Error(await readErrorResponse(response));
-  }
-  const payload = (await response.json()) as { items?: JobLogItem[] };
-  return payload.items ?? [];
-}
-
-function trimApiBaseUrl(value: string): string {
-  return value.replace(/\/+$/, '');
-}
-
-async function readErrorResponse(response: Response): Promise<string> {
-  const text = await response.text();
-  if (!text) {
-    return `HTTP ${response.status}`;
-  }
-  try {
-    const payload = JSON.parse(text) as { detail?: unknown };
-    if (typeof payload.detail === 'string') {
-      return payload.detail;
-    }
-  } catch {
-    return text;
-  }
-  return text;
-}
-
 function readChatDelta(payload: unknown): string {
   if (!payload || typeof payload !== 'object' || !('delta' in payload)) {
     return '';
@@ -1340,14 +1214,6 @@ function formatDuration(ms: number): string {
 
 function formatDurationSince(startedAt: Date): string {
   return formatDuration(new Date().getTime() - startedAt.getTime());
-}
-
-function formatLogTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return formatClock(date);
 }
 
 function formatCandidateSummary(summary: CandidateSummary): string {

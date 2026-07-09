@@ -152,7 +152,7 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-The final Nginx config serves the website from `/var/www/gpstation-v1`, proxies `/web/`, `/v1/`, and `/health` to FastAPI, and logs `/v1/sessions/<id>/signal` without query strings. Generic CRUD routes are available only below `/web/crud/*`.
+The final Nginx config serves the website from `/var/www/gpstation-v1`, proxies `/web/`, `/v1/`, and `/health` to FastAPI, and adds browser security headers including CSP. Generic CRUD routes are available only below `/web/crud/*`.
 
 Check renewal:
 

@@ -3,16 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from app.settings import LauncherSettings
 from app.slave_registry import SlaveAppRegistry, load_default_registry
 
 SendControl = Callable[[dict[str, Any]], Awaitable[None]]
-JOB_LOG_LINE_LIMIT = 500
 
 
 @dataclass
@@ -32,13 +29,10 @@ class WorkerManager:
         settings: LauncherSettings,
         send_control: SendControl,
         registry: SlaveAppRegistry | None = None,
-        forward_job_logs: bool = True,
     ) -> None:
         self.settings = settings
         self.send_control = send_control
         self.registry = registry or load_default_registry()
-        self.forward_job_logs = forward_job_logs
-        self.job_logs: dict[str, deque[dict[str, str]]] = {}
         self.worker: ManagedWorker | None = None
         self.current_job_id: str | None = None
         self.worker_status = "idle"
@@ -254,33 +248,7 @@ class WorkerManager:
             if not line:
                 break
             job_id = self.current_job_id or "worker"
-            await self.record_subprocess_log(
-                job_id,
-                "stderr",
-                line.decode("utf-8", errors="replace").rstrip(),
-            )
-
-    async def record_subprocess_log(self, job_id: str, stream: str, line: str) -> None:
-        logged_at = datetime.now(timezone.utc).isoformat()
-        items = self.job_logs.setdefault(job_id, deque(maxlen=JOB_LOG_LINE_LIMIT))
-        items.append({"time": logged_at, "stream": stream, "line": line})
-        print(f"[{job_id}] {line}", flush=True)
-        if not self.forward_job_logs:
-            return
-        await self.send_control(
-            {
-                "type": "job.log",
-                "job_id": job_id,
-                "time": logged_at,
-                "stream": stream,
-                "line": line,
-            }
-        )
-
-    def get_job_logs(self, job_id: str, limit: int = 200) -> list[dict[str, str]]:
-        items = list(self.job_logs.get(job_id, ()))
-        clamped_limit = max(1, min(limit, JOB_LOG_LINE_LIMIT))
-        return items[-clamped_limit:]
+            print(f"[{job_id}] {line.decode('utf-8', errors='replace').rstrip()}", flush=True)
 
     def ready_timeout_seconds_for(self, slave_app_id: str) -> float:
         slave_app = self.registry.get(slave_app_id)

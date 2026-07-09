@@ -369,36 +369,6 @@ dt,
   white-space: pre-wrap;
 }
 
-.subprocessLogList {
-  display: grid;
-  align-content: start;
-  gap: 8px;
-  max-height: 340px;
-  overflow: auto;
-  border-radius: 8px;
-  background: #101615;
-  color: #daf4e8;
-  padding: 12px;
-}
-
-.subprocessLogLine {
-  display: grid;
-  gap: 3px;
-  border-bottom: 1px solid rgba(218, 244, 232, 0.13);
-  padding-bottom: 8px;
-}
-
-.subprocessLogLine span {
-  color: #9cb5aa;
-  font-size: 11px;
-  font-weight: 900;
-}
-
-.subprocessLogLine code {
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-
 .answerBox,
 .resultBox {
   margin: 0;

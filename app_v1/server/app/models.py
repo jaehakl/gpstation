@@ -38,16 +38,6 @@ class LauncherView(BaseModel):
     disconnected_at: Optional[datetime] = None
 
 
-class JobLogItem(BaseModel):
-    time: str
-    stream: str
-    line: str
-
-
-class JobLogResponse(BaseModel):
-    items: list[JobLogItem]
-
-
 from app.routers.v1.models import (  # noqa: E402
     JobAnswerWaitResult,
     JobCreateRequest,
@@ -83,8 +73,6 @@ __all__ = [
     "JobCreateRequest",
     "JobCreateResult",
     "JobData",
-    "JobLogItem",
-    "JobLogResponse",
     "UserData",
     "UserRole",
 ]

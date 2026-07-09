@@ -48,15 +48,10 @@ async def run_connection(settings: LauncherSettings) -> None:
             if accepted.get("type") != "launcher.accepted":
                 raise RuntimeError(f"Expected launcher.accepted, received {accepted.get('type')}")
             print(f"Launcher connection: {accepted.get('launcher_id')}", flush=True)
-            capabilities = accepted.get("capabilities") if isinstance(accepted.get("capabilities"), dict) else {}
-            forward_job_logs = capabilities.get("job_logs") is True
-            if not forward_job_logs:
-                print("Job log forwarding disabled: server did not advertise job_logs capability", flush=True)
             manager = WorkerManager(
                 settings,
                 lambda message: send_json(websocket, send_lock, message),
                 registry,
-                forward_job_logs=forward_job_logs,
             )
             heartbeat_task = asyncio.create_task(send_heartbeats(websocket, send_lock, manager, settings))
 

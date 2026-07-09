@@ -64,7 +64,6 @@ async def launcher_control(websocket: WebSocket) -> None:
                     "type": "launcher.accepted",
                     "launcher_id": launcher_id,
                     "server_time": utcnow().isoformat(),
-                    "capabilities": {"job_logs": True},
                 }
             )
             await dispatch_more_jobs(db)
@@ -113,9 +112,6 @@ async def handle_launcher_message(
     if message.type == "job.progress":
         await JobService.append_progress(db, job_id=message.job_id, progress=message.progress)
         await runtime.set_job_event(message.job_id)
-        return
-    if message.type == "job.log":
-        await runtime.append_job_log(message.job_id, message.stream, message.line, message.time)
         return
     if message.type == "job.result":
         await JobService.mark_result(db, job_id=message.job_id)

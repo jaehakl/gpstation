@@ -38,12 +38,11 @@ def test_parse_launcher_accepted_capabilities():
             "type": "launcher.accepted",
             "launcher_id": "launcher-1",
             "server_time": "2026-07-07T00:00:00+00:00",
-            "capabilities": {"job_logs": True},
         }
     )
 
     assert message.type == "launcher.accepted"
-    assert message.capabilities == {"job_logs": True}
+    assert message.capabilities == {}
 
 
 def test_parse_rejects_extra_fields():
@@ -55,21 +54,17 @@ def test_parse_rejects_extra_fields():
         raise AssertionError("ValidationError was not raised")
 
 
-def test_parse_job_log_message():
-    message = parse_launcher_message(
-        {
-            "type": "job.log",
-            "job_id": "job-1",
-            "time": "2026-07-07T00:00:00+00:00",
-            "stream": "stderr",
-            "line": "model loading",
-        }
-    )
-
-    assert message.type == "job.log"
-    assert message.job_id == "job-1"
-    assert message.stream == "stderr"
-    assert message.line == "model loading"
+def test_parse_rejects_job_log_message():
+    with pytest.raises(ValidationError):
+        parse_launcher_message(
+            {
+                "type": "job.log",
+                "job_id": "job-1",
+                "time": "2026-07-07T00:00:00+00:00",
+                "stream": "stderr",
+                "line": "model loading",
+            }
+        )
 
 
 def test_parse_launcher_heartbeat_with_worker_state():

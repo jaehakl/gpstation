@@ -1,6 +1,6 @@
 import pytest
 
-from app.state import JOB_LOG_LINE_LIMIT, RuntimeRegistry
+from app.state import RuntimeRegistry
 
 
 class DummyWebSocket:
@@ -46,37 +46,3 @@ async def test_runtime_registry_launcher_disconnect_removes_launcher():
     assert await registry.get_launcher(launcher.id) is None
     assert await registry.get_launcher_ids() == set()
 
-
-@pytest.mark.asyncio
-async def test_runtime_registry_stores_job_logs_with_limit():
-    registry = RuntimeRegistry()
-
-    for index in range(JOB_LOG_LINE_LIMIT + 2):
-        await registry.append_job_log(
-            "job-1",
-            "stderr",
-            f"line-{index}",
-            f"2026-07-07T00:00:{index:02d}+00:00",
-        )
-
-    items = await registry.get_job_logs("job-1", limit=JOB_LOG_LINE_LIMIT)
-
-    assert len(items) == JOB_LOG_LINE_LIMIT
-    assert items[0]["line"] == "line-2"
-    assert items[-1]["line"] == f"line-{JOB_LOG_LINE_LIMIT + 1}"
-
-
-@pytest.mark.asyncio
-async def test_runtime_registry_returns_requested_tail_of_job_logs():
-    registry = RuntimeRegistry()
-
-    await registry.append_job_log("job-1", "stderr", "first", "2026-07-07T00:00:00+00:00")
-    await registry.append_job_log("job-1", "stderr", "second", "2026-07-07T00:00:01+00:00")
-
-    assert await registry.get_job_logs("job-1", limit=1) == [
-        {
-            "time": "2026-07-07T00:00:01+00:00",
-            "stream": "stderr",
-            "line": "second",
-        }
-    ]

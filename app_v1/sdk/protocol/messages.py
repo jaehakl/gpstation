@@ -76,14 +76,6 @@ class JobProgress(StrictModel):
     progress: Any = None
 
 
-class JobLog(StrictModel):
-    type: Literal["job.log"]
-    job_id: str
-    time: str
-    stream: Literal["stderr"]
-    line: str
-
-
 class JobResult(StrictModel):
     type: Literal["job.result"]
     job_id: str
@@ -113,7 +105,6 @@ LauncherToServerMessage = Annotated[
         JobAnswer,
         JobRunning,
         JobProgress,
-        JobLog,
         JobResult,
         JobError,
         JobCancelled,

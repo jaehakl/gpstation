@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode, urlparse
 
@@ -29,6 +33,8 @@ PROVIDER = OAuthProvider.google
 OAUTH_STATE_COOKIE = "oauth_state"
 RETURN_TO_COOKIE = "rt"
 AUTHENTICATED_ROLES = {"admin", "user"}
+CSRF_HEADER_NAME = "x-csrf-token"
+CSRF_TOKEN_TTL_SECONDS = 3600
 
 
 @router.get("/google/start")
@@ -159,7 +165,28 @@ async def check_user(request: Request, db: AsyncSession = Depends(get_db)) -> Us
     return user_to_data(user)
 
 
-@router.get("/refresh", response_model=OkResponse)
+@router.get("/csrf")
+async def csrf_token(request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
+    refresh_token = request.cookies.get("refresh_token")
+    if not refresh_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No refresh token")
+
+    claims = verify_refresh_claims(refresh_token)
+    session_id = claims["sid"]
+    auth_session = await get_active_auth_session(db, session_id)
+    if auth_session is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh session revoked")
+
+    user = await db.get(User, claims["sub"])
+    if user is None or not can_authenticate_user(user):
+        auth_session.revoked_at = datetime.now(timezone.utc)
+        await db.commit()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User inactive")
+
+    return {"csrf_token": make_csrf_token(session_id)}
+
+
+@router.post("/refresh", response_model=OkResponse)
 async def refresh(request: Request, response: Response, db: AsyncSession = Depends(get_db)) -> OkResponse:
     refresh_token = request.cookies.get("refresh_token")
     if not refresh_token:
@@ -267,6 +294,55 @@ def verify_refresh_claims(refresh_token: str) -> dict:
     if claims.get("typ") != "refresh" or not claims.get("sid"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not a refresh token")
     return claims
+
+
+def validate_csrf_request(request: Request) -> None:
+    refresh_token = request.cookies.get("refresh_token")
+    csrf_token_value = request.headers.get(CSRF_HEADER_NAME)
+    if not refresh_token or not csrf_token_value:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF token required")
+
+    try:
+        claims = verify_refresh_claims(refresh_token)
+        token_session_hash = csrf_token_session_hash(csrf_token_value)
+    except HTTPException as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token") from exc
+
+    expected_session_hash = csrf_session_hash(claims["sid"])
+    if not secrets.compare_digest(token_session_hash, expected_session_hash):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+
+
+def make_csrf_token(session_id: str, expires_at: int | None = None) -> str:
+    expires = str(expires_at if expires_at is not None else int(time.time()) + CSRF_TOKEN_TTL_SECONDS)
+    unsigned = f"{csrf_session_hash(session_id)}.{expires}.{random_urlsafe(16)}"
+    return f"{unsigned}.{csrf_signature(unsigned)}"
+
+
+def csrf_token_session_hash(token: str) -> str:
+    parts = token.split(".")
+    if len(parts) != 4:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+    session_hash, expires, nonce, signature = parts
+    unsigned = f"{session_hash}.{expires}.{nonce}"
+    if not secrets.compare_digest(signature, csrf_signature(unsigned)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token")
+    try:
+        expires_at = int(expires)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid CSRF token") from exc
+    if expires_at <= int(time.time()):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Expired CSRF token")
+    return session_hash
+
+
+def csrf_session_hash(session_id: str) -> str:
+    return base64.urlsafe_b64encode(hash_token(session_id)).rstrip(b"=").decode("ascii")
+
+
+def csrf_signature(unsigned: str) -> str:
+    digest = hmac.new(settings.jwt_secret.encode("utf-8"), unsigned.encode("utf-8"), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
 def ensure_google_configured() -> None:

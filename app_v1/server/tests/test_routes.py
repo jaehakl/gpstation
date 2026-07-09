@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
-from app.auth import Principal
 from app.main import app
 from app.models import UserData
 from app.models import JobCreateRequest
@@ -45,6 +45,7 @@ def test_launcher_routes_replace_legacy_routes():
         "/web/jobs/{job_id}/kill",
         "/web/auth/google/start",
         "/web/auth/google/callback",
+        "/web/auth/csrf",
         "/web/auth/me",
         "/web/auth/refresh",
         "/web/auth/logout",
@@ -56,7 +57,8 @@ def test_launcher_routes_replace_legacy_routes():
     assert "/v1/launchers/control" in paths
     assert "/v1/jobs" in paths
     assert "/v1/jobs/{job_id}" in paths
-    assert "/v1/jobs/{job_id}/logs" in paths
+    assert "/v1/jobs/{job_id}/logs" not in paths
+    assert "/v1/jobs/{job_id}/log" not in paths
     assert "/v1/jobs/{job_id}/wait-answer" in paths
     assert "/v1/jobs/{job_id}/kill" in paths
     assert "/v1/sessions" not in paths
@@ -172,6 +174,7 @@ async def test_v1_cors_allows_any_browser_origin():
     assert status == 404
     assert headers["access-control-allow-origin"] == "*"
     assert "access-control-allow-credentials" not in headers
+    assert "default-src 'self'" in headers["content-security-policy"]
 
 
 @pytest.mark.asyncio
@@ -191,30 +194,28 @@ async def test_cookie_backed_routes_do_not_allow_unknown_cors_origin():
 
 
 @pytest.mark.asyncio
-async def test_launcher_job_log_message_is_stored(monkeypatch):
-    registry = RuntimeRegistry()
-    monkeypatch.setattr(launchers, "runtime", registry)
+async def test_web_unsafe_routes_require_csrf_token():
+    status, headers = await call_asgi("POST", "/web/auth/logout", {})
 
-    await launchers.handle_launcher_message(
-        object(),
-        "launcher-1",
-        object(),
-        {
-            "type": "job.log",
-            "job_id": "job-1",
-            "time": "2026-07-07T00:00:00+00:00",
-            "stream": "stderr",
-            "line": "loading model",
-        },
-    )
+    assert status == 403
+    assert "default-src 'self'" in headers["content-security-policy"]
 
-    assert await registry.get_job_logs("job-1") == [
-        {
-            "time": "2026-07-07T00:00:00+00:00",
-            "stream": "stderr",
-            "line": "loading model",
-        }
-    ]
+
+@pytest.mark.asyncio
+async def test_launcher_job_log_message_is_rejected():
+    with pytest.raises(ValidationError):
+        await launchers.handle_launcher_message(
+            object(),
+            "launcher-1",
+            object(),
+            {
+                "type": "job.log",
+                "job_id": "job-1",
+                "time": "2026-07-07T00:00:00+00:00",
+                "stream": "stderr",
+                "line": "loading model",
+            },
+        )
 
 
 def test_extract_slave_startup_timeouts_ignores_invalid_values():
@@ -227,32 +228,6 @@ def test_extract_slave_startup_timeouts_ignores_invalid_values():
             }
         }
     ) == {"ai": 300}
-
-
-@pytest.mark.asyncio
-async def test_v1_job_logs_requires_job_owner(monkeypatch):
-    registry = RuntimeRegistry()
-    await registry.append_job_log("job-1", "stderr", "job log", "2026-07-07T00:00:00+00:00")
-    monkeypatch.setattr(jobs, "runtime", registry)
-
-    response = await jobs.get_job_logs(
-        "job-1",
-        limit=10,
-        principal=Principal(token="token", user_id="user-1", scopes=frozenset({"client"})),
-        db=FakeDb(object()),
-    )
-
-    assert response.items[0].line == "job log"
-
-    with pytest.raises(HTTPException) as error:
-        await jobs.get_job_logs(
-            "job-1",
-            limit=10,
-            principal=Principal(token="token", user_id="other-user", scopes=frozenset({"client"})),
-            db=FakeDb(None),
-        )
-
-    assert error.value.status_code == 404
 
 
 @pytest.mark.asyncio

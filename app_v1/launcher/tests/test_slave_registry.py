@@ -6,7 +6,7 @@ import pytest
 from app.control import handle_server_message, launcher_hello_payload
 from app.settings import LauncherSettings
 from app.slave_registry import SlaveApp, SlaveAppRegistry, load_registry
-from app.subprocess_manager import JOB_LOG_LINE_LIMIT, ManagedWorker, WorkerManager, json_line, subprocess_env
+from app.subprocess_manager import ManagedWorker, WorkerManager, json_line, subprocess_env
 
 
 def write_manifest(root, folder_name: str, slave_app_id: str, **extra) -> None:
@@ -304,66 +304,21 @@ async def test_handle_server_message_dispatches_job_controls():
 
 
 @pytest.mark.asyncio
-async def test_record_subprocess_log_sends_control_message_and_stores_buffer():
+async def test_read_worker_stderr_prints_locally_without_control_message(capsys):
     messages = []
 
     async def send_control(message):
         messages.append(message)
 
     manager = WorkerManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
+    manager.current_job_id = "job-1"
+    process = FakeWorkerProcess(stderr_lines=[b"loading model\n"])
 
-    await manager.record_subprocess_log("job-1", "stderr", "loading model")
+    await manager.read_worker_stderr(process)
 
-    logs = manager.get_job_logs("job-1")
-    assert logs == [
-        {
-            "time": messages[0]["time"],
-            "stream": "stderr",
-            "line": "loading model",
-        }
-    ]
-    assert messages[0]["type"] == "job.log"
-    assert messages[0]["job_id"] == "job-1"
-    assert messages[0]["stream"] == "stderr"
-    assert messages[0]["line"] == "loading model"
-
-
-@pytest.mark.asyncio
-async def test_record_subprocess_log_can_disable_control_forwarding():
-    messages = []
-
-    async def send_control(message):
-        messages.append(message)
-
-    manager = WorkerManager(
-        LauncherSettings(access_token="test-token"),
-        send_control,
-        SlaveAppRegistry([]),
-        forward_job_logs=False,
-    )
-
-    await manager.record_subprocess_log("job-1", "stderr", "loading model")
-
-    assert manager.get_job_logs("job-1")[0]["line"] == "loading model"
+    captured = capsys.readouterr()
+    assert "[job-1] loading model" in captured.out
     assert messages == []
-
-
-@pytest.mark.asyncio
-async def test_subprocess_log_buffer_discards_old_lines():
-    messages = []
-
-    async def send_control(message):
-        messages.append(message)
-
-    manager = WorkerManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
-
-    for index in range(JOB_LOG_LINE_LIMIT + 2):
-        await manager.record_subprocess_log("job-1", "stderr", f"line-{index}")
-
-    logs = manager.get_job_logs("job-1", limit=JOB_LOG_LINE_LIMIT)
-    assert len(logs) == JOB_LOG_LINE_LIMIT
-    assert logs[0]["line"] == "line-2"
-    assert logs[-1]["line"] == f"line-{JOB_LOG_LINE_LIMIT + 1}"
 
 
 @pytest.mark.asyncio
@@ -410,6 +365,17 @@ class FakeWorkerStdin:
 
 
 class FakeWorkerProcess:
-    def __init__(self):
+    def __init__(self, stderr_lines=None):
         self.stdin = FakeWorkerStdin()
+        self.stderr = FakeStream(stderr_lines or [])
         self.returncode = None
+
+
+class FakeStream:
+    def __init__(self, lines):
+        self.lines = list(lines)
+
+    async def readline(self):
+        if not self.lines:
+            return b""
+        return self.lines.pop(0)

@@ -102,7 +102,6 @@ Launcher는 필요한 slave app worker가 없으면 `slaves/ai` subprocess를 `-
 
 - `POST /v1/jobs`: job 생성
 - `GET /v1/jobs/{job_id}`: job 상태 조회
-- `GET /v1/jobs/{job_id}/logs`: worker stderr 기반 job log 조회
 - `GET /v1/jobs/{job_id}/wait-answer`: answer 준비 대기
 - `POST /v1/jobs/{job_id}/kill`: job 취소 요청
 - `GET /v1/launchers`: 사용 가능한 launcher 조회
@@ -126,7 +125,6 @@ Launcher에서 서버로 보내는 주요 메시지:
 - `job.result`
 - `job.error`
 - `job.cancelled`
-- `job.log`
 - `worker.reset.done`
 
 ## 6. DB 모델

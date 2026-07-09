@@ -26,7 +26,7 @@
 - DataChannel label: `gpstation.v1`.
 
 ## Verification Notes
-- Server tests cover protocol validation, token auth, launcher ownership, job routing, job logs, and website CRUD boundaries.
+- Server tests cover protocol validation, token auth, launcher ownership, job routing, and website CRUD boundaries.
 - Launcher tests cover control WebSocket URL derivation, executable registry loading, worker command selection, and missing executable environment errors.
 - SDK tests cover protocol validation and slave runtime behavior.
 - Browser verification uses `app_v1/masters/ai` after starting the server and launcher.

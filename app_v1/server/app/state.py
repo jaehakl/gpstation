@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import WebSocket
-
-JOB_LOG_LINE_LIMIT = 500
 
 
 def utcnow() -> datetime:
@@ -30,7 +27,6 @@ class RuntimeRegistry:
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
         self.launchers: dict[str, LauncherRuntime] = {}
-        self.job_logs: dict[str, deque[dict[str, str]]] = {}
         self.job_events: dict[str, asyncio.Event] = {}
 
     async def register_launcher(
@@ -143,29 +139,6 @@ class RuntimeRegistry:
             if launcher is None:
                 return None
             return launcher.slave_app_startup_timeouts.get(slave_app_id)
-
-    async def append_job_log(
-        self,
-        job_id: str,
-        stream: str,
-        line: str,
-        logged_at: str | None = None,
-    ) -> None:
-        async with self.lock:
-            items = self.job_logs.setdefault(job_id, deque(maxlen=JOB_LOG_LINE_LIMIT))
-            items.append(
-                {
-                    "time": logged_at or utcnow().isoformat(),
-                    "stream": stream,
-                    "line": line,
-                }
-            )
-
-    async def get_job_logs(self, job_id: str, limit: int = 200) -> list[dict[str, str]]:
-        async with self.lock:
-            items = list(self.job_logs.get(job_id, ()))
-        clamped_limit = max(1, min(limit, JOB_LOG_LINE_LIMIT))
-        return items[-clamped_limit:]
 
 
 runtime = RuntimeRegistry()
