@@ -1,4 +1,4 @@
-# GP Station (gps.qutat.com)
+# GP Station
 
 ## 제공 가치
 - 고성능 컴퓨터를 Worker 로 돌려놓고, 컴퓨팅 자원이 부족한 환경(모바일, 노트북, 웹서버 등)에서 API 처럼 사용한다.
@@ -21,6 +21,7 @@
 #### server
 * master 의 작업 요청을 받아 적절한 launcher 를 중개해주는 Ochestrator
 * master 와 slave 간 WebRTC DataChannel 연결만 시켜주며, 실제 작업 내용은 볼 수 없음
+* [gps.qutat.com](https://gps.qutat.com) 에서 호스팅 중
 
 #### SDK (Software Development Kit)
 - 다양한 slave app, master app 을 개발할 수 있음
