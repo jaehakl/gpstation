@@ -86,7 +86,6 @@ path = "embedding"
 [[embeddings.models]]
 name = "remote"
 model_name = "org/model"
-revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 local_files_only = true
 """
 
@@ -118,6 +117,7 @@ class ModelCatalogTest(unittest.TestCase):
         self.assertNotIn("path", payload["models"][0])
         self.assertEqual(payload["models"][0]["source_type"], "path")
         self.assertEqual(payload["models"][1]["model_name"], "org/model")
+        self.assertIsNone(payload["models"][1]["revision"])
         self.assertIsNone(llm_payload["models"][0]["n_threads"])
         self.assertEqual(llm_payload["models"][1]["n_threads"], 4)
         self.assertEqual(llm_payload["models"][1]["n_gpu_layers"], 8)
@@ -146,11 +146,15 @@ class ModelCatalogTest(unittest.TestCase):
             ):
                 default_model, default_path = model_catalog.resolve_llm_model(None)
                 named_model, named_path = model_catalog.resolve_llm_model("llm-a")
+                remote_model, remote_source, remote_revision = model_catalog.resolve_embedding_model("remote")
 
         self.assertEqual(default_model.name, "llm-b")
         self.assertEqual(Path(default_path).name, "llm-b.gguf")
         self.assertEqual(named_model.max_tokens, 256)
         self.assertEqual(Path(named_path).name, "llm-a.gguf")
+        self.assertEqual(remote_model.name, "remote")
+        self.assertEqual(remote_source, "org/model")
+        self.assertIsNone(remote_revision)
 
     def test_rejects_duplicate_names_unknown_models_and_missing_paths(self) -> None:
         duplicate = CATALOG.replace('name = "llm-b"', 'name = "llm-a"')
@@ -196,6 +200,15 @@ class ModelCatalogTest(unittest.TestCase):
             )
         with self.assertRaises(ValueError):
             model_catalog.EmbeddingModelConfig(name="unpinned", model_name="org/model", revision="main")
+        with self.assertRaises(ValueError):
+            model_catalog.EmbeddingModelConfig(name="local-revision", path="local", revision="a" * 40)
+
+        unpinned = model_catalog.EmbeddingModelConfig(name="default", model_name="org/model")
+        blank_revision = model_catalog.EmbeddingModelConfig(name="blank", model_name="org/model", revision="  ")
+        pinned = model_catalog.EmbeddingModelConfig(name="pinned", model_name="org/model", revision="a" * 40)
+        self.assertIsNone(unpinned.revision)
+        self.assertIsNone(blank_revision.revision)
+        self.assertEqual(pinned.revision, "a" * 40)
 
     def test_effective_llm_model_requires_every_non_optional_parameter(self) -> None:
         with self.assertRaises(ValueError) as error:

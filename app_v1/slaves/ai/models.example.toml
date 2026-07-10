@@ -90,7 +90,6 @@ path = "models/embedding"
 local_files_only = true
 
 [[embeddings.models]]
-name = "cached-huggingface-embedding"
+name = "cached-default-revision-embedding"
 model_name = "organization/model-name"
-revision = "0123456789abcdef0123456789abcdef01234567"
 local_files_only = true

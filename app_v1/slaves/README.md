@@ -13,7 +13,7 @@ Copy `app_v1/slaves/ai/models.example.toml` to `models.toml`, then register at l
 
 - `[llm]` requires the shared GPU/context, batch, attention, and generation values shown in the example. Each model requires only `name` and `path`; optional fields override the shared values. Optional `n_gpu_layers` and `n_threads` may be set at either level.
 - `[sdxl]` requires the shared ControlNet IDs and image/control generation defaults. Each model requires only `name` and `path`; optional fields, including `clip_skip`, override the shared values.
-- Embedding entries contain either a local `path`, or `model_name` plus an immutable 40-character commit `revision`; `local_files_only` defaults to `true`.
+- Embedding entries contain either a local `path` or a Hugging Face `model_name`. `revision` is optional; when provided it must be an immutable 40-character commit SHA. With `local_files_only=true`, an omitted revision requires the model's default revision to already exist in the local cache.
 
 See `models.example.toml` for the complete schema. `.env` is now used only for optional VoiceVox runtime settings.
 

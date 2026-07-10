@@ -75,7 +75,7 @@ class EmbeddingHandlerTest(unittest.IsolatedAsyncioTestCase):
 
 
 class EmbeddingServiceTest(unittest.IsolatedAsyncioTestCase):
-    async def test_remote_model_requires_immutable_revision(self) -> None:
+    async def test_remote_model_rejects_invalid_provided_revision(self) -> None:
         with patch.object(
             embedding_service,
             "resolve_embedding_model",
@@ -85,6 +85,31 @@ class EmbeddingServiceTest(unittest.IsolatedAsyncioTestCase):
                 await embedding_service.generate_embedding(EmbeddingRequest(text="hello"))
 
         self.assertIn("40-character commit SHA", str(error.exception))
+
+    async def test_remote_model_allows_default_revision(self) -> None:
+        encode_cut_text = AsyncMock(return_value=[0.3, 0.4])
+        model = EmbeddingModelConfig(
+            name="default-revision-embedding",
+            model_name="org/model",
+            local_files_only=True,
+        )
+        with (
+            patch.object(
+                embedding_service,
+                "resolve_embedding_model",
+                return_value=(model, "org/model", None),
+            ),
+            patch.object(embedding_service, "encode_cut_text", encode_cut_text),
+        ):
+            response = await embedding_service.generate_embedding(EmbeddingRequest(text="hello"))
+
+        self.assertEqual(response.model, "default-revision-embedding")
+        encode_cut_text.assert_awaited_once_with(
+            "org/model",
+            "hello",
+            revision=None,
+            local_files_only=True,
+        )
 
     async def test_remote_model_uses_pinned_offline_snapshot(self) -> None:
         revision = "a" * 40

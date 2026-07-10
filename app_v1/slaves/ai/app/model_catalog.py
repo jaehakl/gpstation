@@ -96,14 +96,15 @@ class EmbeddingModelConfig(CatalogModel):
     def validate_source(self) -> "EmbeddingModelConfig":
         has_path = bool(self.path and self.path.strip())
         has_model_name = bool(self.model_name and self.model_name.strip())
+        revision = (self.revision or "").strip()
         if has_path == has_model_name:
             raise ValueError("exactly one of path or model_name is required")
-        if has_model_name:
-            revision = (self.revision or "").strip()
+        if has_model_name and revision:
             if len(revision) != 40 or any(char not in "0123456789abcdefABCDEF" for char in revision):
                 raise ValueError("revision must be a 40-character commit SHA")
-        elif self.revision:
+        elif not has_model_name and revision:
             raise ValueError("revision is only supported with model_name")
+        self.revision = revision or None
         return self
 
 
