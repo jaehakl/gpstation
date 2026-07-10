@@ -67,6 +67,7 @@ export class GpStationJobSession implements JobSession {
           options.onEvent?.(event);
         }
       },
+      options.attachments ?? [],
     );
   }
 
@@ -317,6 +318,7 @@ export class GpStationClient {
       const firstResultPromise = session.call<TInput, TResult>(handlerType, input, {
         timeoutMs,
         onEvent: options.onEvent,
+        attachments: options.attachments,
       });
       inputSent = true;
       const firstResult = await firstResultPromise;

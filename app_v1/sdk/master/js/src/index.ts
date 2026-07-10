@@ -19,6 +19,7 @@ export type {
   JobSessionFinishOptions,
   LauncherView,
   ReceivedFile,
+  RequestAttachment,
   RunJobOptions,
   RunJobSessionResult,
   SignalPayload,

@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
-from app.model_runtime.voicevox import (
+from app.voicevox.runtime import (
     VoicevoxInitializeOptions,
     VoicevoxLoadOnnxruntimeOptions,
     VoicevoxRuntime,
@@ -154,7 +154,7 @@ class VoicevoxRuntimeTest(unittest.TestCase):
         library = FakeVoicevoxLibrary(self.onnx_filename)
         runtime = VoicevoxRuntime(self.runtime_dir, cpu_num_threads=3)
 
-        with patch("app.model_runtime.voicevox.ctypes.CDLL", return_value=library) as load_library:
+        with patch("app.voicevox.runtime.ctypes.CDLL", return_value=library) as load_library:
             speakers = runtime.speakers()
             query = runtime.create_audio_query("こんにちは", 2)
             query["speedScale"] = 1.25
@@ -184,7 +184,7 @@ class VoicevoxRuntimeTest(unittest.TestCase):
         library.voicevox_audio_query_validate.implementation = lambda query: 14
         runtime = VoicevoxRuntime(self.runtime_dir)
 
-        with patch("app.model_runtime.voicevox.ctypes.CDLL", return_value=library):
+        with patch("app.voicevox.runtime.ctypes.CDLL", return_value=library):
             with self.assertRaisesRegex(RuntimeError, "validate audio query: fake error"):
                 runtime.synthesis({"accentPhrases": []}, 2)
             runtime.close()
@@ -195,7 +195,7 @@ class VoicevoxRuntimeTest(unittest.TestCase):
         library = FakeVoicevoxLibrary(self.onnx_filename, version="0.16.3")
         runtime = VoicevoxRuntime(self.runtime_dir)
 
-        with patch("app.model_runtime.voicevox.ctypes.CDLL", return_value=library):
+        with patch("app.voicevox.runtime.ctypes.CDLL", return_value=library):
             with self.assertRaisesRegex(
                 RuntimeError,
                 "Unsupported VOICEVOX Core version: expected 0.16.4, got 0.16.3",
@@ -208,7 +208,7 @@ class VoicevoxRuntimeTest(unittest.TestCase):
         library = FakeVoicevoxLibrary(self.onnx_filename)
         runtime = VoicevoxRuntime(self.runtime_dir)
 
-        with patch("app.model_runtime.voicevox.ctypes.CDLL", return_value=library) as load_library:
+        with patch("app.voicevox.runtime.ctypes.CDLL", return_value=library) as load_library:
             with ThreadPoolExecutor(max_workers=2) as executor:
                 results = list(executor.map(lambda _: runtime.speakers(), range(2)))
             runtime.close()

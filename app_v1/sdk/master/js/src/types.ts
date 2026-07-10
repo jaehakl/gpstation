@@ -45,6 +45,13 @@ export type AttachmentMetadata = {
   size: number;
 };
 
+export type RequestAttachment = {
+  id: string;
+  blob: Blob;
+  name?: string;
+  mimeType?: string;
+};
+
 export type AttachmentChunkHeader = {
   kind: 'attachment.chunk';
   callId: string;
@@ -71,6 +78,7 @@ export type JobEvent = {
 export type JobSessionCallOptions = {
   timeoutMs?: number;
   onEvent?: (event: JobEvent) => void;
+  attachments?: RequestAttachment[];
 };
 
 export type JobSessionFinishOptions = {
@@ -142,6 +150,7 @@ export type RunJobOptions = ConnectOptions & {
   onJobCreated?: (job: JobDescriptor) => void;
   autoFinish?: boolean;
   onEvent?: (event: JobEvent) => void;
+  attachments?: RequestAttachment[];
 };
 
 export type JobConnectionPrewarmOptions = {

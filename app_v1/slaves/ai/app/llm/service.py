@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-from app.model_runtime.llm import ask_llm
-from app.model_runtime.llm_chat import generate_chat_with_llm
-from app.models import ChatRequest, ChatResponse, LlmRequest, LlmResponse
+from app.llm.chat import generate_chat_with_llm
+from app.llm.models import ChatRequest, ChatResponse, LlmRequest, LlmResponse
+from app.llm.runtime import ask_llm
 
 
 async def generate_llm_answer(request: LlmRequest) -> LlmResponse:

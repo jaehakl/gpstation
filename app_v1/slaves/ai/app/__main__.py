@@ -1,327 +1,35 @@
 from __future__ import annotations
 
-import asyncio
-import time
 from typing import Any
 
-from sdk.slave import DataChannelAttachment, DataChannelMessage, SlaveApp, SlaveContext, run_app
+from sdk.slave import SlaveApp, SlaveContext, run_app
 
-from app.logging import log, log_exception
-from app.model_runtime.embedding import warmup_embedding_import
-from app.model_runtime.image import warmup_sdxl_imports
-from app.model_runtime.llm_chat import prepare_chat_messages, prune_chat_messages
-from app.model_runtime.llm import warmup_llm_import
-from app.model_runtime.voicevox import get_voicevox_runtime
-from app.models import (
-    ChatRequest,
-    EmbeddingRequest,
-    LlmRequest,
-    SdxlT2IRequest,
-    VoicevoxAudioQueryRequest,
-    VoicevoxSynthesisRequest,
-)
-from app.service.embedding import generate_embedding
-from app.service.image import generate_sdxl_t2i_images
-from app.service.llm import generate_chat_answer, generate_llm_answer
-from app.settings import settings
+from app.embeddings import initialize as initialize_embeddings
+from app.embeddings import register_handlers as register_embeddings_handlers
+from app.llm import initialize as initialize_llm
+from app.llm import register_handlers as register_llm_handlers
+from app.logging import log_exception
+from app.sdxl import initialize as initialize_sdxl
+from app.sdxl import register_handlers as register_sdxl_handlers
+from app.voicevox import register_handlers as register_voicevox_handlers
 
 
 app = SlaveApp(memory={})
+register_llm_handlers(app)
+register_embeddings_handlers(app)
+register_sdxl_handlers(app)
+register_voicevox_handlers(app)
 
 
 @app.initialize
 async def initialize(memory: dict[str, Any] | None, context: SlaveContext) -> None:
     try:
-        model_name = (settings.embedding_model_name or settings.embedding_model_path).strip()
-        if model_name:
-            stage_started_at = time.perf_counter()
-            log(f"ai initialize embedding import warmup start session={context.session_id} model={model_name}")
-            warmup_embedding_import(model_name)
-            duration_ms = int((time.perf_counter() - stage_started_at) * 1000)
-            log(
-                "ai initialize embedding import warmup complete "
-                f"session={context.session_id} model={model_name} duration_ms={duration_ms}"
-            )
-
-        stage_started_at = time.perf_counter()
-        log(f"ai initialize LLM import warmup start session={context.session_id}")
-        warmup_llm_import()
-        duration_ms = int((time.perf_counter() - stage_started_at) * 1000)
-        log(f"ai initialize LLM import warmup complete session={context.session_id} duration_ms={duration_ms}")
-
-        stage_started_at = time.perf_counter()
-        log(f"ai initialize SDXL import warmup start session={context.session_id}")
-        warmup_sdxl_imports()
-        duration_ms = int((time.perf_counter() - stage_started_at) * 1000)
-        log(f"ai initialize SDXL import warmup complete session={context.session_id} duration_ms={duration_ms}")
+        await initialize_embeddings(context)
+        await initialize_llm(context)
+        await initialize_sdxl(context)
     except Exception as exc:
         log_exception(f"ai initialize import warmup failed session={context.session_id}", exc)
         raise
-
-
-@app.handler("ai.llm")
-async def ai_llm(message: DataChannelMessage, memory: dict[str, Any] | None, context: SlaveContext) -> DataChannelMessage:
-    started_at = time.perf_counter()
-    try:
-        reject_request_attachments(message)
-        request = LlmRequest.model_validate(message.payload)
-        log(
-            "ai.llm start "
-            f"session={context.session_id} "
-            f"system_chars={len(request.system_prompt)} "
-            f"prompt_chars={len(request.prompt)} "
-            f"max_tokens={request.max_tokens} "
-            f"temperature={request.temperature}"
-        )
-        response = await generate_llm_answer(request)
-        duration_ms = int((time.perf_counter() - started_at) * 1000)
-        log(f"ai.llm complete session={context.session_id} duration_ms={duration_ms} answer_chars={len(response.answer)}")
-        return DataChannelMessage(
-            id=message.id,
-            type="ai.llm.result",
-            payload=response.model_dump(),
-        )
-    except Exception as exc:
-        duration_ms = int((time.perf_counter() - started_at) * 1000)
-        log_exception(f"ai.llm failed session={context.session_id} duration_ms={duration_ms}", exc)
-        raise
-
-
-@app.handler("ai.chat")
-async def ai_chat(message: DataChannelMessage, memory: dict[str, Any] | None, context: SlaveContext) -> DataChannelMessage:
-    started_at = time.perf_counter()
-    try:
-        reject_request_attachments(message)
-        request = ChatRequest.model_validate(message.payload)
-        state, messages = prepare_chat_messages(memory, context.session_id, request)
-        log(
-            "ai.chat start "
-            f"session={context.session_id} "
-            f"history_messages={len(messages)} "
-            f"prompt_chars={len(request.prompt)} "
-            f"max_tokens={request.max_tokens} "
-            f"temperature={request.temperature}"
-        )
-
-        async def emit_delta(delta: str) -> None:
-            await context.emit_event("ai.chat.delta", {"delta": delta})
-
-        response = await generate_chat_answer(request, messages, emit_delta)
-        state["messages"] = prune_chat_messages(messages + [{"role": "assistant", "content": response.answer}])
-        duration_ms = int((time.perf_counter() - started_at) * 1000)
-        log(f"ai.chat complete session={context.session_id} duration_ms={duration_ms} answer_chars={len(response.answer)}")
-        return DataChannelMessage(
-            id=message.id,
-            type="ai.chat.result",
-            payload=response.model_dump(),
-        )
-    except Exception as exc:
-        duration_ms = int((time.perf_counter() - started_at) * 1000)
-        log_exception(f"ai.chat failed session={context.session_id} duration_ms={duration_ms}", exc)
-        raise
-
-
-@app.handler("ai.embeddings")
-async def ai_embeddings(message: DataChannelMessage, memory: dict[str, Any] | None, context: SlaveContext) -> DataChannelMessage:
-    started_at = time.perf_counter()
-    try:
-        reject_request_attachments(message)
-        request = EmbeddingRequest.model_validate(message.payload)
-        log(f"ai.embeddings start session={context.session_id} text_chars={len(request.text)}")
-        response = await generate_embedding(request)
-        duration_ms = int((time.perf_counter() - started_at) * 1000)
-        log(
-            "ai.embeddings complete "
-            f"session={context.session_id} "
-            f"duration_ms={duration_ms} "
-            f"dimensions={response.dimensions}"
-        )
-        return DataChannelMessage(
-            id=message.id,
-            type="ai.embeddings.result",
-            payload=response.model_dump(),
-        )
-    except Exception as exc:
-        duration_ms = int((time.perf_counter() - started_at) * 1000)
-        log_exception(f"ai.embeddings failed session={context.session_id} duration_ms={duration_ms}", exc)
-        raise
-
-
-@app.handler("ai.sdxl.t2i")
-async def ai_sdxl_t2i(message: DataChannelMessage, memory: dict[str, Any] | None, context: SlaveContext) -> DataChannelMessage:
-    started_at = time.perf_counter()
-    try:
-        reject_request_attachments(message)
-        request = SdxlT2IRequest.model_validate(message.payload)
-        log(
-            "ai.sdxl.t2i start "
-            f"session={context.session_id} "
-            f"count={len(request.prompts)} "
-            f"size={request.width}x{request.height} "
-            f"step={request.step} "
-            f"cfg={request.cfg} "
-            f"format={request.format} "
-            f"seeds={request.seeds or 'auto'}"
-        )
-        response = await generate_sdxl_t2i_images(request)
-        payload_images = []
-        attachments = []
-        for index, image in enumerate(response.images, start=1):
-            extension = "jpg" if image.format == "jpg" else "png"
-            mime_type = "image/jpeg" if extension == "jpg" else "image/png"
-            attachment_id = f"image-{index}"
-            name = f"sdxl-{image.seed}.{extension}"
-            attachments.append(
-                DataChannelAttachment(
-                    id=attachment_id,
-                    name=name,
-                    mimeType=mime_type,
-                    size=len(image.image_bytes),
-                    data=image.image_bytes,
-                )
-            )
-            payload_images.append(
-                {
-                    "attachment_id": attachment_id,
-                    "name": name,
-                    "format": image.format,
-                    "mimeType": mime_type,
-                    "size": len(image.image_bytes),
-                    "seed": image.seed,
-                }
-            )
-
-        duration_ms = int((time.perf_counter() - started_at) * 1000)
-        total_bytes = sum(attachment.size or 0 for attachment in attachments)
-        log(
-            "ai.sdxl.t2i complete "
-            f"session={context.session_id} "
-            f"duration_ms={duration_ms} "
-            f"images={len(payload_images)} "
-            f"bytes={total_bytes}"
-        )
-        return DataChannelMessage(
-            id=message.id,
-            type="ai.sdxl.t2i.result",
-            payload={
-                "images": payload_images,
-                "count": len(payload_images),
-            },
-            attachments=attachments,
-        )
-    except Exception as exc:
-        duration_ms = int((time.perf_counter() - started_at) * 1000)
-        log_exception(f"ai.sdxl.t2i failed session={context.session_id} duration_ms={duration_ms}", exc)
-        raise
-
-
-@app.handler("ai.voicevox.speakers")
-async def ai_voicevox_speakers(
-    message: DataChannelMessage,
-    memory: dict[str, Any] | None,
-    context: SlaveContext,
-) -> DataChannelMessage:
-    started_at = time.perf_counter()
-    try:
-        reject_request_attachments(message)
-        speakers = await asyncio.to_thread(get_voicevox_runtime().speakers)
-        duration_ms = int((time.perf_counter() - started_at) * 1000)
-        log(
-            "ai.voicevox.speakers complete "
-            f"session={context.session_id} duration_ms={duration_ms} speakers={len(speakers)}"
-        )
-        return DataChannelMessage(
-            id=message.id,
-            type="ai.voicevox.speakers.result",
-            payload={"speakers": speakers},
-        )
-    except Exception as exc:
-        duration_ms = int((time.perf_counter() - started_at) * 1000)
-        log_exception(f"ai.voicevox.speakers failed session={context.session_id} duration_ms={duration_ms}", exc)
-        raise
-
-
-@app.handler("ai.voicevox.audio_query")
-async def ai_voicevox_audio_query(
-    message: DataChannelMessage,
-    memory: dict[str, Any] | None,
-    context: SlaveContext,
-) -> DataChannelMessage:
-    started_at = time.perf_counter()
-    try:
-        reject_request_attachments(message)
-        request = VoicevoxAudioQueryRequest.model_validate(message.payload)
-        log(
-            "ai.voicevox.audio_query start "
-            f"session={context.session_id} text_chars={len(request.text)} speaker={request.speaker}"
-        )
-        audio_query = await asyncio.to_thread(
-            get_voicevox_runtime().create_audio_query,
-            request.text,
-            request.speaker,
-        )
-        duration_ms = int((time.perf_counter() - started_at) * 1000)
-        log(f"ai.voicevox.audio_query complete session={context.session_id} duration_ms={duration_ms}")
-        return DataChannelMessage(
-            id=message.id,
-            type="ai.voicevox.audio_query.result",
-            payload={"audio_query": audio_query},
-        )
-    except Exception as exc:
-        duration_ms = int((time.perf_counter() - started_at) * 1000)
-        log_exception(f"ai.voicevox.audio_query failed session={context.session_id} duration_ms={duration_ms}", exc)
-        raise
-
-
-@app.handler("ai.voicevox.synthesis")
-async def ai_voicevox_synthesis(
-    message: DataChannelMessage,
-    memory: dict[str, Any] | None,
-    context: SlaveContext,
-) -> DataChannelMessage:
-    started_at = time.perf_counter()
-    try:
-        reject_request_attachments(message)
-        request = VoicevoxSynthesisRequest.model_validate(message.payload)
-        log(f"ai.voicevox.synthesis start session={context.session_id} speaker={request.speaker}")
-        wav = await asyncio.to_thread(
-            get_voicevox_runtime().synthesis,
-            request.audio_query,
-            request.speaker,
-            request.enable_interrogative_upspeak,
-        )
-        attachment_id = "audio-1"
-        attachment = DataChannelAttachment(
-            id=attachment_id,
-            name="voicevox.wav",
-            mimeType="audio/wav",
-            size=len(wav),
-            data=wav,
-        )
-        duration_ms = int((time.perf_counter() - started_at) * 1000)
-        log(
-            "ai.voicevox.synthesis complete "
-            f"session={context.session_id} duration_ms={duration_ms} bytes={len(wav)}"
-        )
-        return DataChannelMessage(
-            id=message.id,
-            type="ai.voicevox.synthesis.result",
-            payload={
-                "attachment_id": attachment_id,
-                "mime_type": "audio/wav",
-                "size": len(wav),
-            },
-            attachments=[attachment],
-        )
-    except Exception as exc:
-        duration_ms = int((time.perf_counter() - started_at) * 1000)
-        log_exception(f"ai.voicevox.synthesis failed session={context.session_id} duration_ms={duration_ms}", exc)
-        raise
-
-
-def reject_request_attachments(message: DataChannelMessage) -> None:
-    if message.attachments:
-        raise ValueError(f"{message.type} does not support request attachments")
 
 
 if __name__ == "__main__":

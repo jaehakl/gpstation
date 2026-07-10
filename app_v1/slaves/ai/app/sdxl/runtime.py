@@ -7,7 +7,7 @@ import threading
 from typing import Any
 
 from app.logging import log
-from app.model_runtime.gpu_residency import acquire_gpu_model, get_image_cuda_device_id
+from app.gpu_residency import acquire_gpu_model, get_image_cuda_device_id
 
 
 _image_locks: dict[int, asyncio.Lock] = {}
@@ -92,6 +92,12 @@ def warmup_sdxl_imports() -> None:
     log("torch imported for SDXL")
     _load_diffusers_attrs(
         "StableDiffusionXLPipeline",
+        "StableDiffusionXLImg2ImgPipeline",
+        "StableDiffusionXLInpaintPipeline",
+        "ControlNetModel",
+        "StableDiffusionXLControlNetPipeline",
+        "StableDiffusionXLControlNetImg2ImgPipeline",
+        "StableDiffusionXLControlNetInpaintPipeline",
         "EulerDiscreteScheduler",
         "EulerAncestralDiscreteScheduler",
         "DPMSolverMultistepScheduler",

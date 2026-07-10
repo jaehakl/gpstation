@@ -60,6 +60,20 @@ function createJobPeer() {
   return { dataChannel, diagnostics, peer, peerConnection };
 }
 
+async function waitForSentMessages(dataChannel, count) {
+  for (let attempt = 0; attempt < 50 && dataChannel.sent.length < count; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.ok(dataChannel.sent.length >= count, `expected at least ${count} sent messages`);
+}
+
+function decodeSentBinaryFrame(rawFrame) {
+  const frame = new Uint8Array(rawFrame);
+  const headerLength = new DataView(frame.buffer, frame.byteOffset, frame.byteLength).getUint32(0, false);
+  const header = JSON.parse(new TextDecoder().decode(frame.slice(4, 4 + headerLength)));
+  return { header, body: frame.slice(4 + headerLength) };
+}
+
 test('session call dispatches the same default and call onEvent once', async () => {
   const events = [];
   const onEvent = (event) => events.push(event);
@@ -250,4 +264,80 @@ test('job peer call rejects when data channel errors before result', async () =>
   dataChannel.dispatchEvent(new Event('error'));
 
   await assert.rejects(result, /data channel error/);
+});
+
+test('job peer call sends request attachment metadata and ordered binary chunks', async () => {
+  const { dataChannel, peer } = createJobPeer();
+  const data = new Uint8Array(16 * 1024 + 3);
+  data.forEach((_value, index) => {
+    data[index] = index % 251;
+  });
+
+  const result = peer.call(
+    'job-1',
+    'ai.sdxl.i2i',
+    { prompts: ['hello'] },
+    1000,
+    undefined,
+    [{ id: 'image', blob: new Blob([data], { type: 'image/png' }), name: 'input.png' }],
+  );
+  await waitForSentMessages(dataChannel, 3);
+
+  assert.deepEqual(JSON.parse(dataChannel.sent[0]), {
+    kind: 'job.call',
+    id: 'job-1',
+    type: 'ai.sdxl.i2i',
+    payload: { prompts: ['hello'] },
+    attachments: [{ id: 'image', name: 'input.png', mimeType: 'image/png', size: data.byteLength }],
+  });
+  const chunks = dataChannel.sent.slice(1, 3).map(decodeSentBinaryFrame);
+  assert.deepEqual(
+    chunks.map(({ header }) => header),
+    [
+      { kind: 'attachment.chunk', callId: 'job-1', attachmentId: 'image', index: 0, final: false },
+      { kind: 'attachment.chunk', callId: 'job-1', attachmentId: 'image', index: 1, final: true },
+    ],
+  );
+  assert.deepEqual(
+    new Uint8Array([...chunks[0].body, ...chunks[1].body]),
+    data,
+  );
+
+  dataChannel.dispatchMessage(JSON.stringify({ kind: 'job.result', id: 'job-1', payload: { ok: true } }));
+  assert.deepEqual(await result, { payload: { ok: true }, files: [] });
+});
+
+test('job peer call waits for request attachment backpressure', async () => {
+  const { dataChannel, peer } = createJobPeer();
+  dataChannel.bufferedAmount = 512 * 1024 + 1;
+
+  const result = peer.call(
+    'job-1',
+    'ai.sdxl.i2i',
+    {},
+    1000,
+    undefined,
+    [{ id: 'image', blob: new Blob([new Uint8Array([1])], { type: 'image/png' }) }],
+  );
+  await waitForSentMessages(dataChannel, 2);
+  assert.equal(dataChannel.bufferedAmountLowThreshold, 128 * 1024);
+
+  dataChannel.bufferedAmount = 0;
+  dataChannel.dispatchEvent(new Event('bufferedamountlow'));
+  dataChannel.dispatchMessage(JSON.stringify({ kind: 'job.result', id: 'job-1', payload: null }));
+  assert.deepEqual(await result, { payload: null, files: [] });
+});
+
+test('job peer call rejects duplicate request attachment ids before sending', async () => {
+  const { dataChannel, peer } = createJobPeer();
+  const blob = new Blob([new Uint8Array([1])]);
+
+  await assert.rejects(
+    peer.call('job-1', 'ai.sdxl.inpaint', {}, 1000, undefined, [
+      { id: 'image', blob },
+      { id: 'image', blob },
+    ]),
+    /duplicate request attachment id/,
+  );
+  assert.equal(dataChannel.sent.length, 0);
 });

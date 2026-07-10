@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     llm_offload_kqv: bool = True
     llm_enable_thinking: bool = False
     sdxl_ckpt_path: str = ""
+    sdxl_controlnet_scribble_model_id: str = "xinsir/controlnet-scribble-sdxl-1.0"
+    sdxl_controlnet_openpose_model_id: str = "xinsir/controlnet-openpose-sdxl-1.0"
     embedding_model_name: str = ""
     embedding_model_path: str = ""
     embedding_model_revision: str = ""

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from app.model_runtime.embedding import encode_cut_text
-from app.models import EmbeddingRequest, EmbeddingResponse
+from app.embeddings.models import EmbeddingRequest, EmbeddingResponse
+from app.embeddings.runtime import encode_cut_text
 from app.settings import settings
 
 

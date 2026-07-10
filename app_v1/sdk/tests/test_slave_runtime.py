@@ -14,11 +14,13 @@ from sdk.slave import DataChannelAttachment, DataChannelMessage, SlaveApp, Slave
 from sdk.slave.runtime import (
     BUFFERED_AMOUNT_LOW_THRESHOLD,
     CHUNK_SIZE,
+    JOB_DATA_CHANNEL_ATTACHMENT_MAX_BYTES,
     JOB_DATA_CHANNEL_MESSAGE_MAX_BYTES,
     MAX_BUFFERED_AMOUNT,
     attach_worker_job_peer_handlers,
     configure_aioice_gather_timeout,
     emit,
+    encode_binary_frame,
     load_rtc_ice_gather_timeout_seconds,
     load_rtc_memory_cache_enabled,
     load_rtc_ice_servers,
@@ -373,6 +375,128 @@ def test_datachannel_ready_then_call_enqueues_call():
         "type": "ai.embeddings",
         "payload": {"text": "hello"},
     }
+
+
+def test_datachannel_assembles_request_attachment_before_enqueuing_call():
+    pc = FakePeerConnection()
+    state = attach_worker_job_peer_handlers(pc, "job-1", "ai.sdxl.i2i", 0.0)
+    channel = FakeDataChannel()
+
+    pc.handlers["datachannel"](channel)
+    channel.handlers["message"](json.dumps({"kind": "job.ready", "id": "job-1"}))
+    channel.handlers["message"](
+        json.dumps(
+            {
+                "kind": "job.call",
+                "id": "call-1",
+                "type": "ai.sdxl.i2i",
+                "payload": {"prompts": ["hello"]},
+                "attachments": [{"id": "image", "name": "input.png", "mimeType": "image/png", "size": 5}],
+            }
+        )
+    )
+
+    assert state.call_queue.empty()
+    channel.handlers["message"](
+        encode_binary_frame(
+            {"kind": "attachment.chunk", "callId": "call-1", "attachmentId": "image", "index": 0, "final": False},
+            b"hel",
+        )
+    )
+    assert state.call_queue.empty()
+    channel.handlers["message"](
+        encode_binary_frame(
+            {"kind": "attachment.chunk", "callId": "call-1", "attachmentId": "image", "index": 1, "final": True},
+            b"lo",
+        )
+    )
+
+    call = state.call_queue.get_nowait()
+    assert call["id"] == "call-1"
+    assert call["type"] == "ai.sdxl.i2i"
+    assert call["payload"] == {"prompts": ["hello"]}
+    assert len(call["attachments"]) == 1
+    assert call["attachments"][0].id == "image"
+    assert call["attachments"][0].mimeType == "image/png"
+    assert call["attachments"][0].data == b"hello"
+
+
+@pytest.mark.parametrize(
+    ("attachments", "detail"),
+    [
+        ([{"id": "image", "size": 1}, {"id": "image", "size": 1}], "duplicate"),
+        ([{"id": "image", "size": JOB_DATA_CHANNEL_ATTACHMENT_MAX_BYTES + 1}], "exceeds"),
+    ],
+)
+def test_datachannel_rejects_invalid_request_attachment_metadata(attachments, detail):
+    pc = FakePeerConnection()
+    state = attach_worker_job_peer_handlers(pc, "job-1", "ai.sdxl.i2i", 0.0)
+    channel = FakeDataChannel()
+
+    pc.handlers["datachannel"](channel)
+    channel.handlers["message"](json.dumps({"kind": "job.ready", "id": "job-1"}))
+    channel.handlers["message"](
+        json.dumps(
+            {
+                "kind": "job.call",
+                "id": "call-1",
+                "type": "ai.sdxl.i2i",
+                "payload": {},
+                "attachments": attachments,
+            }
+        )
+    )
+
+    error = json.loads(channel.sent[-1])
+    assert error["code"] == "invalid_attachment"
+    assert detail in error["detail"]
+    assert state.incoming_call is None
+
+
+@pytest.mark.parametrize(
+    ("header", "body", "detail"),
+    [
+        (
+            {"kind": "attachment.chunk", "callId": "call-1", "attachmentId": "unknown", "index": 0, "final": True},
+            b"hello",
+            "unknown",
+        ),
+        (
+            {"kind": "attachment.chunk", "callId": "call-1", "attachmentId": "image", "index": 1, "final": True},
+            b"hello",
+            "out-of-order",
+        ),
+        (
+            {"kind": "attachment.chunk", "callId": "call-1", "attachmentId": "image", "index": 0, "final": True},
+            b"hey",
+            "size mismatch",
+        ),
+    ],
+)
+def test_datachannel_rejects_invalid_request_attachment_chunks(header, body, detail):
+    pc = FakePeerConnection()
+    state = attach_worker_job_peer_handlers(pc, "job-1", "ai.sdxl.i2i", 0.0)
+    channel = FakeDataChannel()
+
+    pc.handlers["datachannel"](channel)
+    channel.handlers["message"](json.dumps({"kind": "job.ready", "id": "job-1"}))
+    channel.handlers["message"](
+        json.dumps(
+            {
+                "kind": "job.call",
+                "id": "call-1",
+                "type": "ai.sdxl.i2i",
+                "payload": {},
+                "attachments": [{"id": "image", "size": 5}],
+            }
+        )
+    )
+    channel.handlers["message"](encode_binary_frame(header, body))
+
+    error = json.loads(channel.sent[-1])
+    assert error["code"] == "invalid_attachment"
+    assert detail in error["detail"]
+    assert state.incoming_call is None
 
 
 def test_datachannel_legacy_ready_input_enqueues_first_call():

@@ -5,9 +5,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from app.model_runtime import gpu_residency
-from app.models import SdxlT2IRequest
-from app.service import image as image_service
+from app import gpu_residency
+from app.sdxl.models import SdxlT2IRequest
+from app.sdxl import service as image_service
 
 
 class GpuResidencyTest(unittest.IsolatedAsyncioTestCase):

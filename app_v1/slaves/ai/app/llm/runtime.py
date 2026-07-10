@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from app.logging import log
-from app.model_runtime.gpu_residency import acquire_gpu_model_multi, get_cuda_device_count
+from app.gpu_residency import acquire_gpu_model_multi, get_cuda_device_count
 from app.settings import settings
 
 #LLM_REPO_ID = "LGAI-EXAONE/EXAONE-4.0-1.2B-GGUF"

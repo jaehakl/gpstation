@@ -57,3 +57,28 @@ console.log(first.payload, embedding.payload);
 ```
 
 Handlers can push DataChannel-only events during a call. Use `onEvent` on `runJob` or `session.call` to render streamed progress without waiting for the final result.
+
+Binary request attachments are sent directly over the job DataChannel. Each attachment requires a call-scoped `id`, which handlers use to assign a file role. For example, SDXL inpaint reserves `image` for the source and `mask` for the grayscale mask:
+
+```ts
+const result = await client.runJob(
+  'ai.sdxl.inpaint',
+  {
+    prompts: ['a renovated room with warm lighting'],
+    strength: 0.8,
+    width: 1024,
+    height: 1024,
+  },
+  {
+    slaveAppId: 'ai',
+    attachments: [
+      { id: 'image', name: sourceFile.name, mimeType: sourceFile.type, blob: sourceFile },
+      { id: 'mask', name: maskFile.name, mimeType: maskFile.type, blob: maskFile },
+    ],
+  },
+);
+
+console.log(result.payload, result.files);
+```
+
+The same `attachments` option is available on `session.call`. Request attachments are limited to 20 MiB each.

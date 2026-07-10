@@ -7,10 +7,10 @@ from time import monotonic
 from typing import Any
 
 from app.logging import log
-from app.model_runtime.gpu_residency import acquire_gpu_model_multi
-from app.model_runtime.llm import build_prompt_llm_config, release_llm_runtime
-from app.model_runtime import llm as llm_runtime
-from app.models import ChatRequest
+from app.gpu_residency import acquire_gpu_model_multi
+from app.llm.models import ChatRequest
+from app.llm.runtime import build_prompt_llm_config, release_llm_runtime
+from app.llm import runtime as llm_runtime
 
 CHAT_MEMORY_KEY = "ai_chat"
 CHAT_MAX_HISTORY_MESSAGES = 41

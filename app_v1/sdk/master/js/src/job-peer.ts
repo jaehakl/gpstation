@@ -1,4 +1,4 @@
-import { asError, decodeBinaryFrame, rawToUint8Array, toArrayBuffer } from './binary.js';
+import { asError, decodeBinaryFrame, encodeBinaryFrame, rawToUint8Array, toArrayBuffer } from './binary.js';
 import { emitDiagnostic } from './diagnostics.js';
 import type {
   AttachmentMetadata,
@@ -7,7 +7,14 @@ import type {
   IncomingFile,
   JobEvent,
   PendingResponse,
+  RequestAttachment,
 } from './types.js';
+
+const REQUEST_ATTACHMENT_CHUNK_SIZE = 16 * 1024;
+const REQUEST_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
+const MAX_BUFFERED_AMOUNT = 512 * 1024;
+const BUFFERED_AMOUNT_LOW_THRESHOLD = 128 * 1024;
+const BUFFERED_AMOUNT_DRAIN_TIMEOUT_MS = 30_000;
 
 type JobControlFrame = {
   kind: string;
@@ -87,10 +94,16 @@ export class GpStationJobPeer {
     payload: unknown,
     timeoutMs: number,
     onEvent?: (event: JobEvent) => void,
+    attachments: RequestAttachment[] = [],
   ): Promise<CallResult<TResult>> {
     this.ensureOpen('send job call');
     if (this.pendingCall) {
       return Promise.reject(new Error(`job call already in progress: ${this.pendingCall.id}`));
+    }
+    try {
+      this.validateRequestAttachments(attachments);
+    } catch (error) {
+      return Promise.reject(asError(error));
     }
     return new Promise<CallResult<unknown>>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -104,19 +117,139 @@ export class GpStationJobPeer {
         onEvent,
       };
       this.response = undefined;
-      this.dataChannel.send(
-        JSON.stringify({
-          kind: 'job.call',
-          id: callId,
-          type: handlerType,
-          payload,
-        }),
-      );
-      emitDiagnostic(this.peerConnection, this.dataChannel, this.diagnostic, {
-        stage: 'job-call',
-        message: `sent job call: ${handlerType}`,
+      void this.sendJobCall(callId, handlerType, payload, attachments).catch((error) => {
+        this.rejectPendingCall(asError(error));
       });
     }) as Promise<CallResult<TResult>>;
+  }
+
+  private async sendJobCall(
+    callId: string,
+    handlerType: string,
+    payload: unknown,
+    attachments: RequestAttachment[],
+  ): Promise<void> {
+    const frame: JobControlFrame = {
+      kind: 'job.call',
+      id: callId,
+      type: handlerType,
+      payload,
+    };
+    if (attachments.length > 0) {
+      frame.attachments = attachments.map((attachment) => ({
+        id: attachment.id,
+        name: attachment.name,
+        mimeType: attachment.mimeType || attachment.blob.type || undefined,
+        size: attachment.blob.size,
+      }));
+    }
+    this.dataChannel.send(JSON.stringify(frame));
+    for (const attachment of attachments) {
+      await this.sendRequestAttachment(callId, attachment);
+    }
+    emitDiagnostic(this.peerConnection, this.dataChannel, this.diagnostic, {
+      stage: 'job-call',
+      message: `sent job call: ${handlerType}`,
+    });
+  }
+
+  private async sendRequestAttachment(callId: string, attachment: RequestAttachment): Promise<void> {
+    if (attachment.blob.size === 0) {
+      this.dataChannel.send(
+        toArrayBuffer(
+          encodeBinaryFrame(
+            {
+              kind: 'attachment.chunk',
+              callId,
+              attachmentId: attachment.id,
+              index: 0,
+              final: true,
+            },
+            new Uint8Array(),
+          ),
+        ),
+      );
+      return;
+    }
+
+    let index = 0;
+    for (let offset = 0; offset < attachment.blob.size; offset += REQUEST_ATTACHMENT_CHUNK_SIZE) {
+      const end = Math.min(offset + REQUEST_ATTACHMENT_CHUNK_SIZE, attachment.blob.size);
+      const body = new Uint8Array(await attachment.blob.slice(offset, end).arrayBuffer());
+      this.ensureOpen('send job attachment');
+      this.dataChannel.send(
+        toArrayBuffer(
+          encodeBinaryFrame(
+            {
+              kind: 'attachment.chunk',
+              callId,
+              attachmentId: attachment.id,
+              index,
+              final: end === attachment.blob.size,
+            },
+            body,
+          ),
+        ),
+      );
+      if (this.dataChannel.bufferedAmount > MAX_BUFFERED_AMOUNT) {
+        await this.waitForSendBuffer();
+      }
+      index += 1;
+    }
+  }
+
+  private validateRequestAttachments(attachments: RequestAttachment[]): void {
+    const ids = new Set<string>();
+    for (const attachment of attachments) {
+      if (!attachment.id) {
+        throw new Error('request attachment id is required');
+      }
+      if (ids.has(attachment.id)) {
+        throw new Error(`duplicate request attachment id: ${attachment.id}`);
+      }
+      if (attachment.blob.size > REQUEST_ATTACHMENT_MAX_BYTES) {
+        throw new Error(`request attachment exceeds ${REQUEST_ATTACHMENT_MAX_BYTES} bytes: ${attachment.id}`);
+      }
+      ids.add(attachment.id);
+    }
+  }
+
+  private waitForSendBuffer(): Promise<void> {
+    if (this.closed || this.dataChannel.readyState !== 'open') {
+      return Promise.reject(new Error('data channel closed while sending attachment'));
+    }
+    this.dataChannel.bufferedAmountLowThreshold = BUFFERED_AMOUNT_LOW_THRESHOLD;
+    if (this.dataChannel.bufferedAmount <= BUFFERED_AMOUNT_LOW_THRESHOLD) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout>;
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.dataChannel.removeEventListener('bufferedamountlow', onLow);
+        this.dataChannel.removeEventListener('close', onClose);
+        this.dataChannel.removeEventListener('error', onError);
+      };
+      const onLow = () => {
+        cleanup();
+        resolve();
+      };
+      const onClose = () => {
+        cleanup();
+        reject(new Error('data channel closed while sending attachment'));
+      };
+      const onError = () => {
+        cleanup();
+        reject(new Error('data channel error while sending attachment'));
+      };
+      this.dataChannel.addEventListener('bufferedamountlow', onLow);
+      this.dataChannel.addEventListener('close', onClose);
+      this.dataChannel.addEventListener('error', onError);
+      timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('data channel buffer did not drain while sending attachment'));
+      }, BUFFERED_AMOUNT_DRAIN_TIMEOUT_MS);
+    });
   }
 
   finish(jobId: string, timeoutMs: number): Promise<void> {

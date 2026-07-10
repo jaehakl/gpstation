@@ -87,3 +87,15 @@ def attachment_metadata(attachment: DataChannelAttachment) -> dict[str, Any]:
 def encode_binary_frame(header: dict[str, Any], body: bytes) -> bytes:
     header_bytes = json.dumps(header, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return len(header_bytes).to_bytes(4, "big") + header_bytes + body
+
+
+def decode_binary_frame(frame: bytes) -> tuple[dict[str, Any], bytes]:
+    if len(frame) < 4:
+        raise ValueError("binary frame is too short")
+    header_length = int.from_bytes(frame[:4], "big")
+    if header_length <= 0 or len(frame) < 4 + header_length:
+        raise ValueError("invalid binary frame header length")
+    header = json.loads(frame[4 : 4 + header_length].decode("utf-8"))
+    if not isinstance(header, dict):
+        raise ValueError("binary frame header must be an object")
+    return header, frame[4 + header_length :]

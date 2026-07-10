@@ -1,0 +1,44 @@
+from __future__ import annotations
+
+import time
+from typing import Any
+
+from sdk.slave import DataChannelMessage, SlaveApp, SlaveContext
+
+from app.embeddings.models import EmbeddingRequest
+from app.embeddings.service import generate_embedding
+from app.logging import log, log_exception
+from app.message import reject_request_attachments
+
+
+def register_handlers(app: SlaveApp) -> None:
+    app.handler("ai.embeddings")(ai_embeddings)
+
+
+async def ai_embeddings(
+    message: DataChannelMessage,
+    memory: dict[str, Any] | None,
+    context: SlaveContext,
+) -> DataChannelMessage:
+    started_at = time.perf_counter()
+    try:
+        reject_request_attachments(message)
+        request = EmbeddingRequest.model_validate(message.payload)
+        log(f"ai.embeddings start session={context.session_id} text_chars={len(request.text)}")
+        response = await generate_embedding(request)
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        log(
+            "ai.embeddings complete "
+            f"session={context.session_id} "
+            f"duration_ms={duration_ms} "
+            f"dimensions={response.dimensions}"
+        )
+        return DataChannelMessage(
+            id=message.id,
+            type="ai.embeddings.result",
+            payload=response.model_dump(),
+        )
+    except Exception as exc:
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        log_exception(f"ai.embeddings failed session={context.session_id} duration_ms={duration_ms}", exc)
+        raise

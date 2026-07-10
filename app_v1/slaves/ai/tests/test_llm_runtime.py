@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 from pydantic import ValidationError
 
-from app.model_runtime import llm as llm_runtime
-from app.model_runtime import llm_chat
+from app.llm import chat as llm_chat
+from app.llm import runtime as llm_runtime
 from app.settings import Settings
 
 

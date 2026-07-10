@@ -1,6 +1,16 @@
 import type { AttachmentChunkHeader } from './types.js';
 
 const textDecoder = new TextDecoder();
+const textEncoder = new TextEncoder();
+
+export function encodeBinaryFrame(header: AttachmentChunkHeader, body: Uint8Array): Uint8Array {
+  const headerBytes = textEncoder.encode(JSON.stringify(header));
+  const frame = new Uint8Array(4 + headerBytes.byteLength + body.byteLength);
+  new DataView(frame.buffer).setUint32(0, headerBytes.byteLength, false);
+  frame.set(headerBytes, 4);
+  frame.set(body, 4 + headerBytes.byteLength);
+  return frame;
+}
 
 export function decodeBinaryFrame(frame: Uint8Array): { header: AttachmentChunkHeader; body: Uint8Array } {
   if (frame.byteLength < 4) {
