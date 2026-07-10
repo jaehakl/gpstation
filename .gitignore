@@ -66,4 +66,3 @@ Thumbs.db
 *.gguf
 *.ckpt
 app_v1/slaves/ai/voicevox_runtime/
-app_v1/slaves/ai/models.toml
