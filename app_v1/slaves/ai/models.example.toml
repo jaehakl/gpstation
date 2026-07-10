@@ -48,7 +48,7 @@ n_ubatch = 512
 
 
 [sdxl]
-default_model = "main-sdxl"
+default_model = "JANKU_777"
 controlnet_scribble_model_id = "xinsir/controlnet-scribble-sdxl-1.0"
 controlnet_openpose_model_id = "xinsir/controlnet-openpose-sdxl-1.0"
 step = 30
@@ -72,24 +72,55 @@ pose_guidance_start = 0.0
 pose_guidance_end = 0.8
 
 [[sdxl.models]]
-name = "main-sdxl"
-path = "models/main-sdxl.safetensors"
+name = "Wai_150"
+path = "/ssd3/sdxl/waiNSFWIllustrious_v150.safetensors"
 
 [[sdxl.models]]
-name = "fast-sdxl"
-path = "models/fast-sdxl.safetensors"
-step = 12
-cfg = 4.5
+name = "JANKU_777"
+path = "/ssd3/sdxl/JANKUTrainedChenkinNoobai_v777.safetensors"
+
+[[sdxl.models]]
+name = "JANKU_Rouwei_60"
+path = "/ssd3/sdxl/JANKUTrainedNoobaiRouwei_v60.safetensors"
+
+[[sdxl.models]]
+name = "novaAnime_150"
+path = "/ssd3/sdxl/novaAnimeXL_ilV150.safetensors"
+
+[[sdxl.models]]
+name = "Perfectdeliberate_60"
+path = "/ssd3/sdxl/perfectdeliberate_v60.safetensors"
+
+[[sdxl.models]]
+name = "Cyberrealistic_IllustriousAnimeV20"
+path = "/ssd3/sdxl/cyberrealistic_illustriousAnimeV20.safetensors"
+
+[[sdxl.models]]
+name = "ponymagine91_gamma"
+path = "/ssd3/sdxl/ponymagine91_gamma.safetensors"
+cfg = 7.0
+
+[[sdxl.models]]
+name = "unnamedixlRealisticModel_v4"
+path = "/ssd3/sdxl/unnamedixlRealisticModel_v4.safetensors"
+
+[[sdxl.models]]
+name = "Illustrij_v19"
+path = "/ssd3/sdxl/illustrij_v19.safetensors"
+
 
 [embeddings]
-default_model = "local-embedding"
+default_model = "multilingual-e5-large"
 
 [[embeddings.models]]
-name = "local-embedding"
-path = "models/embedding"
-local_files_only = true
+name = "multilingual-e5-large"
+model_name = "intfloat/multilingual-e5-large"
 
 [[embeddings.models]]
-name = "cached-default-revision-embedding"
-model_name = "organization/model-name"
-local_files_only = true
+name = "ruri-v3-310m"
+model_name = "cl-nagoya/ruri-v3-310m"
+
+#[[embeddings.models]]
+#name = "local-embedding"
+#path = "models/embedding"
+#local_files_only = true
