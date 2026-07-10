@@ -848,6 +848,13 @@ tbody tr:last-child td {
   padding: 18px;
 }
 
+.modelListError {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 .modalHeader {
   display: flex;
   align-items: center;

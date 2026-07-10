@@ -7,6 +7,7 @@ from sdk.slave import DataChannelAttachment, DataChannelMessage, SlaveApp, Slave
 
 from app.logging import log, log_exception
 from app.message import reject_request_attachments
+from app.model_catalog import get_model_list_payload
 from app.sdxl.models import SdxlControlNetRequest, SdxlGenerationRequest, SdxlT2IRequest, SdxlT2IResponse
 from app.sdxl.service import generate_sdxl_images, generate_sdxl_t2i_images
 
@@ -18,6 +19,20 @@ def register_handlers(app: SlaveApp) -> None:
     app.handler("ai.sdxl.controlnet.t2i")(ai_sdxl_controlnet_t2i)
     app.handler("ai.sdxl.controlnet.i2i")(ai_sdxl_controlnet_i2i)
     app.handler("ai.sdxl.controlnet.inpaint")(ai_sdxl_controlnet_inpaint)
+    app.handler("ai.sdxl.models")(ai_sdxl_models)
+
+
+async def ai_sdxl_models(
+    message: DataChannelMessage,
+    memory: dict[str, Any] | None,
+    context: SlaveContext,
+) -> DataChannelMessage:
+    reject_request_attachments(message)
+    return DataChannelMessage(
+        id=message.id,
+        type="ai.sdxl.models.result",
+        payload=get_model_list_payload("sdxl"),
+    )
 
 
 async def ai_sdxl_t2i(
@@ -145,6 +160,6 @@ def _build_sdxl_result(message: DataChannelMessage, response: SdxlT2IResponse) -
     return DataChannelMessage(
         id=message.id,
         type=f"{message.type}.result",
-        payload={"images": payload_images, "count": len(payload_images)},
+        payload={"model": response.model, "images": payload_images, "count": len(payload_images)},
         attachments=attachments,
     )

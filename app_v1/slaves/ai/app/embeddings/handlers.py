@@ -9,10 +9,25 @@ from app.embeddings.models import EmbeddingRequest
 from app.embeddings.service import generate_embedding
 from app.logging import log, log_exception
 from app.message import reject_request_attachments
+from app.model_catalog import get_model_list_payload
 
 
 def register_handlers(app: SlaveApp) -> None:
     app.handler("ai.embeddings")(ai_embeddings)
+    app.handler("ai.embeddings.models")(ai_embedding_models)
+
+
+async def ai_embedding_models(
+    message: DataChannelMessage,
+    memory: dict[str, Any] | None,
+    context: SlaveContext,
+) -> DataChannelMessage:
+    reject_request_attachments(message)
+    return DataChannelMessage(
+        id=message.id,
+        type="ai.embeddings.models.result",
+        payload=get_model_list_payload("embeddings"),
+    )
 
 
 async def ai_embeddings(

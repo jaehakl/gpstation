@@ -7,6 +7,7 @@ EMBEDDING_TEXT_MAX_BYTES = 128 * 1024
 
 
 class EmbeddingRequest(BaseModel):
+    model: str | None = None
     text: str
 
     @field_validator("text")
@@ -18,5 +19,6 @@ class EmbeddingRequest(BaseModel):
 
 
 class EmbeddingResponse(BaseModel):
+    model: str
     embedding: list[float]
     dimensions: int

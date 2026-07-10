@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from sdk.slave import DataChannelMessage, SlaveContext
@@ -8,6 +9,7 @@ from sdk.slave import DataChannelMessage, SlaveContext
 from app import __main__ as ai_slave
 from app.llm import chat as llm_chat
 from app.llm import handlers as llm_handlers
+from app.llm import service as llm_service
 from app.llm.models import ChatRequest, ChatResponse, LlmRequest, LlmResponse
 
 
@@ -18,24 +20,39 @@ def context() -> SlaveContext:
 class LlmHandlerTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         ai_slave.app.memory.clear()
+        model_patcher = patch.object(
+            llm_chat,
+            "get_selected_model_name",
+            side_effect=lambda family, name: name or "default-llm",
+        )
+        model_patcher.start()
+        self.addCleanup(model_patcher.stop)
 
     async def test_llm_returns_answer_payload(self) -> None:
-        generate_llm_answer = AsyncMock(return_value=LlmResponse(answer="hello"))
+        generate_llm_answer = AsyncMock(return_value=LlmResponse(model="default-llm", answer="hello"))
 
         with patch.object(llm_handlers, "generate_llm_answer", generate_llm_answer):
             response = await ai_slave.app.dispatch(
                 DataChannelMessage(
                     id="call-1",
                     type="ai.llm",
-                    payload={"system_prompt": "Answer briefly.", "prompt": "Say hello."},
+                    payload={
+                        "system_prompt": "Answer briefly.",
+                        "prompt": "Say hello.",
+                        "context_size": 8192,
+                        "top_p": 0.75,
+                    },
                 ),
                 context(),
             )
 
         self.assertEqual(response.type, "ai.llm.result")
-        self.assertEqual(response.payload, {"answer": "hello"})
+        self.assertEqual(response.payload, {"model": "default-llm", "answer": "hello"})
         self.assertEqual(response.attachments, [])
         generate_llm_answer.assert_awaited_once()
+        request = generate_llm_answer.await_args.args[0]
+        self.assertEqual(request.context_size, 8192)
+        self.assertEqual(request.top_p, 0.75)
 
     def test_llm_request_accepts_korean_text(self) -> None:
         request = LlmRequest(system_prompt="친절하게 답하세요.", prompt="한글 질문입니다.")
@@ -55,6 +72,8 @@ class LlmHandlerTest(unittest.IsolatedAsyncioTestCase):
             events.append((event_type, payload))
 
         async def generate_chat_answer(request, messages, on_delta):
+            self.assertEqual(request.context_size, 16384)
+            self.assertEqual(request.top_p, 0.8)
             self.assertEqual(
                 messages,
                 [
@@ -65,6 +84,7 @@ class LlmHandlerTest(unittest.IsolatedAsyncioTestCase):
             await on_delta("he")
             await on_delta("llo")
             return ChatResponse(
+                model=request.model,
                 answer="hello",
                 context_window=4096,
                 prompt_tokens=12,
@@ -78,7 +98,12 @@ class LlmHandlerTest(unittest.IsolatedAsyncioTestCase):
                 DataChannelMessage(
                     id="call-1",
                     type="ai.chat",
-                    payload={"system_prompt": "Answer briefly.", "prompt": "Say hello."},
+                    payload={
+                        "system_prompt": "Answer briefly.",
+                        "prompt": "Say hello.",
+                        "context_size": 16384,
+                        "top_p": 0.8,
+                    },
                 ),
                 SlaveContext(
                     session_id="session-1",
@@ -91,6 +116,7 @@ class LlmHandlerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             response.payload,
             {
+                "model": "default-llm",
                 "answer": "hello",
                 "context_window": 4096,
                 "prompt_tokens": 12,
@@ -115,6 +141,7 @@ class LlmHandlerTest(unittest.IsolatedAsyncioTestCase):
         async def generate_chat_answer(request, messages, on_delta):
             calls.append(messages)
             return ChatResponse(
+                model=request.model,
                 answer=f"answer {len(calls)}",
                 context_window=4096,
                 prompt_tokens=10 + len(calls),
@@ -161,6 +188,7 @@ class LlmHandlerTest(unittest.IsolatedAsyncioTestCase):
     async def test_chat_rejects_system_prompt_change_in_active_session(self) -> None:
         async def generate_chat_answer(request, messages, on_delta):
             return ChatResponse(
+                model=request.model,
                 answer="ok",
                 context_window=4096,
                 prompt_tokens=8,
@@ -196,6 +224,7 @@ class LlmHandlerTest(unittest.IsolatedAsyncioTestCase):
         async def generate_chat_answer(request, messages, on_delta):
             requests.append(request)
             return ChatResponse(
+                model=request.model,
                 answer=f"answer {len(requests)}",
                 context_window=4096,
                 prompt_tokens=10,
@@ -244,6 +273,90 @@ class LlmHandlerTest(unittest.IsolatedAsyncioTestCase):
             ChatRequest(system_prompt="system", prompt="bad\udcec")
 
         self.assertIn("invalid Unicode surrogate", str(error.exception))
+
+    async def test_chat_switches_models_and_keeps_history(self) -> None:
+        calls = []
+
+        async def generate_chat_answer(request, messages, on_delta):
+            calls.append((request.model, messages))
+            return ChatResponse(
+                model=request.model,
+                answer="ok",
+                context_window=4096,
+                prompt_tokens=8,
+                max_response_tokens=512,
+                remaining_tokens=4080,
+                cache_enabled=True,
+            )
+
+        with patch.object(llm_handlers, "generate_chat_answer", generate_chat_answer):
+            await ai_slave.app.dispatch(
+                DataChannelMessage(
+                    id="call-1",
+                    type="ai.chat",
+                    payload={"model": "first", "system_prompt": "system", "prompt": "one"},
+                ),
+                context(),
+            )
+            await ai_slave.app.dispatch(
+                DataChannelMessage(
+                    id="call-2",
+                    type="ai.chat",
+                    payload={"model": "second", "prompt": "two"},
+                ),
+                context(),
+            )
+            third = await ai_slave.app.dispatch(
+                DataChannelMessage(id="call-3", type="ai.chat", payload={"prompt": "three"}),
+                context(),
+            )
+
+        self.assertEqual([call[0] for call in calls], ["first", "second", "second"])
+        self.assertEqual(calls[1][1][2], {"role": "assistant", "content": "ok"})
+        self.assertEqual(third.payload["model"], "second")
+
+
+class LlmServiceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_llm_forwards_context_size_and_top_p(self) -> None:
+        ask_llm = AsyncMock(return_value="answer")
+        request = LlmRequest(
+            model="model-a",
+            system_prompt="system",
+            prompt="prompt",
+            context_size=12288,
+            top_p=0.65,
+        )
+        with (
+            patch.object(llm_service, "get_selected_model_name", return_value="model-a"),
+            patch.object(llm_service, "ask_llm", ask_llm),
+        ):
+            response = await llm_service.generate_llm_answer(request)
+
+        self.assertEqual(response.model, "model-a")
+        self.assertEqual(ask_llm.await_args.kwargs["context_size"], 12288)
+        self.assertEqual(ask_llm.await_args.kwargs["top_p"], 0.65)
+
+    async def test_chat_forwards_context_size_and_top_p(self) -> None:
+        generate_chat = AsyncMock(
+            return_value=SimpleNamespace(
+                answer="answer",
+                context_window=24576,
+                prompt_tokens=10,
+                max_response_tokens=20,
+                remaining_tokens=24546,
+                cache_enabled=True,
+            )
+        )
+        request = ChatRequest(model="model-b", prompt="prompt", context_size=24576, top_p=0.55)
+        with (
+            patch.object(llm_service, "get_selected_model_name", return_value="model-b"),
+            patch.object(llm_service, "generate_chat_with_llm", generate_chat),
+        ):
+            response = await llm_service.generate_chat_answer(request, [], AsyncMock())
+
+        self.assertEqual(response.context_window, 24576)
+        self.assertEqual(generate_chat.await_args.kwargs["context_size"], 24576)
+        self.assertEqual(generate_chat.await_args.kwargs["top_p"], 0.55)
 
 
 if __name__ == "__main__":

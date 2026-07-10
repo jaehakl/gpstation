@@ -11,6 +11,7 @@ from app.gpu_residency import acquire_gpu_model_multi
 from app.llm.models import ChatRequest
 from app.llm.runtime import build_prompt_llm_config, release_llm_runtime
 from app.llm import runtime as llm_runtime
+from app.model_catalog import get_selected_model_name
 
 CHAT_MEMORY_KEY = "ai_chat"
 CHAT_MAX_HISTORY_MESSAGES = 41
@@ -48,11 +49,17 @@ def prepare_chat_messages(
         state = {
             "session_id": session_id,
             "system_prompt": requested_system_prompt,
+            "model": get_selected_model_name("llm", request.model),
             "messages": [{"role": "system", "content": requested_system_prompt}],
         }
         memory[CHAT_MEMORY_KEY] = state
     elif requested_system_prompt and requested_system_prompt != state.get("system_prompt"):
         raise ValueError("system_prompt cannot change within an active ai.chat session")
+
+    if request.model is not None:
+        state["model"] = get_selected_model_name("llm", request.model)
+    elif not isinstance(state.get("model"), str):
+        state["model"] = get_selected_model_name("llm", None)
 
     messages = state.get("messages")
     if not isinstance(messages, list):
@@ -73,12 +80,21 @@ def prune_chat_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
 
 async def generate_chat_with_llm(
     messages: list[dict[str, str]],
+    model_name: str | None = None,
     max_tokens: int | None = None,
     temperature: float | None = None,
+    context_size: int | None = None,
+    top_p: float | None = None,
     enable_thinking: bool | None = None,
     on_delta: Callable[[str], Awaitable[None]] | None = None,
 ) -> ChatGenerationResult:
-    config = build_prompt_llm_config(max_tokens=max_tokens, temperature=temperature)
+    config = build_prompt_llm_config(
+        model_name=model_name,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        context_size=context_size,
+        top_p=top_p,
+    )
     loop = asyncio.get_running_loop()
     async with acquire_gpu_model_multi("llm", config.lease_device_ids, config.model_key, release_llm_runtime):
         async with llm_runtime._prompt_llm_lock:

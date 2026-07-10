@@ -1,5 +1,5 @@
 import { Settings, Send, Square, X } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
@@ -16,6 +16,7 @@ const CHAT_TIMEOUT_MS = 600_000;
 const CHAT_SCROLL_BOTTOM_THRESHOLD_PX = 48;
 
 type ChatResponse = {
+  model: string;
   answer: string;
   context_window: number;
   prompt_tokens: number;
@@ -25,11 +26,25 @@ type ChatResponse = {
 };
 
 type ChatPayload = {
+  model: string;
   system_prompt?: string;
   prompt: string;
   max_tokens?: number;
   temperature?: number;
+  context_size?: number;
+  top_p?: number;
   enable_thinking?: boolean;
+};
+
+type LlmModelSummary = {
+  name: string;
+  context_size: number;
+  top_p: number;
+};
+
+type LlmModelListResponse = {
+  default_model: string;
+  models: LlmModelSummary[];
 };
 
 type ChatMessage = {
@@ -56,7 +71,14 @@ export default function ChatPage() {
   const [prompt, setPrompt] = useState('');
   const [maxTokens, setMaxTokens] = useState('8192');
   const [temperature, setTemperature] = useState('1.0');
+  const [contextSize, setContextSize] = useState('');
+  const [topP, setTopP] = useState('');
   const [enableThinking, setEnableThinking] = useState(false);
+  const [llmModels, setLlmModels] = useState<LlmModelSummary[]>([]);
+  const [defaultModel, setDefaultModel] = useState('');
+  const [selectedModel, setSelectedModel] = useState('');
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [context, setContext] = useState<ChatResponse | null>(null);
   const [session, setSession] = useState<JobSession | null>(null);
@@ -74,6 +96,7 @@ export default function ChatPage() {
   const sessionRef = useRef<JobSession | null>(null);
   const pendingDeltaRef = useRef('');
   const deltaFrameRef = useRef<number | null>(null);
+  const modelListRequestRef = useRef<Promise<void> | null>(null);
 
   const client = useMemo(
     () =>
@@ -86,10 +109,71 @@ export default function ChatPage() {
   );
 
   const chatOpen = session !== null && !session.closed;
+  const canUseChat = Boolean(user && user.role !== 'unauthorized');
+  const selectedModelSettings = useMemo(
+    () => llmModels.find((model) => model.name === selectedModel) ?? null,
+    [llmModels, selectedModel],
+  );
+
+  const loadLlmModels = useCallback(() => {
+    if (modelListRequestRef.current) {
+      return modelListRequestRef.current;
+    }
+
+    setModelsLoading(true);
+    setModelsError(null);
+    const request = client
+      .runJob<Record<string, never>, LlmModelListResponse>('ai.llm.models', {}, {
+        slaveAppId: 'ai',
+        timeoutMs: CHAT_TIMEOUT_MS,
+      })
+      .then((result) => {
+        const payload = result.payload;
+        const models = Array.isArray(payload.models)
+          ? payload.models.filter(
+              (model): model is LlmModelSummary =>
+                typeof model?.name === 'string' &&
+                model.name.trim().length > 0 &&
+                typeof model.context_size === 'number' &&
+                typeof model.top_p === 'number',
+            )
+          : [];
+        if (models.length === 0) {
+          throw new Error('사용 가능한 LLM 모델이 없습니다.');
+        }
+        const backendDefault =
+          typeof payload.default_model === 'string' && models.some((model) => model.name === payload.default_model)
+            ? payload.default_model
+            : models[0].name;
+        setLlmModels(models);
+        setDefaultModel(backendDefault);
+        setSelectedModel((current) =>
+          current && models.some((model) => model.name === current) ? current : backendDefault,
+        );
+      })
+      .catch((nextError: unknown) => {
+        setLlmModels([]);
+        setDefaultModel('');
+        setSelectedModel('');
+        setModelsError(nextError instanceof Error ? nextError.message : String(nextError));
+      })
+      .finally(() => {
+        modelListRequestRef.current = null;
+        setModelsLoading(false);
+      });
+    modelListRequestRef.current = request;
+    return request;
+  }, [client]);
 
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  useEffect(() => {
+    if (authReady && canUseChat) {
+      void loadLlmModels();
+    }
+  }, [authReady, canUseChat, loadLlmModels]);
 
   useEffect(() => {
     if (!forceTranscriptScrollRef.current && !transcriptAtBottomRef.current) {
@@ -188,6 +272,11 @@ export default function ChatPage() {
   }
 
   async function callChat() {
+    if (modelsLoading || !selectedModel) {
+      setError(modelsLoading ? 'LLM 모델 목록을 불러오는 중입니다.' : '사용할 LLM 모델을 선택해야 합니다.');
+      setSettingsOpen(true);
+      return;
+    }
     const trimmedPrompt = prompt.trim();
     if (!trimmedPrompt) {
       setError('prompt is required');
@@ -204,9 +293,12 @@ export default function ChatPage() {
     let payload: ChatPayload;
     try {
       payload = {
+        model: selectedModel,
         prompt: trimmedPrompt,
         max_tokens: parseOptionalInt(maxTokens, 'max tokens'),
         temperature: parseOptionalFloat(temperature, 'temperature'),
+        context_size: parseOptionalInt(contextSize, 'context size'),
+        top_p: parseOptionalFloat(topP, 'top p'),
         enable_thinking: enableThinking,
       };
     } catch (nextError) {
@@ -316,7 +408,7 @@ export default function ChatPage() {
       <div className="chatSurface">
         <div className="chatStatusBar">
           <span>{formatChatContext(context, chatOpen ? 'session open' : status)}</span>
-          {error ? <strong>{error}</strong> : null}
+          {error || modelsError ? <strong>{error ?? modelsError}</strong> : null}
         </div>
         <div className="chatTranscript" ref={transcriptRef} onScroll={handleTranscriptScroll}>
           {messages.map((item) => (
@@ -349,7 +441,7 @@ export default function ChatPage() {
                   return;
                 }
                 event.preventDefault();
-                if (!busy) {
+                if (!busy && !modelsLoading && selectedModel) {
                   void callChat();
                 }
               }}
@@ -357,7 +449,12 @@ export default function ChatPage() {
             />
           </label>
           <div className="chatComposerActions">
-            <button type="button" className="button primaryButton" onClick={callChat} disabled={busy}>
+            <button
+              type="button"
+              className="button primaryButton"
+              onClick={callChat}
+              disabled={busy || modelsLoading || !selectedModel}
+            >
               <Send size={17} aria-hidden="true" />
               Send
             </button>
@@ -390,6 +487,43 @@ export default function ChatPage() {
               </button>
             </div>
             <label className="field">
+              <span>Model</span>
+              <select
+                value={selectedModel}
+                onChange={(event) => setSelectedModel(event.target.value)}
+                disabled={busy || modelsLoading || llmModels.length === 0}
+              >
+                {llmModels.length === 0 ? (
+                  <option value="">{modelsLoading ? '모델 목록을 불러오는 중' : '선택 가능한 모델 없음'}</option>
+                ) : null}
+                {llmModels.map((model) => (
+                  <option key={model.name} value={model.name}>
+                    {model.name === defaultModel ? `${model.name} (default)` : model.name}
+                  </option>
+                ))}
+              </select>
+              <span className="mutedText">
+                {selectedModelSettings
+                  ? `기본 context size ${selectedModelSettings.context_size}, top p ${selectedModelSettings.top_p}`
+                  : '사용할 LLM 모델을 선택하세요.'}
+              </span>
+            </label>
+            {modelsError ? (
+              <div className="message danger modelListError">
+                <span>{modelsError}</span>
+                <button
+                  type="button"
+                  className="button smallButton"
+                  disabled={modelsLoading}
+                  onClick={() => {
+                    void loadLlmModels();
+                  }}
+                >
+                  목록 다시 불러오기
+                </button>
+              </div>
+            ) : null}
+            <label className="field">
               <span>System Prompt</span>
               <textarea
                 value={systemPrompt}
@@ -406,6 +540,24 @@ export default function ChatPage() {
               <label className="field">
                 <span>Temperature</span>
                 <input value={temperature} inputMode="decimal" onChange={(event) => setTemperature(event.target.value)} />
+              </label>
+              <label className="field">
+                <span>Context Size</span>
+                <input
+                  value={contextSize}
+                  inputMode="numeric"
+                  placeholder={selectedModelSettings ? String(selectedModelSettings.context_size) : ''}
+                  onChange={(event) => setContextSize(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>Top P</span>
+                <input
+                  value={topP}
+                  inputMode="decimal"
+                  placeholder={selectedModelSettings ? String(selectedModelSettings.top_p) : ''}
+                  onChange={(event) => setTopP(event.target.value)}
+                />
               </label>
             </div>
             <label className="checkField">
@@ -536,7 +688,7 @@ function formatChatContext(context: ChatResponse | null, fallback: string): stri
   }
   const usedTokens = Math.max(0, context.context_window - context.remaining_tokens);
   const cache = context.cache_enabled ? 'cache on' : 'cache off';
-  return `${usedTokens} / ${context.context_window} tokens, ${context.remaining_tokens} remaining, ${cache}`;
+  return `${context.model}, ${usedTokens} / ${context.context_window} tokens, ${context.remaining_tokens} remaining, ${cache}`;
 }
 
 function formatChatMarkdown(content: string, role: ChatMessage['role']): string {

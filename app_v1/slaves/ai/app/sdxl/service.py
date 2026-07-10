@@ -13,7 +13,7 @@ from app.sdxl.models import (
     SdxlT2IResponse,
 )
 from app.sdxl.runtime import generate_images_batch
-from app.settings import settings
+from app.model_catalog import resolve_sdxl_model
 
 
 SDXL_INPUT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024
@@ -28,6 +28,26 @@ SDXL_IMAGE_MODES = {
     "controlnet_i2i",
     "controlnet_inpaint",
 }
+SDXL_DEFAULT_FIELDS = (
+    "step",
+    "cfg",
+    "height",
+    "width",
+    "strength",
+    "max_chunk_size",
+    "seed_min",
+    "seed_max",
+    "sampler",
+    "scheduler",
+    "clip_skip",
+    "format",
+    "scribble_scale",
+    "scribble_guidance_start",
+    "scribble_guidance_end",
+    "pose_scale",
+    "pose_guidance_start",
+    "pose_guidance_end",
+)
 
 
 async def generate_sdxl_t2i_images(request: SdxlT2IRequest) -> SdxlT2IResponse:
@@ -43,6 +63,15 @@ async def generate_sdxl_images(
     if normalized_mode not in SDXL_IMAGE_MODES:
         raise ValueError(f"unsupported image generation mode: {image_mode}")
 
+    model, resolved_ckpt_path = resolve_sdxl_model(request.model)
+    default_updates = {
+        field: getattr(model, field)
+        for field in SDXL_DEFAULT_FIELDS
+        if field not in request.model_fields_set and hasattr(request, field)
+    }
+    if default_updates:
+        request = request.model_copy(update=default_updates)
+
     prompts = [prompt.strip() for prompt in request.prompts]
     if any(not prompt for prompt in prompts):
         raise ValueError("prompts must not contain blank values")
@@ -54,21 +83,17 @@ async def generate_sdxl_images(
         raise ValueError("seed_min must be less than or equal to seed_max")
     if request.height % 8 != 0 or request.width % 8 != 0:
         raise ValueError("height and width must be multiples of 8")
+    if isinstance(request, SdxlControlNetRequest):
+        if request.scribble_guidance_end < request.scribble_guidance_start:
+            raise ValueError("scribble guidance end must be greater than or equal to start")
+        if request.pose_guidance_end < request.pose_guidance_start:
+            raise ValueError("pose guidance end must be greater than or equal to start")
 
     image_format = request.format.strip().lower()
     if image_format == "jpeg":
         image_format = "jpg"
     if image_format not in {"png", "jpg"}:
         raise ValueError("unsupported image format")
-
-    ckpt_path_value = settings.sdxl_ckpt_path.strip()
-    if not ckpt_path_value:
-        raise RuntimeError("SDXL_CKPT_PATH is required")
-    ckpt_path = settings.resolve_ai_path(ckpt_path_value)
-    try:
-        resolved_ckpt_path = str(ckpt_path.resolve(strict=True))
-    except OSError as exc:
-        raise RuntimeError(f"SDXL checkpoint file not found: {ckpt_path}") from exc
 
     attachment_map = _validate_attachments(normalized_mode, attachments)
     target_size = request.width, request.height
@@ -100,18 +125,18 @@ async def generate_sdxl_images(
                 Image.Resampling.LANCZOS,
             )
             if scribble.getextrema() != ((255, 255), (255, 255), (255, 255)):
-                model_id = settings.sdxl_controlnet_scribble_model_id.strip()
+                model_id = model.controlnet_scribble_model_id.strip()
                 if not model_id:
-                    raise RuntimeError("SDXL_CONTROLNET_SCRIBBLE_MODEL_ID is required")
+                    raise RuntimeError("controlnet_scribble_model_id is required")
                 control_images.append(scribble)
                 controlnet_model_ids.append(model_id)
                 controlnet_conditioning_scales.append(request.scribble_scale)
                 control_guidance_starts.append(request.scribble_guidance_start)
                 control_guidance_ends.append(request.scribble_guidance_end)
         if "pose" in attachment_map:
-            model_id = settings.sdxl_controlnet_openpose_model_id.strip()
+            model_id = model.controlnet_openpose_model_id.strip()
             if not model_id:
-                raise RuntimeError("SDXL_CONTROLNET_OPENPOSE_MODEL_ID is required")
+                raise RuntimeError("controlnet_openpose_model_id is required")
             control_images.append(
                 _decode_attachment(
                     attachment_map["pose"],
@@ -171,7 +196,7 @@ async def generate_sdxl_images(
         GeneratedImage(image_bytes=_encode_image(image, image_format), format=image_format, seed=seed)
         for image, seed in zip(images, resolved_seeds, strict=True)
     ]
-    return SdxlT2IResponse(images=response_images, count=len(response_images))
+    return SdxlT2IResponse(model=model.name, images=response_images, count=len(response_images))
 
 
 def _validate_attachments(

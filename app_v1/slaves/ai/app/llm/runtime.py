@@ -5,7 +5,6 @@ import ctypes
 import gc
 import importlib.util
 import json
-import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,22 +12,8 @@ from typing import Any
 
 from app.logging import log
 from app.gpu_residency import acquire_gpu_model_multi, get_cuda_device_count
-from app.settings import settings
+from app.model_catalog import resolve_llm_model
 
-#LLM_REPO_ID = "LGAI-EXAONE/EXAONE-4.0-1.2B-GGUF"
-#LLM_MODEL_FILENAME = "EXAONE-4.0-1.2B-Q4_K_M.gguf"
-LLM_REPO_ID = ""
-LLM_MODEL_FILENAME = "supergemma4-26b-uncensored-fast-v2-Q4_K_M.gguf"
-LLM_CONTEXT_SIZE = 4096
-LLM_N_THREADS = 0
-LLM_MAX_TOKENS = 1024
-LLM_TEMPERATURE = 0.5
-LLM_TOP_P = 0.9
-LLM_MAX_SOURCE_TEXT_LENGTH = 8000
-LLM_MIN_MAX_TOKENS = 16
-LLM_MAX_MAX_TOKENS = 16384
-LLM_MIN_TEMPERATURE = 0.0
-LLM_MAX_TEMPERATURE = 2.0
 LLM_SPLIT_MODE_NONE = 0
 LLM_SPLIT_MODE_LAYER = 1
 LLM_SPLIT_MODE_ROW = 2
@@ -43,11 +28,9 @@ LLM_SPLIT_MODE_NAMES = {
 _prompt_llm_lock = asyncio.Lock()
 PromptLlmModelKey = tuple[
     str,
-    str,
-    str,
     int,
     int,
-    int,
+    int | None,
     int | None,
     int | None,
     tuple[float, ...] | None,
@@ -56,6 +39,7 @@ PromptLlmModelKey = tuple[
     bool,
     int,
     int,
+    bool,
     bool,
 ]
 _prompt_llm_model_key: PromptLlmModelKey | None = None
@@ -66,12 +50,11 @@ _llm_loaded_dlls: list[Any] = []
 
 @dataclass(frozen=True)
 class PromptLlmConfig:
+    name: str
     model_path: str
-    repo_id: str
-    model_filename: str
     context_size: int
     n_gpu_layers: int
-    n_threads: int
+    n_threads: int | None
     main_gpu: int | None
     split_mode: int | None
     tensor_split: tuple[float, ...] | None
@@ -90,11 +73,20 @@ class PromptLlmConfig:
 
 async def generate_prompt_with_llm(
     messages: list[dict[str, str]],
+    model_name: str | None = None,
     max_tokens: int | None = None,
     temperature: float | None = None,
+    context_size: int | None = None,
+    top_p: float | None = None,
     response_format_json: bool = True,
 ) -> str:
-    config = build_prompt_llm_config(max_tokens=max_tokens, temperature=temperature)
+    config = build_prompt_llm_config(
+        model_name=model_name,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        context_size=context_size,
+        top_p=top_p,
+    )
     async with acquire_gpu_model_multi("llm", config.lease_device_ids, config.model_key, release_llm_runtime):
         async with _prompt_llm_lock:
             return await asyncio.to_thread(
@@ -108,8 +100,11 @@ async def generate_prompt_with_llm(
 async def ask_llm(
     system_message: str,
     question: str,
+    model_name: str | None = None,
     max_tokens: int | None = None,
     temperature: float | None = None,
+    context_size: int | None = None,
+    top_p: float | None = None,
 ) -> str:
     trimmed_system_message = system_message.strip()
     trimmed_question = question.strip()
@@ -117,17 +112,16 @@ async def ask_llm(
         raise ValueError("system_message is required")
     if not trimmed_question:
         raise ValueError("question is required")
-    if len(trimmed_system_message) > LLM_MAX_SOURCE_TEXT_LENGTH:
-        raise ValueError(f"system_message must be {LLM_MAX_SOURCE_TEXT_LENGTH} characters or fewer")
-    if len(trimmed_question) > LLM_MAX_SOURCE_TEXT_LENGTH:
-        raise ValueError(f"question must be {LLM_MAX_SOURCE_TEXT_LENGTH} characters or fewer")
     answer = await generate_prompt_with_llm(
         [
             {"role": "system", "content": trimmed_system_message},
             {"role": "user", "content": trimmed_question},
         ],
+        model_name=model_name,
         max_tokens=max_tokens,
         temperature=temperature,
+        context_size=context_size,
+        top_p=top_p,
         response_format_json=False,
     )
     if not answer.strip():
@@ -136,69 +130,43 @@ async def ask_llm(
 
 
 def build_prompt_llm_config(
+    model_name: str | None = None,
     max_tokens: int | None = None,
     temperature: float | None = None,
+    context_size: int | None = None,
+    top_p: float | None = None,
 ) -> PromptLlmConfig:
-    resolved_max_tokens = LLM_MAX_TOKENS if max_tokens is None else max_tokens
-    if not LLM_MIN_MAX_TOKENS <= resolved_max_tokens <= LLM_MAX_MAX_TOKENS:
-        raise ValueError(
-            "max_tokens must be between "
-            f"{LLM_MIN_MAX_TOKENS} and {LLM_MAX_MAX_TOKENS}"
-        )
-
-    resolved_temperature = LLM_TEMPERATURE if temperature is None else temperature
-    if not LLM_MIN_TEMPERATURE <= resolved_temperature <= LLM_MAX_TEMPERATURE:
-        raise ValueError(
-            "temperature must be between "
-            f"{LLM_MIN_TEMPERATURE} and {LLM_MAX_TEMPERATURE}"
-        )
-
-    model_path_value = settings.llm_model_path.strip()
-    if model_path_value:
-        model_path = settings.resolve_ai_path(model_path_value)
-        try:
-            model_path_value = str(model_path.resolve(strict=True))
-        except OSError as exc:
-            raise ValueError(f"prompt LLM model file not found: {model_path}") from exc
-
-    repo_id = LLM_REPO_ID.strip()
-    model_filename = LLM_MODEL_FILENAME.strip()
-    if not model_path_value and (not repo_id or not model_filename):
-        raise RuntimeError("prompt LLM repo id and model filename are required")
-
-    use_gpu = settings.llm_use_max_gpu
+    model, model_path_value = resolve_llm_model(model_name)
+    resolved_max_tokens = model.max_tokens if max_tokens is None else max_tokens
+    resolved_temperature = model.temperature if temperature is None else temperature
+    resolved_context_size = model.context_size if context_size is None else context_size
+    resolved_top_p = model.top_p if top_p is None else top_p
+    use_gpu = model.use_max_gpu
     cuda_device_count = get_cuda_device_count() if use_gpu else 0
-    main_gpu = _resolve_llm_main_gpu(use_gpu, cuda_device_count)
-    n_gpu_layers = -1 if use_gpu else 0
-    split_mode = _parse_llm_split_mode(settings.llm_split_mode) if main_gpu is not None else None
-    tensor_split = _parse_llm_tensor_split(settings.llm_tensor_split) if main_gpu is not None else None
+    main_gpu = _resolve_llm_main_gpu(use_gpu, cuda_device_count, model.main_gpu)
+    n_gpu_layers = model.n_gpu_layers if model.n_gpu_layers is not None else (-1 if use_gpu else 0)
+    split_mode = _parse_llm_split_mode(model.split_mode) if main_gpu is not None else None
+    tensor_split = tuple(model.tensor_split) or None if main_gpu is not None else None
     if split_mode == LLM_SPLIT_MODE_NONE:
         tensor_split = None
-    if tensor_split is not None and cuda_device_count > 0 and len(tensor_split) > cuda_device_count:
-        raise ValueError(
-            f"LLM_TENSOR_SPLIT specifies {len(tensor_split)} GPUs, "
-            f"but only {cuda_device_count} CUDA device(s) are visible"
-        )
     lease_device_ids = _resolve_llm_lease_device_ids(
         main_gpu=main_gpu,
         split_mode=split_mode,
         tensor_split=tensor_split,
         cuda_device_count=cuda_device_count,
     )
-    context_size = settings.llm_context_size
-    flash_attn = settings.llm_flash_attn
-    swa_full = settings.llm_swa_full
-    n_batch = settings.llm_n_batch
-    n_ubatch = settings.llm_n_ubatch
-    offload_kqv = settings.llm_offload_kqv
-    enable_thinking = settings.llm_enable_thinking
+    context_size = resolved_context_size
+    flash_attn = model.flash_attn
+    swa_full = model.swa_full
+    n_batch = model.n_batch
+    n_ubatch = model.n_ubatch
+    offload_kqv = model.offload_kqv
+    enable_thinking = model.enable_thinking
     model_key = (
         model_path_value,
-        repo_id,
-        model_filename,
         context_size,
         n_gpu_layers,
-        LLM_N_THREADS,
+        model.n_threads,
         main_gpu,
         split_mode,
         tensor_split,
@@ -208,14 +176,14 @@ def build_prompt_llm_config(
         n_batch,
         n_ubatch,
         offload_kqv,
+        enable_thinking,
     )
     return PromptLlmConfig(
+        name=model.name,
         model_path=model_path_value,
-        repo_id=repo_id,
-        model_filename=model_filename,
         context_size=context_size,
         n_gpu_layers=n_gpu_layers,
-        n_threads=LLM_N_THREADS,
+        n_threads=model.n_threads,
         main_gpu=main_gpu,
         split_mode=split_mode,
         tensor_split=tensor_split,
@@ -229,37 +197,22 @@ def build_prompt_llm_config(
         model_key=model_key,
         max_tokens=resolved_max_tokens,
         temperature=resolved_temperature,
-        top_p=LLM_TOP_P,
+        top_p=resolved_top_p,
     )
 
 
-def _resolve_llm_main_gpu(use_gpu: bool, cuda_device_count: int) -> int | None:
+def _resolve_llm_main_gpu(use_gpu: bool, cuda_device_count: int, main_gpu: int) -> int | None:
     if not use_gpu or cuda_device_count <= 0:
         return None
-    main_gpu = settings.llm_main_gpu
-    if main_gpu >= cuda_device_count:
-        raise ValueError(f"LLM_MAIN_GPU must be less than visible CUDA device count {cuda_device_count}")
     return main_gpu
 
 
 def _parse_llm_split_mode(value: str) -> int:
-    normalized = (value or "layer").strip().lower()
+    normalized = value.strip().lower()
     split_mode = LLM_SPLIT_MODE_NAMES.get(normalized)
     if split_mode is None:
-        raise ValueError("LLM_SPLIT_MODE must be one of: none, layer, row, tensor")
+        raise ValueError("split_mode must be one of: none, layer, row, tensor")
     return split_mode
-
-
-def _parse_llm_tensor_split(value: str) -> tuple[float, ...] | None:
-    if not value.strip():
-        return None
-    try:
-        tensor_split = tuple(float(part.strip()) for part in value.split(",") if part.strip())
-    except ValueError as exc:
-        raise ValueError("LLM_TENSOR_SPLIT must be a comma-separated list of positive numbers") from exc
-    if not tensor_split or any(not math.isfinite(part) or part <= 0 for part in tensor_split):
-        raise ValueError("LLM_TENSOR_SPLIT must be a comma-separated list of positive numbers")
-    return tensor_split
 
 
 def _resolve_llm_lease_device_ids(
@@ -401,7 +354,7 @@ def _get_prompt_llm_locked(config: PromptLlmConfig) -> Any:
         release_llm_runtime()
 
     if _prompt_llm is None:
-        model_ref = config.model_path or f"{config.repo_id}/{config.model_filename}"
+        model_ref = config.model_path
         try:
             Llama = _load_llama_cls(model_ref)
         except (ModuleNotFoundError, OSError, RuntimeError) as exc:
@@ -421,7 +374,7 @@ def _get_prompt_llm_locked(config: PromptLlmConfig) -> Any:
             "chat_handler": _create_llm_chat_handler(config.enable_thinking),
             "verbose": False,
         }
-        if config.n_threads > 0:
+        if config.n_threads is not None:
             llama_kwargs["n_threads"] = config.n_threads
         if config.main_gpu is not None:
             llama_kwargs["main_gpu"] = config.main_gpu
@@ -435,6 +388,7 @@ def _get_prompt_llm_locked(config: PromptLlmConfig) -> Any:
             f"model={model_ref} "
             f"main_gpu={config.main_gpu} "
             f"n_gpu_layers={config.n_gpu_layers} "
+            f"n_threads={config.n_threads} "
             f"context_size={config.context_size} "
             f"split_mode={config.split_mode} "
             f"tensor_split={config.tensor_split} "
@@ -447,23 +401,18 @@ def _get_prompt_llm_locked(config: PromptLlmConfig) -> Any:
             f"enable_thinking={config.enable_thinking}"
         )
         try:
-            if config.model_path:
-                _prompt_llm = Llama(
-                    model_path=config.model_path,
-                    **llama_kwargs,
-                )
-            else:
-                _prompt_llm = Llama.from_pretrained(
-                    repo_id=config.repo_id,
-                    filename=config.model_filename,
-                    **llama_kwargs,
-                )
+            _prompt_llm = Llama(
+                model_path=config.model_path,
+                **llama_kwargs,
+            )
         except ValueError as exc:
             if "Failed to create llama_context" not in str(exc):
                 raise
             raise RuntimeError(
                 "Failed to create llama_context with LLM config: "
                 f"context_size={config.context_size}, "
+                f"n_gpu_layers={config.n_gpu_layers}, "
+                f"n_threads={config.n_threads}, "
                 f"split_mode={config.split_mode}, "
                 f"tensor_split={config.tensor_split}, "
                 f"flash_attn={config.flash_attn}, "
@@ -471,8 +420,8 @@ def _get_prompt_llm_locked(config: PromptLlmConfig) -> Any:
                 f"n_batch={config.n_batch}, "
                 f"n_ubatch={config.n_ubatch}, "
                 f"offload_kqv={config.offload_kqv}. "
-                "Hint: lower LLM_CONTEXT_SIZE, enable LLM_FLASH_ATTN, "
-                "disable LLM_SWA_FULL, or lower LLM_N_BATCH/LLM_N_UBATCH."
+                "Hint: lower context_size, enable flash_attn, disable swa_full, "
+                "or lower n_batch/n_ubatch for this model in models.toml."
             ) from exc
         _prompt_llm_model_key = model_key
         log(f"LLM model loaded model={model_ref}")

@@ -8,6 +8,7 @@ IMAGE_BATCH_MAX_ITEMS = 8
 
 
 class SdxlGenerationRequest(BaseModel):
+    model: str | None = None
     prompts: list[str] = Field(min_length=1, max_length=IMAGE_BATCH_MAX_ITEMS)
     negative_prompts: list[str] | None = Field(default=None, max_length=IMAGE_BATCH_MAX_ITEMS)
     seeds: list[int | None] | None = Field(default=None, max_length=IMAGE_BATCH_MAX_ITEMS)
@@ -46,9 +47,15 @@ class SdxlControlNetRequest(SdxlGenerationRequest):
 
     @model_validator(mode="after")
     def validate_guidance_ranges(self) -> "SdxlControlNetRequest":
-        if self.scribble_guidance_end < self.scribble_guidance_start:
+        if (
+            {"scribble_guidance_start", "scribble_guidance_end"} <= self.model_fields_set
+            and self.scribble_guidance_end < self.scribble_guidance_start
+        ):
             raise ValueError("scribble guidance end must be greater than or equal to start")
-        if self.pose_guidance_end < self.pose_guidance_start:
+        if (
+            {"pose_guidance_start", "pose_guidance_end"} <= self.model_fields_set
+            and self.pose_guidance_end < self.pose_guidance_start
+        ):
             raise ValueError("pose guidance end must be greater than or equal to start")
         return self
 
@@ -60,5 +67,6 @@ class GeneratedImage(BaseModel):
 
 
 class SdxlT2IResponse(BaseModel):
+    model: str
     images: list[GeneratedImage]
     count: int

@@ -1,15 +1,11 @@
 from __future__ import annotations
 
 import unittest
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from unittest.mock import patch
-
-from pydantic import ValidationError
 
 from app.llm import chat as llm_chat
 from app.llm import runtime as llm_runtime
-from app.settings import Settings
+from app.model_catalog import LlmModelConfig
 
 
 class NullAsyncContext:
@@ -48,12 +44,11 @@ class FakeCache:
 
 def config() -> llm_runtime.PromptLlmConfig:
     return llm_runtime.PromptLlmConfig(
+        name="test-llm",
         model_path="fake.gguf",
-        repo_id="",
-        model_filename="",
         context_size=4096,
         n_gpu_layers=0,
-        n_threads=0,
+        n_threads=None,
         main_gpu=None,
         split_mode=None,
         tensor_split=None,
@@ -64,11 +59,34 @@ def config() -> llm_runtime.PromptLlmConfig:
         n_ubatch=512,
         offload_kqv=True,
         enable_thinking=False,
-        model_key=("fake.gguf", "", "", 4096, 0, 0, None, None, None, (), True, False, 512, 512, True),
+        model_key=("fake.gguf", 4096, 0, None, None, None, None, (), True, False, 512, 512, True, False),
         max_tokens=32,
         temperature=0.25,
         top_p=0.9,
     )
+
+
+def model_config(**updates) -> LlmModelConfig:
+    values = {
+        "name": "test-llm",
+        "path": "fake.gguf",
+        "use_max_gpu": False,
+        "context_size": 4096,
+        "split_mode": "layer",
+        "tensor_split": [],
+        "main_gpu": 0,
+        "flash_attn": True,
+        "swa_full": False,
+        "n_batch": 512,
+        "n_ubatch": 512,
+        "offload_kqv": True,
+        "max_tokens": 1024,
+        "temperature": 0.5,
+        "top_p": 0.9,
+        "enable_thinking": False,
+    }
+    values.update(updates)
+    return LlmModelConfig.model_validate(values)
 
 
 class FakePromptLlm:
@@ -87,162 +105,168 @@ class FakeFailingPromptLlm:
 
 
 class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
-    def test_build_prompt_llm_config_uses_default_context_size(self) -> None:
-        with TemporaryDirectory() as temp_dir:
-            model_path = Path(temp_dir) / "fake.gguf"
-            model_path.write_bytes(b"fake")
+    def setUp(self) -> None:
+        model_patcher = patch.object(
+            llm_chat,
+            "get_selected_model_name",
+            side_effect=lambda family, name: name or "test-llm",
+        )
+        model_patcher.start()
+        self.addCleanup(model_patcher.stop)
 
-            with (
-                patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
-                patch.object(llm_runtime.settings, "llm_use_max_gpu", False),
-                patch.object(llm_runtime.settings, "llm_context_size", llm_runtime.LLM_CONTEXT_SIZE),
-            ):
-                config = llm_runtime.build_prompt_llm_config()
+    def test_build_prompt_llm_config_uses_toml_context_size(self) -> None:
+        model = model_config(context_size=6144)
+        with patch.object(llm_runtime, "resolve_llm_model", return_value=(model, "fake.gguf")):
+            config = llm_runtime.build_prompt_llm_config()
 
-        self.assertEqual(config.context_size, llm_runtime.LLM_CONTEXT_SIZE)
-        self.assertEqual(config.model_key[3], llm_runtime.LLM_CONTEXT_SIZE)
+        self.assertEqual(config.context_size, 6144)
+        self.assertEqual(config.model_key[1], 6144)
+        self.assertEqual(config.name, "test-llm")
 
-    def test_build_prompt_llm_config_uses_env_context_size_override(self) -> None:
-        with TemporaryDirectory() as temp_dir:
-            model_path = Path(temp_dir) / "fake.gguf"
-            model_path.write_bytes(b"fake")
+    def test_build_prompt_llm_config_uses_model_defaults_and_request_overrides(self) -> None:
+        model = model_config(
+            context_size=8192,
+            max_tokens=2048,
+            temperature=0.8,
+            top_p=0.7,
+        )
+        with patch.object(llm_runtime, "resolve_llm_model", return_value=(model, "fake.gguf")):
+            default_config = llm_runtime.build_prompt_llm_config()
+            overridden_config = llm_runtime.build_prompt_llm_config(
+                max_tokens=-64,
+                temperature=20.0,
+                context_size=16384,
+                top_p=0.2,
+            )
+            top_p_only_config = llm_runtime.build_prompt_llm_config(top_p=0.1)
 
-            with (
-                patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
-                patch.object(llm_runtime.settings, "llm_use_max_gpu", False),
-                patch.object(llm_runtime.settings, "llm_context_size", 8192),
-            ):
-                config = llm_runtime.build_prompt_llm_config()
-
-        self.assertEqual(config.context_size, 8192)
-        self.assertEqual(config.model_key[3], 8192)
+        self.assertEqual(default_config.context_size, 8192)
+        self.assertEqual(default_config.max_tokens, 2048)
+        self.assertEqual(default_config.temperature, 0.8)
+        self.assertEqual(default_config.top_p, 0.7)
+        self.assertEqual(overridden_config.max_tokens, -64)
+        self.assertEqual(overridden_config.temperature, 20.0)
+        self.assertEqual(overridden_config.context_size, 16384)
+        self.assertEqual(overridden_config.top_p, 0.2)
+        self.assertNotEqual(default_config.model_key, overridden_config.model_key)
+        self.assertEqual(default_config.model_key, top_p_only_config.model_key)
 
     def test_build_prompt_llm_config_uses_context_memory_settings(self) -> None:
-        with TemporaryDirectory() as temp_dir:
-            model_path = Path(temp_dir) / "fake.gguf"
-            model_path.write_bytes(b"fake")
-
-            with (
-                patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
-                patch.object(llm_runtime.settings, "llm_use_max_gpu", False),
-                patch.object(llm_runtime.settings, "llm_flash_attn", False),
-                patch.object(llm_runtime.settings, "llm_swa_full", True),
-                patch.object(llm_runtime.settings, "llm_n_batch", 256),
-                patch.object(llm_runtime.settings, "llm_n_ubatch", 128),
-                patch.object(llm_runtime.settings, "llm_offload_kqv", False),
-            ):
-                config = llm_runtime.build_prompt_llm_config()
+        model = model_config(
+            flash_attn=False,
+            swa_full=True,
+            n_batch=256,
+            n_ubatch=128,
+            offload_kqv=False,
+        )
+        with patch.object(llm_runtime, "resolve_llm_model", return_value=(model, "fake.gguf")):
+            config = llm_runtime.build_prompt_llm_config()
 
         self.assertIs(config.flash_attn, False)
         self.assertIs(config.swa_full, True)
         self.assertEqual(config.n_batch, 256)
         self.assertEqual(config.n_ubatch, 128)
         self.assertIs(config.offload_kqv, False)
-        self.assertEqual(config.model_key[10:], (False, True, 256, 128, False))
+        self.assertEqual(config.model_key[8:], (False, True, 256, 128, False, False))
 
-    def test_build_prompt_llm_config_uses_enable_thinking_setting_without_changing_model_key(self) -> None:
-        with TemporaryDirectory() as temp_dir:
-            model_path = Path(temp_dir) / "fake.gguf"
-            model_path.write_bytes(b"fake")
-
-            with (
-                patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
-                patch.object(llm_runtime.settings, "llm_use_max_gpu", False),
-                patch.object(llm_runtime.settings, "llm_enable_thinking", False),
-            ):
-                disabled_config = llm_runtime.build_prompt_llm_config()
-            with (
-                patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
-                patch.object(llm_runtime.settings, "llm_use_max_gpu", False),
-                patch.object(llm_runtime.settings, "llm_enable_thinking", True),
-            ):
-                enabled_config = llm_runtime.build_prompt_llm_config()
+    def test_build_prompt_llm_config_uses_enable_thinking_setting_in_model_key(self) -> None:
+        disabled = model_config()
+        enabled = disabled.model_copy(update={"enable_thinking": True})
+        with patch.object(llm_runtime, "resolve_llm_model", return_value=(disabled, "fake.gguf")):
+            disabled_config = llm_runtime.build_prompt_llm_config()
+        with patch.object(llm_runtime, "resolve_llm_model", return_value=(enabled, "fake.gguf")):
+            enabled_config = llm_runtime.build_prompt_llm_config()
 
         self.assertIs(disabled_config.enable_thinking, False)
         self.assertIs(enabled_config.enable_thinking, True)
-        self.assertEqual(disabled_config.model_key, enabled_config.model_key)
+        self.assertNotEqual(disabled_config.model_key, enabled_config.model_key)
 
-    def test_settings_rejects_non_positive_batch_sizes(self) -> None:
-        with self.assertRaises(ValidationError):
-            Settings(llm_n_batch=0)
-        with self.assertRaises(ValidationError):
-            Settings(llm_n_ubatch=0)
+    def test_model_config_accepts_values_without_numeric_range_validation(self) -> None:
+        model = model_config(
+            context_size=-1,
+            tensor_split=[1, -1],
+            main_gpu=-2,
+            n_batch=0,
+            n_ubatch=-3,
+            max_tokens=-4,
+            temperature=9.0,
+            top_p=2.0,
+        )
+
+        self.assertEqual(model.context_size, -1)
+        self.assertEqual(model.tensor_split, [1.0, -1.0])
+        self.assertEqual(model.n_batch, 0)
+        self.assertEqual(model.max_tokens, -4)
 
     def test_build_prompt_llm_config_uses_multi_gpu_split_settings(self) -> None:
-        with TemporaryDirectory() as temp_dir:
-            model_path = Path(temp_dir) / "fake.gguf"
-            model_path.write_bytes(b"fake")
-
-            with (
-                patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
-                patch.object(llm_runtime.settings, "llm_use_max_gpu", True),
-                patch.object(llm_runtime.settings, "llm_context_size", 8192),
-                patch.object(llm_runtime.settings, "llm_split_mode", "layer"),
-                patch.object(llm_runtime.settings, "llm_tensor_split", "1,1"),
-                patch.object(llm_runtime.settings, "llm_main_gpu", 0),
-                patch.object(llm_runtime, "get_cuda_device_count", return_value=2),
-            ):
-                config = llm_runtime.build_prompt_llm_config()
+        model = model_config(
+            use_max_gpu=True,
+            context_size=8192,
+            split_mode="layer",
+            tensor_split=[1, 1],
+        )
+        with (
+            patch.object(llm_runtime, "resolve_llm_model", return_value=(model, "fake.gguf")),
+            patch.object(llm_runtime, "get_cuda_device_count", return_value=2),
+        ):
+            config = llm_runtime.build_prompt_llm_config()
 
         self.assertEqual(config.split_mode, llm_runtime.LLM_SPLIT_MODE_LAYER)
         self.assertEqual(config.tensor_split, (1.0, 1.0))
         self.assertEqual(config.lease_device_ids, (0, 1))
-        self.assertEqual(config.model_key[8], (1.0, 1.0))
-        self.assertEqual(config.model_key[9], (0, 1))
+        self.assertEqual(config.model_key[6], (1.0, 1.0))
+        self.assertEqual(config.model_key[7], (0, 1))
 
     def test_build_prompt_llm_config_supports_tensor_split_mode(self) -> None:
-        with TemporaryDirectory() as temp_dir:
-            model_path = Path(temp_dir) / "fake.gguf"
-            model_path.write_bytes(b"fake")
-
-            with (
-                patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
-                patch.object(llm_runtime.settings, "llm_use_max_gpu", True),
-                patch.object(llm_runtime.settings, "llm_split_mode", "tensor"),
-                patch.object(llm_runtime.settings, "llm_tensor_split", "1,1"),
-                patch.object(llm_runtime.settings, "llm_main_gpu", 0),
-                patch.object(llm_runtime, "get_cuda_device_count", return_value=2),
-            ):
-                config = llm_runtime.build_prompt_llm_config()
+        model = model_config(
+            use_max_gpu=True,
+            split_mode="tensor",
+            tensor_split=[1, 1],
+        )
+        with (
+            patch.object(llm_runtime, "resolve_llm_model", return_value=(model, "fake.gguf")),
+            patch.object(llm_runtime, "get_cuda_device_count", return_value=2),
+        ):
+            config = llm_runtime.build_prompt_llm_config()
 
         self.assertEqual(config.split_mode, llm_runtime.LLM_SPLIT_MODE_TENSOR)
         self.assertEqual(config.tensor_split, (1.0, 1.0))
         self.assertEqual(config.lease_device_ids, (0, 1))
 
-    def test_build_prompt_llm_config_rejects_invalid_split_settings(self) -> None:
-        with TemporaryDirectory() as temp_dir:
-            model_path = Path(temp_dir) / "fake.gguf"
-            model_path.write_bytes(b"fake")
+    def test_model_config_rejects_invalid_split_mode_only(self) -> None:
+        with self.assertRaises(ValueError):
+            model_config(split_mode="bad")
 
-            with (
-                patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
-                patch.object(llm_runtime.settings, "llm_use_max_gpu", True),
-                patch.object(llm_runtime.settings, "llm_split_mode", "bad"),
-                patch.object(llm_runtime.settings, "llm_main_gpu", 0),
-                patch.object(llm_runtime, "get_cuda_device_count", return_value=2),
-            ):
-                with self.assertRaises(ValueError):
-                    llm_runtime.build_prompt_llm_config()
+    def test_optional_thread_and_gpu_layer_values_override_fallbacks(self) -> None:
+        explicit = model_config(use_max_gpu=True, n_threads=6, n_gpu_layers=12)
+        fallback_gpu = model_config(use_max_gpu=True)
+        fallback_cpu = model_config(use_max_gpu=False)
+        with (
+            patch.object(llm_runtime, "get_cuda_device_count", return_value=1),
+            patch.object(llm_runtime, "resolve_llm_model", return_value=(explicit, "fake.gguf")),
+        ):
+            explicit_config = llm_runtime.build_prompt_llm_config()
+        with (
+            patch.object(llm_runtime, "get_cuda_device_count", return_value=1),
+            patch.object(llm_runtime, "resolve_llm_model", return_value=(fallback_gpu, "fake.gguf")),
+        ):
+            gpu_config = llm_runtime.build_prompt_llm_config()
+        with patch.object(llm_runtime, "resolve_llm_model", return_value=(fallback_cpu, "fake.gguf")):
+            cpu_config = llm_runtime.build_prompt_llm_config()
 
-            with (
-                patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
-                patch.object(llm_runtime.settings, "llm_use_max_gpu", True),
-                patch.object(llm_runtime.settings, "llm_split_mode", "layer"),
-                patch.object(llm_runtime.settings, "llm_tensor_split", "1,nope"),
-                patch.object(llm_runtime.settings, "llm_main_gpu", 0),
-                patch.object(llm_runtime, "get_cuda_device_count", return_value=2),
-            ):
-                with self.assertRaises(ValueError):
-                    llm_runtime.build_prompt_llm_config()
+        self.assertEqual((explicit_config.n_threads, explicit_config.n_gpu_layers), (6, 12))
+        self.assertEqual(gpu_config.n_gpu_layers, -1)
+        self.assertIsNone(gpu_config.n_threads)
+        self.assertEqual(cpu_config.n_gpu_layers, 0)
+        self.assertNotEqual(explicit_config.model_key, gpu_config.model_key)
 
     def test_get_prompt_llm_passes_multi_gpu_kwargs(self) -> None:
         config = llm_runtime.PromptLlmConfig(
+            name="test-llm",
             model_path="fake.gguf",
-            repo_id="",
-            model_filename="",
             context_size=4096,
             n_gpu_layers=-1,
-            n_threads=0,
+            n_threads=6,
             main_gpu=0,
             split_mode=llm_runtime.LLM_SPLIT_MODE_LAYER,
             tensor_split=(1.0, 1.0),
@@ -255,11 +279,9 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
             enable_thinking=False,
             model_key=(
                 "fake.gguf",
-                "",
-                "",
                 4096,
                 -1,
-                0,
+                6,
                 0,
                 llm_runtime.LLM_SPLIT_MODE_LAYER,
                 (1.0, 1.0),
@@ -269,6 +291,7 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 512,
                 256,
                 True,
+                False,
             ),
             max_tokens=32,
             temperature=0.25,
@@ -281,6 +304,7 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(FakePromptLlm.kwargs["n_ctx"], 4096)
             self.assertEqual(FakePromptLlm.kwargs["n_gpu_layers"], -1)
+            self.assertEqual(FakePromptLlm.kwargs["n_threads"], 6)
             self.assertEqual(FakePromptLlm.kwargs["main_gpu"], 0)
             self.assertEqual(FakePromptLlm.kwargs["split_mode"], llm_runtime.LLM_SPLIT_MODE_LAYER)
             self.assertEqual(FakePromptLlm.kwargs["tensor_split"], [1.0, 1.0])
@@ -290,6 +314,15 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(FakePromptLlm.kwargs["n_ubatch"], 256)
             self.assertIs(FakePromptLlm.kwargs["offload_kqv"], True)
             self.assertTrue(callable(FakePromptLlm.kwargs["chat_handler"]))
+        finally:
+            llm_runtime.release_llm_runtime()
+
+    def test_get_prompt_llm_omits_unspecified_thread_count(self) -> None:
+        try:
+            with patch.object(llm_runtime, "_load_llama_cls", return_value=FakePromptLlm):
+                llm_runtime._get_prompt_llm_locked(config())
+
+            self.assertNotIn("n_threads", FakePromptLlm.kwargs)
         finally:
             llm_runtime.release_llm_runtime()
 
@@ -356,7 +389,7 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("context_size=4096", str(error.exception))
             self.assertIn("flash_attn=True", str(error.exception))
             self.assertIn("swa_full=False", str(error.exception))
-            self.assertIn("LLM_CONTEXT_SIZE", str(error.exception))
+            self.assertIn("models.toml", str(error.exception))
         finally:
             llm_runtime.release_llm_runtime()
 

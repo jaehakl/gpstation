@@ -9,11 +9,13 @@ cd app_v1/slaves/ai
 poetry install
 ```
 
-`ai/` reads UTF-8 settings from `app_v1/slaves/ai/.env`. Copy `env.example` first and set local model values:
+Copy `app_v1/slaves/ai/models.example.toml` to `models.toml`, then register at least one LLM, SDXL, and embedding model and a `default_model` for each family. The real file is ignored by git. Relative paths are resolved from `app_v1/slaves/ai`, and a successful catalog load is cached until the worker restarts.
 
-- `LLM_MODEL_PATH`, `LLM_USE_MAX_GPU`, and `LLM_ENABLE_THINKING` for `ai.llm`
-- `SDXL_CKPT_PATH` for `ai.sdxl.*`; ControlNet handlers use the configured scribble and OpenPose model IDs
-- local `EMBEDDING_MODEL_PATH`, or `EMBEDDING_MODEL_NAME` plus an immutable `EMBEDDING_MODEL_REVISION` commit SHA for `ai.embeddings`; cached snapshots load offline by default
+- `[llm]` requires the shared GPU/context, batch, attention, and generation values shown in the example. Each model requires only `name` and `path`; optional fields override the shared values. Optional `n_gpu_layers` and `n_threads` may be set at either level.
+- `[sdxl]` requires the shared ControlNet IDs and image/control generation defaults. Each model requires only `name` and `path`; optional fields, including `clip_skip`, override the shared values.
+- Embedding entries contain either a local `path`, or `model_name` plus an immutable 40-character commit `revision`; `local_files_only` defaults to `true`.
+
+See `models.example.toml` for the complete schema. `.env` is now used only for optional VoiceVox runtime settings.
 
 ## Run
 
@@ -32,10 +34,11 @@ Manifest files require `id`, `name`, and `module`. They may also set `startup_ti
 
 `ai` supports these job handler types:
 
-- `ai.llm`: payload `{"system_prompt":"...", "prompt":"...", "max_tokens":512, "temperature":0.5}` returns `{"answer":"..."}`
-- `ai.chat`: first payload `{"system_prompt":"...", "prompt":"...", "max_tokens":512, "temperature":0.5}` returns `{"answer":"...", "context_window":4096, "prompt_tokens":123, "max_response_tokens":512, "remaining_tokens":3456, "cache_enabled":true}` and streams `ai.chat.delta` events. Keep the job session open with `autoFinish:false`; later calls in that session can send only `{"prompt":"..."}` to continue the conversation.
-- `ai.embeddings`: payload `{"text":"..."}` returns `{"embedding":[...], "dimensions":123}`
-- `ai.sdxl.t2i`: payload `{"prompts":["..."], "format":"png"}` returns image metadata in the JSON payload and each generated image as a DataChannel file attachment.
+- `ai.llm.models`, `ai.sdxl.models`, `ai.embeddings.models`: return `default_model` and ordered model details without local filesystem paths.
+- `ai.llm`: payload `{"model":"main-llm", "system_prompt":"...", "prompt":"...", "max_tokens":512, "temperature":0.5}` returns `{"model":"main-llm", "answer":"..."}`.
+- `ai.chat`: the first payload may select an LLM with `model`; results include the selected `model` and stream `ai.chat.delta` events. The latest selected model and message history are retained in the open job session, including across model switches.
+- `ai.embeddings`: payload `{"model":"local-embedding", "text":"..."}` returns `{"model":"local-embedding", "embedding":[...], "dimensions":123}`.
+- `ai.sdxl.t2i`: payload `{"model":"main-sdxl", "prompts":["..."], "format":"png"}` returns the selected `model`, image metadata, and each generated image as a DataChannel file attachment.
 - `ai.sdxl.i2i`: requires one request attachment with ID `image`.
 - `ai.sdxl.inpaint`: requires request attachments with IDs `image` and `mask`.
 - `ai.sdxl.controlnet.t2i`: requires at least one request attachment with ID `scribble` or `pose`.
@@ -44,10 +47,13 @@ Manifest files require `id`, `name`, and `module`. They may also set `startup_ti
 
 The image-input handlers accept PNG, JPEG, and WebP attachments up to 20 MiB each. Input images are resized to the requested output size. A mask is converted to grayscale; white pixels are regenerated and black pixels are preserved by the Diffusers inpaint pipeline. A fully white scribble is treated as inactive. When both controls are present, the runtime applies them in `scribble`, then `pose` order. ControlNet weights may be downloaded into the Hugging Face cache the first time a configured model is used.
 
+The `model` field is optional on every generation handler. When omitted, the family default is used; explicit request settings override the selected model's TOML defaults. Every result includes the external model name that was actually used.
+
 Example `ai.sdxl.t2i` payload:
 
 ```json
 {
+  "model": "main-sdxl",
   "prompts": ["a compact workstation on a clean desk"],
   "negative_prompts": [""],
   "seeds": [123],
@@ -63,6 +69,7 @@ Example `ai.sdxl.t2i` response payload:
 
 ```json
 {
+  "model": "main-sdxl",
   "images": [
     {
       "attachment_id": "image-1",

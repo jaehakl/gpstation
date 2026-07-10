@@ -13,11 +13,46 @@ from app import __main__ as ai_slave
 from app.sdxl import handlers as sdxl_handlers
 from app.sdxl import runtime as sdxl_runtime
 from app.sdxl import service as sdxl_service
-from app.sdxl.models import GeneratedImage, SdxlControlNetRequest, SdxlGenerationRequest, SdxlT2IResponse
+from app.sdxl.models import (
+    GeneratedImage,
+    SdxlControlNetRequest,
+    SdxlGenerationRequest,
+    SdxlT2IRequest,
+    SdxlT2IResponse,
+)
+from app.model_catalog import SdxlModelConfig
 
 
 def context() -> SlaveContext:
     return SlaveContext(session_id="session-1", ttl_seconds=60)
+
+
+def sdxl_model_config(path: str, **updates) -> SdxlModelConfig:
+    values = {
+        "name": "sdxl-1",
+        "path": path,
+        "controlnet_scribble_model_id": "xinsir/controlnet-scribble-sdxl-1.0",
+        "controlnet_openpose_model_id": "xinsir/controlnet-openpose-sdxl-1.0",
+        "step": 30,
+        "cfg": 7.0,
+        "height": 1024,
+        "width": 1024,
+        "strength": 1.0,
+        "max_chunk_size": 1,
+        "seed_min": 0,
+        "seed_max": 2_147_483_647,
+        "sampler": "euler",
+        "scheduler": "",
+        "format": "png",
+        "scribble_scale": 0.6,
+        "scribble_guidance_start": 0.0,
+        "scribble_guidance_end": 0.6,
+        "pose_scale": 0.9,
+        "pose_guidance_start": 0.0,
+        "pose_guidance_end": 0.8,
+    }
+    values.update(updates)
+    return SdxlModelConfig.model_validate(values)
 
 
 class SdxlHandlerTest(unittest.IsolatedAsyncioTestCase):
@@ -25,6 +60,7 @@ class SdxlHandlerTest(unittest.IsolatedAsyncioTestCase):
         image_bytes = b"image-bytes"
         generate_images = AsyncMock(
             return_value=SdxlT2IResponse(
+                model="sdxl-1",
                 images=[GeneratedImage(image_bytes=image_bytes, format="png", seed=123)],
                 count=1,
             )
@@ -42,6 +78,7 @@ class SdxlHandlerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.type, "ai.sdxl.t2i.result")
         self.assertEqual(response.payload["count"], 1)
+        self.assertEqual(response.payload["model"], "sdxl-1")
         self.assertNotIn("image_base64", response.payload["images"][0])
         self.assertEqual(
             response.payload["images"][0],
@@ -60,6 +97,7 @@ class SdxlHandlerTest(unittest.IsolatedAsyncioTestCase):
     async def test_i2i_returns_mode_specific_result_type(self) -> None:
         generate_images = AsyncMock(
             return_value=SdxlT2IResponse(
+                model="sdxl-1",
                 images=[GeneratedImage(image_bytes=b"output", format="png", seed=5)],
                 count=1,
             )
@@ -201,6 +239,32 @@ class SdxlHandlerTest(unittest.IsolatedAsyncioTestCase):
 
 
 class SdxlServiceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_model_defaults_apply_and_explicit_request_values_win(self) -> None:
+        model = sdxl_model_config(
+            "unused.safetensors",
+            name="sdxl-defaults",
+            step=12,
+            cfg=4.5,
+            height=64,
+            width=64,
+        )
+        generated = Image.new("RGB", (8, 8), (1, 2, 3))
+        generate_images = AsyncMock(return_value=([generated], [7]))
+        with (
+            patch.object(sdxl_service, "resolve_sdxl_model", return_value=(model, "unused.safetensors")),
+            patch.object(sdxl_service, "generate_images_batch", generate_images),
+        ):
+            response = await sdxl_service.generate_sdxl_t2i_images(
+                SdxlT2IRequest(prompts=["prompt"], width=128),
+            )
+
+        args = generate_images.await_args.args
+        self.assertEqual(args[8], 12)
+        self.assertEqual(args[9], 4.5)
+        self.assertEqual(args[10], 64)
+        self.assertEqual(args[11], 128)
+        self.assertEqual(response.model, "sdxl-defaults")
+
     async def test_controlnet_inpaint_broadcasts_inputs_and_keeps_control_order(self) -> None:
         with tempfile.NamedTemporaryFile() as ckpt_file:
             generated = Image.new("RGB", (8, 8), (1, 2, 3))
@@ -217,11 +281,14 @@ class SdxlServiceTest(unittest.IsolatedAsyncioTestCase):
                 height=64,
                 max_chunk_size=8,
             )
+            model = sdxl_model_config(
+                ckpt_file.name,
+                controlnet_scribble_model_id="scribble-model",
+                controlnet_openpose_model_id="pose-model",
+            )
 
             with (
-                patch.object(sdxl_service.settings, "sdxl_ckpt_path", ckpt_file.name),
-                patch.object(sdxl_service.settings, "sdxl_controlnet_scribble_model_id", "scribble-model"),
-                patch.object(sdxl_service.settings, "sdxl_controlnet_openpose_model_id", "pose-model"),
+                patch.object(sdxl_service, "resolve_sdxl_model", return_value=(model, ckpt_file.name)),
                 patch.object(sdxl_service, "generate_images_batch", generate_images),
             ):
                 response = await sdxl_service.generate_sdxl_images(
@@ -246,7 +313,8 @@ class SdxlServiceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_controlnet_rejects_blank_scribble_without_pose(self) -> None:
         with tempfile.NamedTemporaryFile() as ckpt_file:
-            with patch.object(sdxl_service.settings, "sdxl_ckpt_path", ckpt_file.name):
+            model = sdxl_model_config(ckpt_file.name)
+            with patch.object(sdxl_service, "resolve_sdxl_model", return_value=(model, ckpt_file.name)):
                 with self.assertRaises(ValueError) as error:
                     await sdxl_service.generate_sdxl_images(
                         SdxlControlNetRequest(prompts=["prompt"], width=64, height=64),
@@ -258,7 +326,8 @@ class SdxlServiceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_i2i_requires_fixed_image_attachment(self) -> None:
         with tempfile.NamedTemporaryFile() as ckpt_file:
-            with patch.object(sdxl_service.settings, "sdxl_ckpt_path", ckpt_file.name):
+            model = sdxl_model_config(ckpt_file.name)
+            with patch.object(sdxl_service, "resolve_sdxl_model", return_value=(model, ckpt_file.name)):
                 with self.assertRaises(ValueError) as error:
                     await sdxl_service.generate_sdxl_images(
                         SdxlGenerationRequest(prompts=["prompt"]),
@@ -270,7 +339,8 @@ class SdxlServiceTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_i2i_rejects_unexpected_control_attachment(self) -> None:
         with tempfile.NamedTemporaryFile() as ckpt_file:
-            with patch.object(sdxl_service.settings, "sdxl_ckpt_path", ckpt_file.name):
+            model = sdxl_model_config(ckpt_file.name)
+            with patch.object(sdxl_service, "resolve_sdxl_model", return_value=(model, ckpt_file.name)):
                 with self.assertRaises(ValueError) as error:
                     await sdxl_service.generate_sdxl_images(
                         SdxlGenerationRequest(prompts=["prompt"]),

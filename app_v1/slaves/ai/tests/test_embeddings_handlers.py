@@ -13,6 +13,7 @@ from app.embeddings import handlers as embedding_handlers
 from app.embeddings import runtime as embedding_runtime
 from app.embeddings import service as embedding_service
 from app.embeddings.models import EmbeddingRequest, EmbeddingResponse
+from app.model_catalog import EmbeddingModelConfig
 
 
 def context() -> SlaveContext:
@@ -21,7 +22,9 @@ def context() -> SlaveContext:
 
 class EmbeddingHandlerTest(unittest.IsolatedAsyncioTestCase):
     async def test_returns_embedding_payload(self) -> None:
-        generate_embedding = AsyncMock(return_value=EmbeddingResponse(embedding=[0.1, 0.2], dimensions=2))
+        generate_embedding = AsyncMock(
+            return_value=EmbeddingResponse(model="embedding-1", embedding=[0.1, 0.2], dimensions=2)
+        )
 
         with patch.object(embedding_handlers, "generate_embedding", generate_embedding):
             response = await ai_slave.app.dispatch(
@@ -30,7 +33,10 @@ class EmbeddingHandlerTest(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(response.type, "ai.embeddings.result")
-        self.assertEqual(response.payload, {"embedding": [0.1, 0.2], "dimensions": 2})
+        self.assertEqual(
+            response.payload,
+            {"model": "embedding-1", "embedding": [0.1, 0.2], "dimensions": 2},
+        )
         self.assertEqual(response.attachments, [])
         generate_embedding.assert_awaited_once()
 
@@ -70,12 +76,12 @@ class EmbeddingHandlerTest(unittest.IsolatedAsyncioTestCase):
 
 class EmbeddingServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_remote_model_requires_immutable_revision(self) -> None:
-        with (
-            patch.object(embedding_service.settings, "embedding_model_name", "org/model"),
-            patch.object(embedding_service.settings, "embedding_model_path", ""),
-            patch.object(embedding_service.settings, "embedding_model_revision", "main"),
+        with patch.object(
+            embedding_service,
+            "resolve_embedding_model",
+            side_effect=ValueError("revision must be a 40-character commit SHA"),
         ):
-            with self.assertRaises(RuntimeError) as error:
+            with self.assertRaises(ValueError) as error:
                 await embedding_service.generate_embedding(EmbeddingRequest(text="hello"))
 
         self.assertIn("40-character commit SHA", str(error.exception))
@@ -83,15 +89,23 @@ class EmbeddingServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_remote_model_uses_pinned_offline_snapshot(self) -> None:
         revision = "a" * 40
         encode_cut_text = AsyncMock(return_value=[0.1, 0.2])
+        model = EmbeddingModelConfig(
+            name="remote-embedding",
+            model_name="org/model",
+            revision=revision,
+            local_files_only=True,
+        )
         with (
-            patch.object(embedding_service.settings, "embedding_model_name", "org/model"),
-            patch.object(embedding_service.settings, "embedding_model_path", ""),
-            patch.object(embedding_service.settings, "embedding_model_revision", revision),
-            patch.object(embedding_service.settings, "embedding_local_files_only", True),
+            patch.object(
+                embedding_service,
+                "resolve_embedding_model",
+                return_value=(model, "org/model", revision),
+            ),
             patch.object(embedding_service, "encode_cut_text", encode_cut_text),
         ):
             response = await embedding_service.generate_embedding(EmbeddingRequest(text="hello"))
 
+        self.assertEqual(response.model, "remote-embedding")
         self.assertEqual(response.embedding, [0.1, 0.2])
         encode_cut_text.assert_awaited_once_with(
             "org/model",

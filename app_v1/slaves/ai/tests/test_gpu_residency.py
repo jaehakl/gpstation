@@ -7,7 +7,34 @@ from unittest.mock import patch
 
 from app import gpu_residency
 from app.sdxl.models import SdxlT2IRequest
+from app.model_catalog import SdxlModelConfig
 from app.sdxl import service as image_service
+
+
+def sdxl_model_config(path: str) -> SdxlModelConfig:
+    return SdxlModelConfig(
+        name="sdxl-1",
+        path=path,
+        controlnet_scribble_model_id="scribble-model",
+        controlnet_openpose_model_id="pose-model",
+        step=30,
+        cfg=7.0,
+        height=1024,
+        width=1024,
+        strength=1.0,
+        max_chunk_size=1,
+        seed_min=0,
+        seed_max=2_147_483_647,
+        sampler="euler",
+        scheduler="",
+        format="png",
+        scribble_scale=0.6,
+        scribble_guidance_start=0.0,
+        scribble_guidance_end=0.6,
+        pose_scale=0.9,
+        pose_guidance_start=0.0,
+        pose_guidance_end=0.8,
+    )
 
 
 class GpuResidencyTest(unittest.IsolatedAsyncioTestCase):
@@ -213,9 +240,10 @@ class SdxlT2IServiceTest(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.NamedTemporaryFile() as ckpt_file:
             generated_image = Image.new("RGBA", (8, 8), (255, 0, 0, 128))
+            model = sdxl_model_config(ckpt_file.name)
 
             with (
-                patch.object(image_service.settings, "sdxl_ckpt_path", ckpt_file.name),
+                patch.object(image_service, "resolve_sdxl_model", return_value=(model, ckpt_file.name)),
                 patch.object(
                     image_service,
                     "generate_images_batch",
@@ -233,10 +261,12 @@ class SdxlT2IServiceTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(encoded_image.mode, "RGB")
 
     async def test_generation_rejects_unsupported_format(self) -> None:
-        with self.assertRaises(ValueError) as context:
-            await image_service.generate_sdxl_t2i_images(
-                SdxlT2IRequest(prompts=["a prompt"], format="webp"),
-            )
+        model = sdxl_model_config("unused.safetensors")
+        with (
+            patch.object(image_service, "resolve_sdxl_model", return_value=(model, "unused.safetensors")),
+            self.assertRaises(ValueError) as context,
+        ):
+            await image_service.generate_sdxl_t2i_images(SdxlT2IRequest(prompts=["a prompt"], format="webp"))
 
         self.assertEqual(str(context.exception), "unsupported image format")
 

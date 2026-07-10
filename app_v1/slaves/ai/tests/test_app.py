@@ -9,8 +9,11 @@ from sdk.slave import DataChannelAttachment, DataChannelMessage, SlaveContext
 
 from app import __main__ as ai_slave
 from app import embeddings, llm, sdxl
+from app.embeddings import handlers as embedding_handlers
 from app.embeddings.models import EMBEDDING_TEXT_MAX_BYTES, EmbeddingRequest
-from app.llm.models import LLM_TEXT_MAX_BYTES, LlmRequest
+from app.llm import handlers as llm_handlers
+from app.llm.models import LlmRequest
+from app.sdxl import handlers as sdxl_handlers
 from app.sdxl.models import IMAGE_BATCH_MAX_ITEMS, SdxlT2IRequest
 
 
@@ -42,8 +45,6 @@ class AiAppTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_feature_initializers_warm_runtime_imports(self) -> None:
         with (
-            patch.object(embeddings.settings, "embedding_model_name", "fake-model"),
-            patch.object(embeddings.settings, "embedding_model_path", ""),
             patch.object(embeddings, "warmup_embedding_import") as warmup_embedding_import,
             patch.object(llm, "warmup_llm_import") as warmup_llm_import,
             patch.object(sdxl, "warmup_sdxl_imports") as warmup_sdxl_imports,
@@ -53,7 +54,7 @@ class AiAppTest(unittest.IsolatedAsyncioTestCase):
             await llm.initialize(context())
             await sdxl.initialize(context())
 
-        warmup_embedding_import.assert_called_once_with("fake-model")
+        warmup_embedding_import.assert_called_once_with("startup")
         warmup_llm_import.assert_called_once_with()
         warmup_sdxl_imports.assert_called_once_with()
         self.assertIn("ai initialize embedding import warmup complete", stderr.getvalue())
@@ -66,26 +67,53 @@ class AiAppTest(unittest.IsolatedAsyncioTestCase):
             [
                 "ai.llm",
                 "ai.chat",
+                "ai.llm.models",
                 "ai.embeddings",
+                "ai.embeddings.models",
                 "ai.sdxl.t2i",
                 "ai.sdxl.i2i",
                 "ai.sdxl.inpaint",
                 "ai.sdxl.controlnet.t2i",
                 "ai.sdxl.controlnet.i2i",
                 "ai.sdxl.controlnet.inpaint",
+                "ai.sdxl.models",
                 "ai.voicevox.speakers",
                 "ai.voicevox.audio_query",
                 "ai.voicevox.synthesis",
             ],
         )
 
-    def test_requests_reject_oversized_payloads(self) -> None:
-        with self.assertRaises(ValueError):
-            LlmRequest(system_prompt="system", prompt="x" * (LLM_TEXT_MAX_BYTES + 1))
+    def test_non_llm_requests_reject_oversized_payloads(self) -> None:
         with self.assertRaises(ValueError):
             EmbeddingRequest(text="x" * (EMBEDDING_TEXT_MAX_BYTES + 1))
         with self.assertRaises(ValueError):
             SdxlT2IRequest(prompts=["prompt"] * (IMAGE_BATCH_MAX_ITEMS + 1))
+
+    def test_llm_request_accepts_large_text(self) -> None:
+        prompt = "x" * (512 * 1024)
+        self.assertEqual(LlmRequest(system_prompt="system", prompt=prompt).prompt, prompt)
+
+    async def test_model_list_handlers_return_catalog_payloads(self) -> None:
+        payload = {"default_model": "default", "models": [{"name": "default"}]}
+        cases = (
+            (llm_handlers, "ai.llm.models", "llm"),
+            (embedding_handlers, "ai.embeddings.models", "embeddings"),
+            (sdxl_handlers, "ai.sdxl.models", "sdxl"),
+        )
+        for handlers, message_type, family in cases:
+            with self.subTest(message_type=message_type), patch.object(
+                handlers,
+                "get_model_list_payload",
+                return_value=payload,
+            ) as get_payload:
+                response = await ai_slave.app.dispatch(
+                    DataChannelMessage(id="call-1", type=message_type, payload={}),
+                    context(),
+                )
+
+            self.assertEqual(response.type, f"{message_type}.result")
+            self.assertEqual(response.payload, payload)
+            get_payload.assert_called_once_with(family)
 
     async def test_handlers_reject_request_attachments(self) -> None:
         attachment = DataChannelAttachment(
@@ -99,7 +127,10 @@ class AiAppTest(unittest.IsolatedAsyncioTestCase):
             ("ai.llm", {"system_prompt": "system", "prompt": "prompt"}),
             ("ai.chat", {"system_prompt": "system", "prompt": "prompt"}),
             ("ai.embeddings", {"text": "text"}),
+            ("ai.llm.models", {}),
+            ("ai.embeddings.models", {}),
             ("ai.sdxl.t2i", {"prompts": ["prompt"]}),
+            ("ai.sdxl.models", {}),
             ("ai.voicevox.speakers", {}),
             ("ai.voicevox.audio_query", {"text": "text", "speaker": 2}),
             ("ai.voicevox.synthesis", {"audio_query": {}, "speaker": 2}),

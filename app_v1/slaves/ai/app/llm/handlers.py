@@ -10,11 +10,26 @@ from app.llm.models import ChatRequest, LlmRequest
 from app.llm.service import generate_chat_answer, generate_llm_answer
 from app.logging import log, log_exception
 from app.message import reject_request_attachments
+from app.model_catalog import get_model_list_payload
 
 
 def register_handlers(app: SlaveApp) -> None:
     app.handler("ai.llm")(ai_llm)
     app.handler("ai.chat")(ai_chat)
+    app.handler("ai.llm.models")(ai_llm_models)
+
+
+async def ai_llm_models(
+    message: DataChannelMessage,
+    memory: dict[str, Any] | None,
+    context: SlaveContext,
+) -> DataChannelMessage:
+    reject_request_attachments(message)
+    return DataChannelMessage(
+        id=message.id,
+        type="ai.llm.models.result",
+        payload=get_model_list_payload("llm"),
+    )
 
 
 async def ai_llm(
@@ -58,6 +73,8 @@ async def ai_chat(
         reject_request_attachments(message)
         request = ChatRequest.model_validate(message.payload)
         state, messages = prepare_chat_messages(memory, context.session_id, request)
+        model_name = str(state["model"])
+        request.model = model_name
         log(
             "ai.chat start "
             f"session={context.session_id} "
