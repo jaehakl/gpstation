@@ -10,7 +10,7 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 
 VOICEVOX_CORE_VERSION = "0.16.4"
@@ -32,8 +32,32 @@ def normalize_machine(machine: str) -> str:
     return "x86_64" if value in {"amd64", "x86_64"} else value
 
 
+def resolve_output_dir() -> Path:
+    dotenv = dotenv_values(AI_DIR / ".env")
+    configured = os.environ.get("VOICEVOX_RUNTIME_DIR") or dotenv.get("VOICEVOX_RUNTIME_DIR")
+    output_dir = Path(configured or AI_DIR / "voicevox_runtime").expanduser()
+    return output_dir if output_dir.is_absolute() else AI_DIR / output_dir
+
+
+def run_downloader(command: list[str]) -> None:
+    environment = os.environ.copy()
+    try:
+        subprocess.run(command, check=True, env=environment)
+    except subprocess.CalledProcessError:
+        token_names = [name for name in ("GH_TOKEN", "GITHUB_TOKEN") if environment.get(name)]
+        if not token_names:
+            raise
+        retry_environment = environment.copy()
+        for name in token_names:
+            retry_environment.pop(name, None)
+        print(
+            "VOICEVOX downloader failed with configured GitHub credentials; retrying anonymously.",
+            file=sys.stderr,
+        )
+        subprocess.run(command, check=True, env=retry_environment)
+
+
 def main() -> int:
-    load_dotenv(AI_DIR / ".env", override=False)
     target = (platform.system(), normalize_machine(platform.machine()))
     downloader = DOWNLOADERS.get(target)
     if downloader is None:
@@ -42,9 +66,7 @@ def main() -> int:
 
     filename, expected_sha256 = downloader
     url = f"https://github.com/VOICEVOX/voicevox_core/releases/download/{VOICEVOX_CORE_VERSION}/{filename}"
-    output_dir = Path(os.environ.get("VOICEVOX_RUNTIME_DIR", AI_DIR / "voicevox_runtime")).expanduser()
-    if not output_dir.is_absolute():
-        output_dir = AI_DIR / output_dir
+    output_dir = resolve_output_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="voicevox-downloader-") as temp_dir:
@@ -69,8 +91,6 @@ def main() -> int:
             "onnxruntime",
             "models",
             "dict",
-            "--devices",
-            "cpu",
             "--models-pattern",
             "[0-9]*.vvm",
             "--c-api-version",
@@ -79,7 +99,7 @@ def main() -> int:
             str(output_dir),
         ]
         print("VOICEVOX model terms will be shown by the official downloader.", file=sys.stderr)
-        subprocess.run(command, check=True)
+        run_downloader(command)
 
     print(f"VOICEVOX runtime installed at {output_dir}")
     return 0
