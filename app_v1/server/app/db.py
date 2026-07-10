@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import importlib
-import ssl
 import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, LargeBinary, MetaData, Text, desc, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -19,36 +16,17 @@ from app.settings import settings
 def make_async_db_url(url: str) -> str:
     if not url:
         return url
-    replacements = (
-        ("postgresql+psycopg://", "postgresql+asyncpg://"),
-        ("postgresql+psycopg2://", "postgresql+asyncpg://"),
-        ("postgresql://", "postgresql+asyncpg://"),
-        ("postgres://", "postgresql+asyncpg://"),
-    )
-    for prefix, replacement in replacements:
-        if url.startswith(prefix):
-            url = url.replace(prefix, replacement, 1)
-            break
-
-    # SQLAlchemy expands URL query parameters into asyncpg keyword arguments.
-    # asyncpg accepts ``ssl`` but not libpq's ``sslmode``/``sslrootcert``
-    # keywords, so those two options are converted to an SSLContext below.
-    parsed = urlsplit(url)
-    query = [(key, value) for key, value in parse_qsl(parsed.query) if key not in {"sslmode", "sslrootcert"}]
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
-
-
-def db_connect_args(url: str) -> dict:
-    parsed = urlsplit(url)
-    query = dict(parse_qsl(parsed.query))
-    if query.get("sslmode") != "verify-full":
-        return {}
-
-    root_cert = query.get("sslrootcert")
-    context = ssl.create_default_context(cafile=str(Path(root_cert).expanduser()) if root_cert else None)
-    context.check_hostname = True
-    context.verify_mode = ssl.CERT_REQUIRED
-    return {"ssl": context}
+    if url.startswith("postgresql+asyncpg://"):
+        return url
+    if url.startswith("postgresql+psycopg://"):
+        return url.replace("postgresql+psycopg://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgresql+psycopg2://"):
+        return url.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql+asyncpg://", 1)
+    return url
 
 
 engine = create_async_engine(
@@ -56,7 +34,6 @@ engine = create_async_engine(
     future=True,
     pool_pre_ping=True,
     echo=False,
-    connect_args=db_connect_args(settings.db_url),
 )
 SessionLocal = async_sessionmaker(
     bind=engine,

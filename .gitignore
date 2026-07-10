@@ -58,7 +58,6 @@ Thumbs.db
 ### User Data ###
 *.sqlite3
 *.db
-alembic.ini
 *.onnx
 *.npy
 

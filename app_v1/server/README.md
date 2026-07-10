@@ -9,26 +9,13 @@ cd app_v1/server
 poetry install
 ```
 
-## Database migrations
+## Database schema
 
-The application process never creates or changes tables. Use a migration-capable database role during deployment, then run the server with a DML-only role.
+`app/db.py` and `app/user_auth/db.py` are the only schema definitions. On startup the server runs SQLAlchemy `Base.metadata.create_all()` so a new empty database receives all required tables, constraints, and indexes.
 
-For a new database:
+`create_all()` does not alter existing columns or constraints. When the model schema changes, provision a new empty database or explicitly recreate the existing dedicated database. The application never drops tables automatically, and the startup database role needs permission to create schema objects.
 
-```powershell
-poetry run alembic upgrade head
-```
-
-The hardening migration revokes pre-rotation browser sessions, so users must sign in again once after it is applied.
-
-For a database created by an older `create_all()` startup, validate it, stamp the immutable baseline, and apply the hardening revision:
-
-```powershell
-poetry run python -m app.schema_guard --stamp-baseline
-poetry run alembic upgrade head
-```
-
-Remote database URLs must use a DNS hostname and `sslmode=verify-full`. Add `sslrootcert=C:/path/to/ca.pem` when the server certificate is not rooted in the operating-system trust store. A remote-IP URL or a connection that can fall back to plaintext is rejected at startup.
+Remote database URLs may use either an IP address or a DNS hostname. The server uses the asyncpg driver's default connection behavior and does not require a CA certificate or hostname verification.
 
 ## Run
 

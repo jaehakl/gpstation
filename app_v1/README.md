@@ -15,8 +15,8 @@ Fresh MVP implementation for the job-based GP Station runtime. This directory is
 ## Local Run Order
 
 1. Install dependencies with Poetry in `server/`, `launcher/`, and `slaves/ai/`.
-2. Apply database migrations with `cd app_v1/server && poetry run alembic upgrade head`.
-3. Start the v1 server with `cd app_v1/server && poetry run gpstation-v1-server`.
+2. Point `server/.env` at a new empty Postgres database; IP-based remote URLs are supported.
+3. Start the v1 server with `cd app_v1/server && poetry run gpstation-v1-server`; it creates the schema from SQLAlchemy metadata.
 4. Start one launcher with `cd app_v1/launcher && poetry run launcher`.
 5. Open the management website with `cd app_v1/website && npm run dev`.
 6. Create a user Access Token with `client` scope and a launcher Access Token with `launcher` scope.

@@ -6,8 +6,7 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.db import SessionLocal, engine
-from app.schema_guard import ensure_database_current
+from app.db import Base, SessionLocal, engine
 from app.service.job_orchestrator import start_job_dispatcher, stop_job_dispatcher
 from app.service.job_service import JobService
 from app.settings import settings, validate_runtime_settings
@@ -127,7 +126,9 @@ def server() -> FastAPI:
 
 async def start() -> None:
     validate_runtime_settings(settings)
-    await ensure_database_current()
+
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
 
     async with SessionLocal() as db:
         await JobService.recover_after_server_restart(db)

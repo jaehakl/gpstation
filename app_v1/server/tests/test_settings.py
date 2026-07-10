@@ -102,18 +102,10 @@ def test_runtime_settings_validation_allows_localhost_http():
     validate_runtime_settings(strict_settings())
 
 
-def test_runtime_settings_requires_verified_tls_for_remote_database():
-    with pytest.raises(RuntimeError) as exc:
-        validate_runtime_settings(
-            strict_settings(db_url="postgresql+asyncpg://gpstation:secret@203.0.113.10:5432/gpstation_v1")
-        )
-
-    assert "DNS hostname" in str(exc.value)
-    assert "sslmode=verify-full" in str(exc.value)
-
+def test_runtime_settings_allows_remote_ip_without_tls_options():
     validate_runtime_settings(
         strict_settings(
-            db_url="postgresql+asyncpg://gpstation:secret@db.gpstation.internal:5432/gpstation_v1?sslmode=verify-full"
+            db_url="postgresql+asyncpg://gpstation:secret@203.0.113.10:5432/gpstation_v1"
         )
     )
 

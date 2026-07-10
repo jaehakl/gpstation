@@ -17,7 +17,6 @@
 ```powershell
 cd app_v1/server
 poetry install
-poetry run alembic upgrade head
 poetry run gpstation-v1-server
 ```
 
@@ -137,7 +136,7 @@ Launcher에서 서버로 보내는 주요 메시지:
 - `launchers`: 연결된 launcher의 DB 상태
 - `jobs`: job 요청, 할당, 결과, 오류 상태
 
-DB 구조 변경은 서버 시작 코드가 아니라 Alembic migration만 수행합니다. 서버는 시작 시 현재 schema revision을 검증하며, migration이 적용되지 않은 DB에서는 실행을 거부합니다.
+서버는 시작할 때 `db.py`의 SQLAlchemy metadata로 빈 DB에 테이블과 인덱스를 생성합니다. 기존 테이블의 컬럼·제약조건은 자동 변경하지 않으므로 모델 구조가 바뀌면 새 DB를 준비하거나 기존 DB를 명시적으로 재생성해야 합니다.
 
 ## 7. 검증
 
