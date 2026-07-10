@@ -38,6 +38,7 @@ Manifest files require `id`, `name`, and `module`. They may also set `startup_ti
 - `ai.llm`: payload `{"model":"main-llm", "system_prompt":"...", "prompt":"...", "max_tokens":512, "temperature":0.5}` returns `{"model":"main-llm", "answer":"..."}`.
 - `ai.chat`: the first payload may select an LLM with `model`; results include the selected `model` and stream `ai.chat.delta` events. The latest selected model and message history are retained in the open job session, including across model switches.
 - `ai.embeddings`: payload `{"model":"local-embedding", "text":"..."}` returns `{"model":"local-embedding", "embedding":[...], "dimensions":123}`.
+- `ai.embeddings.batch`: payload `{"model":"local-embedding", "texts":["...", "..."]}` returns ordered `embeddings`, `dimensions`, and `count` in one model call.
 - `ai.sdxl.t2i`: payload `{"model":"main-sdxl", "prompts":["..."], "format":"png"}` returns the selected `model`, image metadata, and each generated image as a DataChannel file attachment.
 - `ai.sdxl.i2i`: requires one request attachment with ID `image`.
 - `ai.sdxl.inpaint`: requires request attachments with IDs `image` and `mask`.

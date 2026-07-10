@@ -21,6 +21,16 @@ async def encode_cut_text(
         return await asyncio.to_thread(_encode_cut_text_locked, model_name, text, revision, local_files_only)
 
 
+async def encode_cut_texts(
+    model_name: str,
+    texts: list[str],
+    revision: str | None = None,
+    local_files_only: bool = True,
+) -> list[list[float]]:
+    async with _embedding_lock:
+        return await asyncio.to_thread(_encode_cut_texts_locked, model_name, texts, revision, local_files_only)
+
+
 def _encode_cut_text_locked(
     model_name: str,
     text: str,
@@ -35,6 +45,26 @@ def _encode_cut_text_locked(
     embedding = [float(value) for value in raw_embedding]
     log(f"embedding encode complete model={model_name} dimensions={len(embedding)}")
     return embedding
+
+
+def _encode_cut_texts_locked(
+    model_name: str,
+    texts: list[str],
+    revision: str | None = None,
+    local_files_only: bool = True,
+) -> list[list[float]]:
+    log(f"embedding batch encode start model={model_name} count={len(texts)}")
+    model = _get_embedding_model_locked(model_name, revision, local_files_only)
+    raw_embeddings = model.encode(texts)
+    if hasattr(raw_embeddings, "tolist"):
+        raw_embeddings = raw_embeddings.tolist()
+    embeddings = [[float(value) for value in raw_embedding] for raw_embedding in raw_embeddings]
+    log(
+        "embedding batch encode complete "
+        f"model={model_name} count={len(embeddings)} "
+        f"dimensions={len(embeddings[0]) if embeddings else 0}"
+    )
+    return embeddings
 
 
 def _get_embedding_model_locked(model_name: str, revision: str | None, local_files_only: bool) -> Any:
