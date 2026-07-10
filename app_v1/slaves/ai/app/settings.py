@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     embedding_model_path: str = ""
     embedding_model_revision: str = ""
     embedding_local_files_only: bool = True
+    voicevox_runtime_dir: str = "voicevox_runtime"
+    voicevox_cpu_num_threads: int = Field(default=0, ge=0, le=65_535)
 
     def resolve_ai_path(self, value: str) -> Path:
         path = Path(value).expanduser()

@@ -4,7 +4,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from sdk.slave import DataChannelAttachment, DataChannelMessage, SlaveContext
 
@@ -388,6 +388,76 @@ class AiHandlerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.attachments[0].data, image_bytes)
         generate_sdxl_t2i_images.assert_awaited_once()
 
+    async def test_voicevox_speakers_handler_returns_metadata(self) -> None:
+        runtime = SimpleNamespace(
+            speakers=Mock(
+                return_value=[
+                    {
+                        "name": "Speaker",
+                        "speaker_uuid": "speaker-1",
+                        "styles": [{"id": 2, "name": "Normal", "type": "talk"}],
+                    }
+                ]
+            )
+        )
+
+        with patch.object(ai_slave, "get_voicevox_runtime", return_value=runtime):
+            response = await ai_slave.app.dispatch(
+                DataChannelMessage(id="call-1", type="ai.voicevox.speakers", payload={}),
+                context(),
+            )
+
+        self.assertEqual(response.type, "ai.voicevox.speakers.result")
+        self.assertEqual(response.payload["speakers"][0]["speaker_uuid"], "speaker-1")
+        self.assertEqual(response.attachments, [])
+        runtime.speakers.assert_called_once_with()
+
+    async def test_voicevox_audio_query_handler_preserves_query(self) -> None:
+        audio_query = {"speedScale": 1.25, "accentPhrases": []}
+        runtime = SimpleNamespace(create_audio_query=Mock(return_value=audio_query))
+
+        with patch.object(ai_slave, "get_voicevox_runtime", return_value=runtime):
+            response = await ai_slave.app.dispatch(
+                DataChannelMessage(
+                    id="call-1",
+                    type="ai.voicevox.audio_query",
+                    payload={"text": "こんにちは", "speaker": 2},
+                ),
+                context(),
+            )
+
+        self.assertEqual(response.type, "ai.voicevox.audio_query.result")
+        self.assertEqual(response.payload, {"audio_query": audio_query})
+        runtime.create_audio_query.assert_called_once_with("こんにちは", 2)
+
+    async def test_voicevox_synthesis_handler_returns_wav_attachment(self) -> None:
+        wav = b"RIFF\x04\x00\x00\x00WAVE"
+        runtime = SimpleNamespace(synthesis=Mock(return_value=wav))
+        audio_query = {"speedScale": 0.9, "accentPhrases": []}
+
+        with patch.object(ai_slave, "get_voicevox_runtime", return_value=runtime):
+            response = await ai_slave.app.dispatch(
+                DataChannelMessage(
+                    id="call-1",
+                    type="ai.voicevox.synthesis",
+                    payload={
+                        "audio_query": audio_query,
+                        "speaker": 2,
+                        "enable_interrogative_upspeak": False,
+                    },
+                ),
+                context(),
+            )
+
+        self.assertEqual(response.type, "ai.voicevox.synthesis.result")
+        self.assertEqual(
+            response.payload,
+            {"attachment_id": "audio-1", "mime_type": "audio/wav", "size": len(wav)},
+        )
+        self.assertEqual(response.attachments[0].mimeType, "audio/wav")
+        self.assertEqual(response.attachments[0].data, wav)
+        runtime.synthesis.assert_called_once_with(audio_query, 2, False)
+
     async def test_handlers_reject_request_attachments(self) -> None:
         attachment = DataChannelAttachment(
             id="input-1",
@@ -401,6 +471,9 @@ class AiHandlerTest(unittest.IsolatedAsyncioTestCase):
             ("ai.chat", {"system_prompt": "system", "prompt": "prompt"}),
             ("ai.embeddings", {"text": "text"}),
             ("ai.sdxl.t2i", {"prompts": ["prompt"]}),
+            ("ai.voicevox.speakers", {}),
+            ("ai.voicevox.audio_query", {"text": "text", "speaker": 2}),
+            ("ai.voicevox.synthesis", {"audio_query": {}, "speaker": 2}),
         ):
             with self.subTest(message_type=message_type):
                 with self.assertRaises(ValueError) as error:

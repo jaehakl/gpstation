@@ -1,4 +1,4 @@
-cd /path/to/gpstation/app_v1/launcher
+cd ./app_v1/launcher
 
 # 백그라운드 실행
 nohup poetry run launcher > launcher.log 2>&1 &

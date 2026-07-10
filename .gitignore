@@ -65,3 +65,4 @@ Thumbs.db
 *.safetensors
 *.gguf
 *.ckpt
+app_v1/slaves/ai/voicevox_runtime/
