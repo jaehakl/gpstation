@@ -290,6 +290,10 @@ def attach_worker_job_peer_handlers(pc: Any, job_id: str, handler_type: str, job
                     if kind == "job.result.ack":
                         ack_event = state.result_ack_events.get(str(payload.get("id") or ""))
                         if ack_event is not None:
+                            # Release the busy guard before waking the result waiter. The
+                            # master may send the next ordered job.call immediately after
+                            # the ACK, before the waiter task gets scheduled again.
+                            state.call_in_progress = False
                             ack_event.set()
                         return
                     if kind == "job.finish":

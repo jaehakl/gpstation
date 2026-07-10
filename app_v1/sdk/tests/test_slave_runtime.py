@@ -534,6 +534,41 @@ def test_datachannel_rejects_overlapping_call():
     }
 
 
+def test_datachannel_accepts_next_call_immediately_after_result_ack():
+    pc = FakePeerConnection()
+    state = attach_worker_job_peer_handlers(pc, "job-1", "ai.llm", 0.0)
+    channel = FakeDataChannel()
+
+    pc.handlers["datachannel"](channel)
+    channel.handlers["message"](json.dumps({"kind": "job.ready", "id": "job-1"}))
+    channel.handlers["message"](json.dumps({"kind": "job.call", "id": "call-1", "type": "ai.llm"}))
+    assert state.call_queue.get_nowait()["id"] == "call-1"
+    state.call_in_progress = True
+    state.result_ack_events["call-1"] = asyncio.Event()
+
+    channel.handlers["message"](json.dumps({"kind": "job.result.ack", "id": "call-1"}))
+    channel.handlers["message"](json.dumps({"kind": "job.call", "id": "call-2", "type": "ai.llm"}))
+
+    assert state.call_in_progress is False
+    assert state.call_queue.get_nowait()["id"] == "call-2"
+    assert channel.sent == []
+
+
+def test_datachannel_ignores_unknown_result_ack_for_busy_state():
+    pc = FakePeerConnection()
+    state = attach_worker_job_peer_handlers(pc, "job-1", "ai.llm", 0.0)
+    channel = FakeDataChannel()
+
+    pc.handlers["datachannel"](channel)
+    state.call_in_progress = True
+    state.result_ack_events["call-1"] = asyncio.Event()
+
+    channel.handlers["message"](json.dumps({"kind": "job.result.ack", "id": "unknown-call"}))
+
+    assert state.call_in_progress is True
+    assert not state.result_ack_events["call-1"].is_set()
+
+
 def test_datachannel_rejects_oversized_binary_without_logging_contents(monkeypatch):
     pc = FakePeerConnection()
     state = attach_worker_job_peer_handlers(pc, "job-1", "ai.llm", 0.0)
