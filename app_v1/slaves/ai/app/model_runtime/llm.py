@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from fastapi import HTTPException, status
 from app.logging import log
 from app.model_runtime.gpu_residency import acquire_gpu_model_multi, get_cuda_device_count
 from app.settings import settings
@@ -115,19 +114,13 @@ async def ask_llm(
     trimmed_system_message = system_message.strip()
     trimmed_question = question.strip()
     if not trimmed_system_message:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="system_message is required")
+        raise ValueError("system_message is required")
     if not trimmed_question:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="question is required")
+        raise ValueError("question is required")
     if len(trimmed_system_message) > LLM_MAX_SOURCE_TEXT_LENGTH:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"system_message must be {LLM_MAX_SOURCE_TEXT_LENGTH} characters or fewer",
-        )
+        raise ValueError(f"system_message must be {LLM_MAX_SOURCE_TEXT_LENGTH} characters or fewer")
     if len(trimmed_question) > LLM_MAX_SOURCE_TEXT_LENGTH:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"question must be {LLM_MAX_SOURCE_TEXT_LENGTH} characters or fewer",
-        )
+        raise ValueError(f"question must be {LLM_MAX_SOURCE_TEXT_LENGTH} characters or fewer")
     answer = await generate_prompt_with_llm(
         [
             {"role": "system", "content": trimmed_system_message},
@@ -138,7 +131,7 @@ async def ask_llm(
         response_format_json=False,
     )
     if not answer.strip():
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="LLM returned empty answer")
+        raise RuntimeError("LLM returned empty answer")
     return answer
 
 
@@ -148,22 +141,16 @@ def build_prompt_llm_config(
 ) -> PromptLlmConfig:
     resolved_max_tokens = LLM_MAX_TOKENS if max_tokens is None else max_tokens
     if not LLM_MIN_MAX_TOKENS <= resolved_max_tokens <= LLM_MAX_MAX_TOKENS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "max_tokens must be between "
-                f"{LLM_MIN_MAX_TOKENS} and {LLM_MAX_MAX_TOKENS}"
-            ),
+        raise ValueError(
+            "max_tokens must be between "
+            f"{LLM_MIN_MAX_TOKENS} and {LLM_MAX_MAX_TOKENS}"
         )
 
     resolved_temperature = LLM_TEMPERATURE if temperature is None else temperature
     if not LLM_MIN_TEMPERATURE <= resolved_temperature <= LLM_MAX_TEMPERATURE:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "temperature must be between "
-                f"{LLM_MIN_TEMPERATURE} and {LLM_MAX_TEMPERATURE}"
-            ),
+        raise ValueError(
+            "temperature must be between "
+            f"{LLM_MIN_TEMPERATURE} and {LLM_MAX_TEMPERATURE}"
         )
 
     model_path_value = settings.llm_model_path.strip()
@@ -172,18 +159,12 @@ def build_prompt_llm_config(
         try:
             model_path_value = str(model_path.resolve(strict=True))
         except OSError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"prompt LLM model file not found: {model_path}",
-            ) from exc
+            raise ValueError(f"prompt LLM model file not found: {model_path}") from exc
 
     repo_id = LLM_REPO_ID.strip()
     model_filename = LLM_MODEL_FILENAME.strip()
     if not model_path_value and (not repo_id or not model_filename):
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="prompt LLM repo id and model filename are required",
-        )
+        raise RuntimeError("prompt LLM repo id and model filename are required")
 
     use_gpu = settings.llm_use_max_gpu
     cuda_device_count = get_cuda_device_count() if use_gpu else 0
@@ -194,12 +175,9 @@ def build_prompt_llm_config(
     if split_mode == LLM_SPLIT_MODE_NONE:
         tensor_split = None
     if tensor_split is not None and cuda_device_count > 0 and len(tensor_split) > cuda_device_count:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"LLM_TENSOR_SPLIT specifies {len(tensor_split)} GPUs, "
-                f"but only {cuda_device_count} CUDA device(s) are visible"
-            ),
+        raise ValueError(
+            f"LLM_TENSOR_SPLIT specifies {len(tensor_split)} GPUs, "
+            f"but only {cuda_device_count} CUDA device(s) are visible"
         )
     lease_device_ids = _resolve_llm_lease_device_ids(
         main_gpu=main_gpu,
@@ -260,10 +238,7 @@ def _resolve_llm_main_gpu(use_gpu: bool, cuda_device_count: int) -> int | None:
         return None
     main_gpu = settings.llm_main_gpu
     if main_gpu >= cuda_device_count:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"LLM_MAIN_GPU must be less than visible CUDA device count {cuda_device_count}",
-        )
+        raise ValueError(f"LLM_MAIN_GPU must be less than visible CUDA device count {cuda_device_count}")
     return main_gpu
 
 
@@ -271,10 +246,7 @@ def _parse_llm_split_mode(value: str) -> int:
     normalized = (value or "layer").strip().lower()
     split_mode = LLM_SPLIT_MODE_NAMES.get(normalized)
     if split_mode is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="LLM_SPLIT_MODE must be one of: none, layer, row, tensor",
-        )
+        raise ValueError("LLM_SPLIT_MODE must be one of: none, layer, row, tensor")
     return split_mode
 
 
@@ -284,15 +256,9 @@ def _parse_llm_tensor_split(value: str) -> tuple[float, ...] | None:
     try:
         tensor_split = tuple(float(part.strip()) for part in value.split(",") if part.strip())
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="LLM_TENSOR_SPLIT must be a comma-separated list of positive numbers",
-        ) from exc
+        raise ValueError("LLM_TENSOR_SPLIT must be a comma-separated list of positive numbers") from exc
     if not tensor_split or any(not math.isfinite(part) or part <= 0 for part in tensor_split):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="LLM_TENSOR_SPLIT must be a comma-separated list of positive numbers",
-        )
+        raise ValueError("LLM_TENSOR_SPLIT must be a comma-separated list of positive numbers")
     return tensor_split
 
 
@@ -340,7 +306,7 @@ def _parse_llm_json_object(
 ) -> dict[str, Any]:
     raw_output = raw_output.strip()
     if not raw_output:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=empty_detail)
+        raise RuntimeError(empty_detail)
 
     try:
         payload = json.loads(raw_output)
@@ -348,20 +314,14 @@ def _parse_llm_json_object(
         json_start = raw_output.find("{")
         json_end = raw_output.rfind("}")
         if json_start < 0 or json_end <= json_start:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=invalid_detail,
-            ) from exc
+            raise RuntimeError(invalid_detail) from exc
         try:
             payload = json.loads(raw_output[json_start:json_end + 1])
         except json.JSONDecodeError as nested_exc:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=invalid_detail,
-            ) from nested_exc
+            raise RuntimeError(invalid_detail) from nested_exc
 
     if not isinstance(payload, dict):
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=invalid_detail)
+        raise RuntimeError(invalid_detail)
     return payload
 
 
@@ -445,12 +405,9 @@ def _get_prompt_llm_locked(config: PromptLlmConfig) -> Any:
         try:
             Llama = _load_llama_cls(model_ref)
         except (ModuleNotFoundError, OSError, RuntimeError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=(
-                    "llama-cpp-python is not available or failed to load its native libraries. "
-                    "Install a wheel that matches this machine, then restart the API server."
-                ),
+            raise RuntimeError(
+                "llama-cpp-python is not available or failed to load its native libraries. "
+                "Install a wheel that matches this machine, then restart the worker."
             ) from exc
 
         llama_kwargs: dict[str, Any] = {
@@ -504,21 +461,18 @@ def _get_prompt_llm_locked(config: PromptLlmConfig) -> Any:
         except ValueError as exc:
             if "Failed to create llama_context" not in str(exc):
                 raise
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=(
-                    "Failed to create llama_context with LLM config: "
-                    f"context_size={config.context_size}, "
-                    f"split_mode={config.split_mode}, "
-                    f"tensor_split={config.tensor_split}, "
-                    f"flash_attn={config.flash_attn}, "
-                    f"swa_full={config.swa_full}, "
-                    f"n_batch={config.n_batch}, "
-                    f"n_ubatch={config.n_ubatch}, "
-                    f"offload_kqv={config.offload_kqv}. "
-                    "Hint: lower LLM_CONTEXT_SIZE, enable LLM_FLASH_ATTN, "
-                    "disable LLM_SWA_FULL, or lower LLM_N_BATCH/LLM_N_UBATCH."
-                ),
+            raise RuntimeError(
+                "Failed to create llama_context with LLM config: "
+                f"context_size={config.context_size}, "
+                f"split_mode={config.split_mode}, "
+                f"tensor_split={config.tensor_split}, "
+                f"flash_attn={config.flash_attn}, "
+                f"swa_full={config.swa_full}, "
+                f"n_batch={config.n_batch}, "
+                f"n_ubatch={config.n_ubatch}, "
+                f"offload_kqv={config.offload_kqv}. "
+                "Hint: lower LLM_CONTEXT_SIZE, enable LLM_FLASH_ATTN, "
+                "disable LLM_SWA_FULL, or lower LLM_N_BATCH/LLM_N_UBATCH."
             ) from exc
         _prompt_llm_model_key = model_key
         log(f"LLM model loaded model={model_ref}")

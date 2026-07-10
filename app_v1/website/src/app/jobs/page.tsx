@@ -2,7 +2,7 @@ import { RefreshCw, Square } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 
 import { dbTables } from '../../api/api';
-import type { CrudLauncherRow, CrudUserRow, JobData } from '../../api/types';
+import type { CrudLauncherRow, CrudUserRow, JobSummary } from '../../api/types';
 import { useAuthStore } from '../../stores/authStore';
 import { displayLauncherName, displayUserName, errorMessage, formatDate } from '../format';
 
@@ -13,7 +13,7 @@ export default function JobsPage() {
   const authReady = useAuthStore((state) => state.authReady);
   const isAdmin = user?.role === 'admin';
   const canUseConsole = user?.role === 'admin' || user?.role === 'user';
-  const [jobs, setJobs] = useState<JobData[]>([]);
+  const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [userLabels, setUserLabels] = useState<Record<string, string>>({});
   const [launcherLabels, setLauncherLabels] = useState<Record<string, string>>({});
   const [userFilter, setUserFilter] = useState('');

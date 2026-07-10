@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     sdxl_ckpt_path: str = ""
     embedding_model_name: str = ""
     embedding_model_path: str = ""
+    embedding_model_revision: str = ""
+    embedding_local_files_only: bool = True
 
     def resolve_ai_path(self, value: str) -> Path:
         path = Path(value).expanduser()

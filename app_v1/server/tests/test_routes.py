@@ -5,11 +5,14 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from app.main import app
+from app.auth import Principal
 from app.models import UserData
 from app.models import JobCreateRequest
 from app.routers.v1 import jobs, launchers
 from app.routers.web import jobs as web_jobs
 from app.routers.web import launchers as web_launchers
+import app.service.job_orchestrator as job_orchestrator_module
+from app.service.job_orchestrator import JobOrchestrator
 from app.state import RuntimeRegistry
 
 
@@ -23,7 +26,7 @@ class FakeDb:
 
 
 def test_launcher_routes_replace_legacy_routes():
-    paths = {route.path for route in app.routes}
+    paths = collect_route_paths(app.routes)
     legacy_prefix = "/v1/" + "work" + "ers"
 
     for path in [
@@ -41,6 +44,7 @@ def test_launcher_routes_replace_legacy_routes():
         "/web/launchers/{launcher_id}/cancel-current-job",
         "/web/launchers/{launcher_id}/reset-worker",
         "/web/jobs",
+        "/web/jobs/{job_id}",
         "/web/jobs/{job_id}/wait-answer",
         "/web/jobs/{job_id}/kill",
         "/web/auth/google/start",
@@ -94,8 +98,18 @@ def test_launcher_routes_replace_legacy_routes():
     assert f"{legacy_prefix}/control" not in paths
 
 
+def collect_route_paths(routes, prefix=""):
+    paths = set()
+    for route in routes:
+        if hasattr(route, "path"):
+            paths.add(prefix + route.path)
+        elif hasattr(route, "original_router"):
+            paths.update(collect_route_paths(route.original_router.routes, prefix + route.include_context.prefix))
+    return paths
+
+
 @pytest.mark.asyncio
-async def test_dispatch_queued_jobs_sends_job_start_without_input(monkeypatch):
+async def test_background_dispatcher_sends_job_start_without_input(monkeypatch):
     job = SimpleNamespace(
         id="job-1",
         user_id="user-1",
@@ -103,38 +117,32 @@ async def test_dispatch_queued_jobs_sends_job_start_without_input(monkeypatch):
         slave_app_id="ai",
         offer={"type": "offer", "sdp": "v=0\r\n"},
     )
-    launcher = SimpleNamespace(id="launcher-1")
     sent_messages = []
-    marked_jobs = []
     selected = {"count": 0}
 
-    async def select_next_queued_job(db, *, user_id=None):
+    async def claim_next_compatible_job(db, *, idle_launcher_ids):
+        assert idle_launcher_ids == {"launcher-1"}
         selected["count"] += 1
-        return job if selected["count"] == 1 else None
-
-    async def select_idle_launcher_for_job(db, *, job, idle_launcher_ids):
-        return launcher
-
-    async def assign_job(db, *, job, launcher):
-        return job
-
-    async def idle_launcher_ids():
-        return {"launcher-1"}
-
-    async def mark_launcher_job(*args, **kwargs):
-        marked_jobs.append((args, kwargs))
+        return (job, "launcher-1") if selected["count"] == 1 else None
 
     async def send_to_launcher(launcher_id, message):
         sent_messages.append((launcher_id, message))
 
-    monkeypatch.setattr(jobs.JobService, "select_next_queued_job", select_next_queued_job)
-    monkeypatch.setattr(jobs.JobService, "select_idle_launcher_for_job", select_idle_launcher_for_job)
-    monkeypatch.setattr(jobs.JobService, "assign_job", assign_job)
-    monkeypatch.setattr(jobs.runtime, "idle_launcher_ids", idle_launcher_ids)
-    monkeypatch.setattr(jobs.runtime, "mark_launcher_job", mark_launcher_job)
-    monkeypatch.setattr(jobs, "send_to_launcher", send_to_launcher)
+    class FakeSession:
+        async def __aenter__(self):
+            return object()
 
-    await jobs.dispatch_queued_jobs(object(), user_id="user-1")
+        async def __aexit__(self, *_args):
+            return None
+
+    registry = RuntimeRegistry()
+    await registry.register_launcher("launcher-1", object())
+    orchestrator = JobOrchestrator(registry)
+    monkeypatch.setattr(job_orchestrator_module, "SessionLocal", FakeSession)
+    monkeypatch.setattr(job_orchestrator_module.JobService, "claim_next_compatible_job", claim_next_compatible_job)
+    monkeypatch.setattr(job_orchestrator_module, "send_to_launcher", send_to_launcher)
+
+    assert await orchestrator.dispatch_available_jobs() == 1
 
     assert sent_messages == [
         (
@@ -149,7 +157,7 @@ async def test_dispatch_queued_jobs_sends_job_start_without_input(monkeypatch):
         )
     ]
     assert "input" not in sent_messages[0][1]
-    assert marked_jobs
+    assert (await registry.get_launcher("launcher-1")).current_job_id == "job-1"
 
 
 @pytest.mark.asyncio
@@ -207,7 +215,7 @@ async def test_launcher_job_log_message_is_rejected():
         await launchers.handle_launcher_message(
             object(),
             "launcher-1",
-            object(),
+            "user-1",
             {
                 "type": "job.log",
                 "job_id": "job-1",
@@ -216,6 +224,113 @@ async def test_launcher_job_log_message_is_rejected():
                 "line": "loading model",
             },
         )
+
+
+@pytest.mark.asyncio
+async def test_launcher_heartbeat_rejects_revoked_access_key(monkeypatch):
+    registry = RuntimeRegistry()
+    launcher = await registry.register_launcher(
+        "launcher-1",
+        object(),
+        access_key_id="key-1",
+    )
+    launcher.last_access_key_check_at -= 31
+    monkeypatch.setattr(launchers, "runtime", registry)
+
+    async def inactive_key(_db, access_key_id, user_id):
+        assert (access_key_id, user_id) == ("key-1", "user-1")
+        return False
+
+    monkeypatch.setattr(launchers.AccessKeyService, "is_active_launcher_key", inactive_key)
+
+    class AuditDb:
+        def __init__(self):
+            self.added = []
+            self.commits = 0
+
+        def add(self, item):
+            self.added.append(item)
+
+        async def commit(self):
+            self.commits += 1
+
+    db = AuditDb()
+    with pytest.raises(launchers.LauncherPolicyViolation, match="no longer active"):
+        await launchers.handle_launcher_message(
+            db,
+            "launcher-1",
+            "user-1",
+            {
+                "type": "launcher.heartbeat",
+                "status": "ready",
+                "current_job_id": None,
+            },
+        )
+
+    assert db.commits == 1
+    assert db.added[0].event == "launcher_rejected"
+
+
+@pytest.mark.asyncio
+async def test_launcher_control_releases_auth_connection_before_waiting_for_hello(monkeypatch):
+    class AuthDb:
+        def __init__(self):
+            self.rollbacks = 0
+            self.commits = 0
+            self.added = []
+
+        def add(self, item):
+            self.added.append(item)
+
+        async def rollback(self):
+            self.rollbacks += 1
+
+        async def commit(self):
+            self.commits += 1
+
+    class SessionContext:
+        def __init__(self, db):
+            self.db = db
+
+        async def __aenter__(self):
+            return self.db
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class WebSocket:
+        headers = {"authorization": "Bearer token"}
+        client = SimpleNamespace(host="127.0.0.1")
+
+        def __init__(self, db):
+            self.db = db
+            self.accepted = False
+            self.close_code = None
+
+        async def accept(self):
+            self.accepted = True
+
+        async def receive_json(self):
+            assert self.db.rollbacks == 1
+            raise TimeoutError
+
+        async def close(self, *, code):
+            self.close_code = code
+
+    db = AuthDb()
+    websocket = WebSocket(db)
+
+    async def authenticate(*_args, **_kwargs):
+        return Principal(access_key_id="key-1", user_id="user-1", scopes=frozenset({"launcher"}))
+
+    monkeypatch.setattr(launchers, "SessionLocal", lambda: SessionContext(db))
+    monkeypatch.setattr(launchers, "authenticate_db_authorization", authenticate)
+
+    await launchers.launcher_control(websocket)
+
+    assert websocket.accepted is True
+    assert websocket.close_code == 1008
+    assert db.added[-1].event == "launcher_rejected"
 
 
 def test_extract_slave_startup_timeouts_ignores_invalid_values():
@@ -231,9 +346,8 @@ def test_extract_slave_startup_timeouts_ignores_invalid_values():
 
 
 @pytest.mark.asyncio
-async def test_web_create_job_uses_cookie_user_and_dispatches(monkeypatch):
+async def test_web_create_job_uses_cookie_user_and_wakes_dispatcher(monkeypatch):
     calls = []
-    dispatch_calls = []
     job = SimpleNamespace(
         id="job-1",
         user_id="user-1",
@@ -259,11 +373,7 @@ async def test_web_create_job_uses_cookie_user_and_dispatches(monkeypatch):
         calls.append((db, kwargs))
         return job
 
-    async def dispatch_queued_jobs(db, *, user_id=None):
-        dispatch_calls.append((db, user_id))
-
-    monkeypatch.setattr(web_jobs.JobService, "create_job", create_job)
-    monkeypatch.setattr("app.routers.v1.jobs.dispatch_queued_jobs", dispatch_queued_jobs)
+    monkeypatch.setattr(web_jobs.job_orchestrator, "create_job", create_job)
 
     db = object()
     response = await web_jobs.api_create_job(
@@ -285,7 +395,6 @@ async def test_web_create_job_uses_cookie_user_and_dispatches(monkeypatch):
             },
         )
     ]
-    assert dispatch_calls == [(db, "user-1")]
 
 
 @pytest.mark.asyncio
@@ -330,7 +439,7 @@ async def test_web_reconcile_disconnected_launchers_uses_runtime_and_user_scope(
         calls.append((db, connected_launcher_ids, user_id))
         return 2
 
-    monkeypatch.setattr(web_launchers.LauncherService, "reconcile_disconnected_launchers", reconcile)
+    monkeypatch.setattr(web_launchers.job_orchestrator, "reconcile_disconnected_launchers", reconcile)
     db = object()
 
     user_response = await web_launchers.api_reconcile_disconnected_launchers(

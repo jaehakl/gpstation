@@ -5,6 +5,7 @@ description = "GP Station v1 slave launcher app and subprocess runtime"
 authors = [{ name = "GP Station" }]
 requires-python = ">=3.11,<3.15"
 dependencies = [
+    "gpstation-v1-sdk",
     "pydantic-settings>=2.8,<3.0",
     "typer>=0.12,<1.0",
     "websockets>=12.0,<16.0",
@@ -17,6 +18,9 @@ launcher = "app.cli:app"
 packages = [
     { include = "app" },
 ]
+
+[tool.poetry.dependencies]
+gpstation-v1-sdk = { path = "../sdk", develop = true }
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0,<10.0"

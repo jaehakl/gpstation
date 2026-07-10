@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import Launcher
@@ -10,6 +10,7 @@ from app.models import LauncherView
 
 
 ACTIVE_LAUNCHER_STATUSES = {"ready", "busy"}
+RECONCILE_MINIMUM_AGE = timedelta(seconds=30)
 
 
 def launcher_to_view(launcher: Launcher) -> LauncherView:
@@ -75,58 +76,23 @@ class LauncherService:
         await db.commit()
 
     @staticmethod
-    async def mark_disconnected(db: AsyncSession, launcher_id: str) -> None:
-        launcher = await db.get(Launcher, launcher_id)
-        if launcher is None:
-            return
-
-        launcher.status = "disconnected"
-        launcher.disconnected_at = datetime.now(timezone.utc)
-        await db.commit()
-
-    @staticmethod
-    async def mark_stale_launchers_disconnected(db: AsyncSession) -> None:
-        now = datetime.now(timezone.utc)
-        await db.execute(
-            update(Launcher)
-            .where(Launcher.disconnected_at.is_(None))
-            .values(status="disconnected", disconnected_at=now)
-        )
-        await db.commit()
-
-    @staticmethod
-    async def reconcile_disconnected_launchers(
+    async def find_disconnected_launcher_ids(
         db: AsyncSession,
         *,
         connected_launcher_ids: set[str],
         user_id: str | None = None,
-    ) -> int:
+    ) -> list[str]:
         launcher_clauses = [
-            (Launcher.status.in_(ACTIVE_LAUNCHER_STATUSES)) | (Launcher.disconnected_at.is_(None))
+            (Launcher.status.in_(ACTIVE_LAUNCHER_STATUSES)) | (Launcher.disconnected_at.is_(None)),
+            Launcher.connected_at < datetime.now(timezone.utc) - RECONCILE_MINIMUM_AGE,
         ]
         if connected_launcher_ids:
             launcher_clauses.append(Launcher.id.notin_(connected_launcher_ids))
         if user_id is not None:
             launcher_clauses.append(Launcher.user_id == user_id)
-        candidates = (
-            await db.execute(
-                select(Launcher).where(*launcher_clauses)
-            )
-        ).scalars().all()
-        target_launchers = [
-            launcher
-            for launcher in candidates
-            if (launcher.status in ACTIVE_LAUNCHER_STATUSES or launcher.disconnected_at is None)
-            and str(launcher.id) not in connected_launcher_ids
-            and (user_id is None or str(launcher.user_id) == user_id)
+        return [
+            str(launcher_id)
+            for launcher_id in (
+                await db.execute(select(Launcher.id).where(*launcher_clauses))
+            ).scalars().all()
         ]
-        if not target_launchers:
-            return 0
-
-        now = datetime.now(timezone.utc)
-        for launcher in target_launchers:
-            launcher.status = "disconnected"
-            launcher.disconnected_at = now
-
-        await db.commit()
-        return len(target_launchers)

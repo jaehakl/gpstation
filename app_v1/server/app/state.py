@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -16,11 +17,16 @@ def utcnow() -> datetime:
 class LauncherRuntime:
     id: str
     websocket: WebSocket
+    access_key_id: str | None = None
     slave_app_startup_timeouts: dict[str, float] = field(default_factory=dict)
     current_job_id: str | None = None
     loaded_slave_app_id: str | None = None
     worker_status: str | None = None
+    resetting: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    last_db_heartbeat_at: float = field(default_factory=time.monotonic)
+    last_db_heartbeat_status: str = "ready"
+    last_access_key_check_at: float = field(default_factory=time.monotonic)
 
 
 class RuntimeRegistry:
@@ -28,16 +34,19 @@ class RuntimeRegistry:
         self.lock = asyncio.Lock()
         self.launchers: dict[str, LauncherRuntime] = {}
         self.job_events: dict[str, asyncio.Event] = {}
+        self.job_event_waiters: dict[str, int] = {}
 
     async def register_launcher(
         self,
         launcher_id: str,
         websocket: WebSocket,
         slave_app_startup_timeouts: dict[str, float] | None = None,
+        access_key_id: str | None = None,
     ) -> LauncherRuntime:
         launcher = LauncherRuntime(
             id=launcher_id,
             websocket=websocket,
+            access_key_id=access_key_id,
             slave_app_startup_timeouts=slave_app_startup_timeouts or {},
         )
         async with self.lock:
@@ -56,6 +65,24 @@ class RuntimeRegistry:
         async with self.lock:
             return set(self.launchers.keys())
 
+    async def close_launchers_for_access_key(self, access_key_id: str, *, code: int = 1008) -> int:
+        async with self.lock:
+            targets = [
+                (launcher_id, launcher.websocket)
+                for launcher_id, launcher in self.launchers.items()
+                if launcher.access_key_id == access_key_id
+            ]
+            for launcher_id, _websocket in targets:
+                self.launchers.pop(launcher_id, None)
+        closed = 0
+        for _launcher_id, websocket in targets:
+            try:
+                await websocket.close(code=code)
+                closed += 1
+            except Exception:
+                continue
+        return closed
+
     async def mark_heartbeat(
         self,
         launcher_id: str,
@@ -65,10 +92,10 @@ class RuntimeRegistry:
         worker_status: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
+        _ = current_job_id
         async with self.lock:
             launcher = self.launchers.get(launcher_id)
             if launcher is not None:
-                launcher.current_job_id = current_job_id
                 launcher.loaded_slave_app_id = loaded_slave_app_id
                 launcher.worker_status = worker_status
                 launcher.metadata = metadata or {}
@@ -97,7 +124,17 @@ class RuntimeRegistry:
                 launcher.current_job_id = None
                 launcher.loaded_slave_app_id = None
                 launcher.worker_status = "idle"
+                launcher.resetting = False
                 launcher.metadata = {}
+
+    async def mark_launcher_resetting(self, launcher_id: str) -> LauncherRuntime | None:
+        async with self.lock:
+            launcher = self.launchers.get(launcher_id)
+            if launcher is None or launcher.resetting:
+                return None
+            launcher.resetting = True
+            launcher.worker_status = "resetting"
+            return launcher
 
     async def launcher_snapshots(self) -> dict[str, dict[str, Any]]:
         async with self.lock:
@@ -106,6 +143,7 @@ class RuntimeRegistry:
                     "current_job_id": launcher.current_job_id,
                     "loaded_slave_app_id": launcher.loaded_slave_app_id,
                     "worker_status": launcher.worker_status,
+                    "resetting": launcher.resetting,
                     "metadata": dict(launcher.metadata),
                 }
                 for launcher_id, launcher in self.launchers.items()
@@ -116,8 +154,59 @@ class RuntimeRegistry:
             return {
                 launcher_id
                 for launcher_id, launcher in self.launchers.items()
-                if launcher.current_job_id is None
+                if launcher.current_job_id is None and not launcher.resetting
             }
+
+    async def launcher_matches_job(self, launcher_id: str, job_id: str) -> bool:
+        async with self.lock:
+            launcher = self.launchers.get(launcher_id)
+            return launcher is not None and launcher.current_job_id == job_id
+
+    async def heartbeat_actions(
+        self,
+        launcher_id: str,
+        status: str,
+        *,
+        interval_seconds: float = 30,
+    ) -> tuple[bool, bool]:
+        now = time.monotonic()
+        async with self.lock:
+            launcher = self.launchers.get(launcher_id)
+            if launcher is None:
+                return False, False
+            persist = (
+                status != launcher.last_db_heartbeat_status
+                or now - launcher.last_db_heartbeat_at >= interval_seconds
+            )
+            revalidate_key = now - launcher.last_access_key_check_at >= interval_seconds
+            if persist:
+                launcher.last_db_heartbeat_status = status
+                launcher.last_db_heartbeat_at = now
+            if revalidate_key:
+                launcher.last_access_key_check_at = now
+            return persist, revalidate_key
+
+    async def access_key_revalidation_targets(
+        self,
+        *,
+        interval_seconds: float = 30,
+    ) -> list[tuple[str, str]]:
+        now = time.monotonic()
+        async with self.lock:
+            return [
+                (launcher_id, launcher.access_key_id)
+                for launcher_id, launcher in self.launchers.items()
+                if launcher.access_key_id is not None
+                and now - launcher.last_access_key_check_at >= interval_seconds
+            ]
+
+    async def mark_access_keys_revalidated(self, launcher_ids: set[str]) -> None:
+        now = time.monotonic()
+        async with self.lock:
+            for launcher_id in launcher_ids:
+                launcher = self.launchers.get(launcher_id)
+                if launcher is not None:
+                    launcher.last_access_key_check_at = now
 
     async def set_job_event(self, job_id: str) -> None:
         async with self.lock:
@@ -125,13 +214,37 @@ class RuntimeRegistry:
             if current is not None:
                 current.set()
 
-    async def wait_job_event(self, job_id: str, timeout: float) -> None:
+    async def prepare_job_wait(self, job_id: str) -> asyncio.Event:
         async with self.lock:
-            event = self.job_events.setdefault(job_id, asyncio.Event())
+            event = self.job_events.get(job_id)
+            if event is None:
+                event = asyncio.Event()
+                self.job_events[job_id] = event
+                self.job_event_waiters[job_id] = 0
+            self.job_event_waiters[job_id] = self.job_event_waiters.get(job_id, 0) + 1
+            return event
+
+    async def wait_prepared_job_event(self, job_id: str, event: asyncio.Event, timeout: float) -> None:
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
         except TimeoutError:
-            return
+            pass
+        finally:
+            await self.release_prepared_job_event(job_id, event)
+
+    async def release_prepared_job_event(self, job_id: str, event: asyncio.Event) -> None:
+        async with self.lock:
+            remaining = max(0, self.job_event_waiters.get(job_id, 1) - 1)
+            if remaining == 0:
+                self.job_event_waiters.pop(job_id, None)
+                if self.job_events.get(job_id) is event:
+                    self.job_events.pop(job_id, None)
+            else:
+                self.job_event_waiters[job_id] = remaining
+
+    async def wait_job_event(self, job_id: str, timeout: float) -> None:
+        event = await self.prepare_job_wait(job_id)
+        await self.wait_prepared_job_event(job_id, event, timeout)
 
     async def get_slave_startup_timeout(self, launcher_id: str, slave_app_id: str) -> float | None:
         async with self.lock:

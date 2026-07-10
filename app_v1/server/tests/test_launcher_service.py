@@ -90,7 +90,7 @@ def test_launcher_to_view_uses_launcher_slave_app_ids():
 
 
 @pytest.mark.asyncio
-async def test_reconcile_disconnected_launchers_updates_only_missing_owned_runtime_launchers():
+async def test_find_disconnected_launcher_ids_scopes_missing_runtime_launchers():
     stale = make_launcher()
     stale.id = "stale-launcher"
     stale.status = "busy"
@@ -104,17 +104,13 @@ async def test_reconcile_disconnected_launchers_updates_only_missing_owned_runti
     already_closed.status = "disconnected"
     already_closed.disconnected_at = datetime.now(timezone.utc)
 
-    db = FakeReconcileDb([stale, connected, other_user, already_closed])
+    db = FakeReconcileDb([stale.id])
 
-    launchers = await LauncherService.reconcile_disconnected_launchers(
+    launcher_ids = await LauncherService.find_disconnected_launcher_ids(
         db,
         connected_launcher_ids={"connected-launcher"},
         user_id="user-1",
     )
 
-    assert launchers == 1
-    assert stale.status == "disconnected"
-    assert stale.disconnected_at is not None
-    assert connected.status == "ready"
-    assert other_user.status == "ready"
-    assert db.commits == 1
+    assert launcher_ids == ["stale-launcher"]
+    assert db.commits == 0

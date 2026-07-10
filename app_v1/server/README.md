@@ -1,6 +1,6 @@
 # GP Station v1 Server
 
-FastAPI server for the v1 MVP. It stores durable launcher and slave session state in Postgres while keeping live WebSocket handles in process memory.
+FastAPI server for the v1 MVP. It stores durable launcher and job state in Postgres while keeping live WebSocket handles in process memory.
 
 ## Install
 
@@ -8,6 +8,27 @@ FastAPI server for the v1 MVP. It stores durable launcher and slave session stat
 cd app_v1/server
 poetry install
 ```
+
+## Database migrations
+
+The application process never creates or changes tables. Use a migration-capable database role during deployment, then run the server with a DML-only role.
+
+For a new database:
+
+```powershell
+poetry run alembic upgrade head
+```
+
+The hardening migration revokes pre-rotation browser sessions, so users must sign in again once after it is applied.
+
+For a database created by an older `create_all()` startup, validate it, stamp the immutable baseline, and apply the hardening revision:
+
+```powershell
+poetry run python -m app.schema_guard --stamp-baseline
+poetry run alembic upgrade head
+```
+
+Remote database URLs must use a DNS hostname and `sslmode=verify-full`. Add `sslrootcert=C:/path/to/ca.pem` when the server certificate is not rooted in the operating-system trust store. A remote-IP URL or a connection that can fall back to plaintext is rejected at startup.
 
 ## Run
 

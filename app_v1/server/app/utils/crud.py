@@ -11,14 +11,14 @@ from sqlalchemy import Text, and_, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import UserData
-from app.routers.web.models import (
+from app.models import (
     CrudDeleteRequest,
     CrudDeleteResponse,
     CrudListRequest,
     CrudListResponse,
     CrudUpsertRequest,
     CrudUpsertResponse,
+    UserData,
 )
 
 DeleteMode = Literal["physical"]

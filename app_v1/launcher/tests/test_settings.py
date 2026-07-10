@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from app.settings import LauncherSettings
 
 
@@ -45,6 +47,12 @@ def test_https_api_url_uses_wss():
     settings = LauncherSettings(api_url="https://gps.example.com/base", access_token="test-token")
 
     assert settings.control_websocket_url == "wss://gps.example.com/base/v1/launchers/control"
+
+
+@pytest.mark.parametrize("api_url", ["http://gps.example.com", "ftp://gps.example.com", "htps://gps.example.com"])
+def test_remote_or_invalid_api_url_cannot_downgrade_bearer_websocket(api_url):
+    with pytest.raises(ValueError):
+        LauncherSettings(api_url=api_url, access_token="test-token")
 
 
 def test_launcher_settings_requires_access_token(monkeypatch):

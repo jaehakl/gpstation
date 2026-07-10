@@ -16,6 +16,7 @@ class FakeAuthDb:
         self.access_key = access_key
         self.user = user
         self.commits = 0
+        self.rollbacks = 0
 
     async def scalar(self, _stmt):
         return self.access_key
@@ -27,6 +28,9 @@ class FakeAuthDb:
 
     async def commit(self):
         self.commits += 1
+
+    async def rollback(self):
+        self.rollbacks += 1
 
 
 class FakeAccessKeyDb(FakeAuthDb):
@@ -83,9 +87,63 @@ async def test_db_access_key_auth_updates_last_used_and_scopes():
     principal = await authenticate_bearer_token(db, secret)
 
     assert principal.user_id == "user-1"
+    assert principal.access_key_id == "key-1"
     assert principal.scopes == frozenset({"client", "launcher"})
     assert access_key.last_used_at is not None
     assert db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_db_access_key_auth_samples_recent_last_used_write():
+    secret = "gpsk_secret"
+    access_key = AccessKey(
+        id="key-1",
+        user_id="user-1",
+        key_type="user_api",
+        name="desktop",
+        key_prefix=secret[:16],
+        key_hash=hash_token(secret),
+        scopes=["client"],
+        status="active",
+        last_used_at=datetime.now(timezone.utc),
+    )
+    db = FakeAuthDb(access_key=access_key, user=make_user())
+
+    await authenticate_bearer_token(db, secret)
+
+    assert db.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_db_access_key_auth_enforces_ip_and_origin_allowlists():
+    secret = "gpsk_secret"
+    access_key = AccessKey(
+        id="key-1",
+        user_id="user-1",
+        key_type="user_api",
+        name="browser",
+        key_prefix=secret[:16],
+        key_hash=hash_token(secret),
+        scopes=["client"],
+        status="active",
+        allowed_ips=["10.0.0.0/24"],
+        allowed_origins=["https://app.example.test"],
+    )
+    db = FakeAuthDb(access_key=access_key, user=make_user())
+
+    await authenticate_bearer_token(
+        db,
+        secret,
+        client_ip="10.0.0.7",
+        origin="https://app.example.test",
+    )
+    with pytest.raises(HTTPException, match="IP not allowed"):
+        await authenticate_bearer_token(
+            db,
+            secret,
+            client_ip="10.0.1.7",
+            origin="https://app.example.test",
+        )
 
 
 @pytest.mark.asyncio

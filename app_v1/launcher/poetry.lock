@@ -38,6 +38,26 @@ files = [
 markers = {main = "platform_system == \"Windows\"", dev = "sys_platform == \"win32\""}
 
 [[package]]
+name = "gpstation-v1-sdk"
+version = "0.1.0"
+description = "Shared GP Station v1 Python SDK libraries"
+optional = false
+python-versions = ">=3.11,<3.15"
+groups = ["main"]
+files = []
+develop = true
+
+[package.dependencies]
+pydantic = ">=2.10,<3.0"
+
+[package.extras]
+slave = ["aiortc (>=1.9,<2.0)"]
+
+[package.source]
+type = "directory"
+url = "../sdk"
+
+[[package]]
 name = "iniconfig"
 version = "2.3.0"
 description = "brain-dead simple config-ini parsing"
@@ -523,4 +543,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.15"
-content-hash = "66ee153f95b0b5b8eb098127be326ffceb67b71076ce60cea50e851ff6c64291"
+content-hash = "8fde85a7ead94b214ff70d75ba52ddad2f5974720d90a8754787752d292e185d"

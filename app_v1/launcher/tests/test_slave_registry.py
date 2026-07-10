@@ -2,6 +2,7 @@ import asyncio
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from app.control import handle_server_message, launcher_hello_payload
 from app.settings import LauncherSettings
@@ -139,6 +140,16 @@ def test_subprocess_env_includes_rtc_ice_servers_json():
     assert env["PYTHONUTF8"] == "1"
 
 
+def test_subprocess_env_does_not_forward_unlisted_secrets(monkeypatch):
+    monkeypatch.setenv("UNRELATED_SECRET", "do-not-forward")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+
+    env = subprocess_env(LauncherSettings(access_token="test-token"))
+
+    assert "UNRELATED_SECRET" not in env
+    assert env["CUDA_VISIBLE_DEVICES"] == "0,1"
+
+
 def test_json_line_encodes_non_ascii_as_utf8():
     data = json_line({"kind": "job.ready", "input": {"prompt": "한글 prompt"}})
 
@@ -272,6 +283,20 @@ async def test_cancel_job_forwards_cancel_to_worker_without_reset():
 
 
 @pytest.mark.asyncio
+async def test_reset_without_loaded_worker_still_acknowledges_completion():
+    messages = []
+
+    async def send_control(message):
+        messages.append(message)
+
+    manager = WorkerManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
+
+    await manager.reset_worker("user reset")
+
+    assert messages == [{"type": "worker.reset.done"}]
+
+
+@pytest.mark.asyncio
 async def test_handle_server_message_dispatches_job_controls():
     manager = FakeManager()
 
@@ -301,6 +326,20 @@ async def test_handle_server_message_dispatches_job_controls():
         ("cancel_job", "job-1", "user"),
         ("reset_worker", "reset"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_handle_server_message_rejects_unknown_fields():
+    with pytest.raises(ValidationError):
+        await handle_server_message(
+            object(),
+            {
+                "type": "job.cancel",
+                "job_id": "job-1",
+                "reason": "user",
+                "unexpected": True,
+            },
+        )
 
 
 @pytest.mark.asyncio

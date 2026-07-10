@@ -72,6 +72,8 @@ export default function ChatPage() {
   const transcriptAtBottomRef = useRef(true);
   const forceTranscriptScrollRef = useRef(false);
   const sessionRef = useRef<JobSession | null>(null);
+  const pendingDeltaRef = useRef('');
+  const deltaFrameRef = useRef<number | null>(null);
 
   const client = useMemo(
     () =>
@@ -101,6 +103,9 @@ export default function ChatPage() {
   useEffect(() => {
     return () => {
       sessionRef.current?.close();
+      if (deltaFrameRef.current !== null) {
+        window.cancelAnimationFrame(deltaFrameRef.current);
+      }
     };
   }, []);
 
@@ -129,18 +134,32 @@ export default function ChatPage() {
     return id;
   }
 
-  function appendDelta(messageId: number, delta: string) {
+  function queueDelta(messageId: number, delta: string) {
     if (activeAssistantMessageIdRef.current !== messageId) {
       return;
     }
-    setMessages((items) =>
-      items.map((item) =>
-        item.id === messageId && item.streaming ? { ...item, content: item.content + delta } : item,
-      ),
-    );
+    pendingDeltaRef.current += delta;
+    if (deltaFrameRef.current !== null) {
+      return;
+    }
+    deltaFrameRef.current = window.requestAnimationFrame(() => {
+      const bufferedDelta = pendingDeltaRef.current;
+      pendingDeltaRef.current = '';
+      deltaFrameRef.current = null;
+      setMessages((items) =>
+        items.map((item) =>
+          item.id === messageId && item.streaming ? { ...item, content: item.content + bufferedDelta } : item,
+        ),
+      );
+    });
   }
 
   function finishAssistant(messageId: number, answer: string) {
+    if (deltaFrameRef.current !== null) {
+      window.cancelAnimationFrame(deltaFrameRef.current);
+      deltaFrameRef.current = null;
+    }
+    pendingDeltaRef.current = '';
     setMessages((items) =>
       items.map((item) => (item.id === messageId ? { ...item, content: answer, streaming: false } : item)),
     );
@@ -155,7 +174,7 @@ export default function ChatPage() {
     }
     const delta = readChatDelta(event.payload);
     if (delta) {
-      appendDelta(assistantMessageId, delta);
+      queueDelta(assistantMessageId, delta);
     }
   }
 

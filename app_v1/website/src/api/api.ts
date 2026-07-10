@@ -12,6 +12,7 @@ import type {
   CrudUserRow,
   DashboardSummary,
   JobData,
+  JobSummary,
   LauncherRuntimeData,
   LauncherReconcileResponse,
   UserData,
@@ -150,8 +151,9 @@ export const dbTables = {
         params.set('limit', String(options.limit));
       }
       const query = params.toString();
-      return request<JobData[]>('get', `/web/jobs${query ? `?${query}` : ''}`);
+      return request<JobSummary[]>('get', `/web/jobs${query ? `?${query}` : ''}`);
     },
+    get: (jobId: string) => request<JobData>('get', `/web/jobs/${encodeURIComponent(jobId)}`),
     kill: (jobId: string) => request<{ ok: true }>('post', `/web/jobs/${encodeURIComponent(jobId)}/kill`),
   },
   dashboard: {

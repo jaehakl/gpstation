@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
 from sdk.protocol.messages import DataChannelAttachment, DataChannelMessage
 
 CHUNK_SIZE = 16 * 1024
+MAX_BUFFERED_AMOUNT = 512 * 1024
+BUFFERED_AMOUNT_LOW_THRESHOLD = 128 * 1024
+BUFFERED_AMOUNT_DRAIN_TIMEOUT_SECONDS = 30
 
 
-def send_job_result(channel: Any, job_id: str, message: DataChannelMessage) -> None:
+async def send_job_result(channel: Any, job_id: str, message: DataChannelMessage) -> None:
     attachments = [attachment_metadata(attachment) for attachment in message.attachments]
     channel.send(
         json.dumps(
@@ -23,10 +27,11 @@ def send_job_result(channel: Any, job_id: str, message: DataChannelMessage) -> N
         )
     )
     for attachment in message.attachments:
-        send_attachment(channel, job_id, attachment)
+        await send_attachment(channel, job_id, attachment)
 
 
-def send_attachment(channel: Any, call_id: str, attachment: DataChannelAttachment) -> None:
+async def send_attachment(channel: Any, call_id: str, attachment: DataChannelAttachment) -> None:
+    channel.bufferedAmountLowThreshold = BUFFERED_AMOUNT_LOW_THRESHOLD
     data = attachment.data
     if not data:
         channel.send(
@@ -58,6 +63,15 @@ def send_attachment(channel: Any, call_id: str, attachment: DataChannelAttachmen
                 chunk,
             )
         )
+        if getattr(channel, "bufferedAmount", 0) > MAX_BUFFERED_AMOUNT:
+            deadline = asyncio.get_running_loop().time() + BUFFERED_AMOUNT_DRAIN_TIMEOUT_SECONDS
+            while getattr(channel, "bufferedAmount", 0) > BUFFERED_AMOUNT_LOW_THRESHOLD:
+                if getattr(channel, "readyState", "open") != "open":
+                    raise RuntimeError("DataChannel closed while sending attachment")
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise TimeoutError("DataChannel buffer did not drain while sending attachment")
+                await asyncio.sleep(min(0.01, remaining))
         index += 1
 
 

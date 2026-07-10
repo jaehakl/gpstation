@@ -5,7 +5,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from fastapi import HTTPException
 from pydantic import ValidationError
 
 from app.model_runtime import llm as llm_runtime
@@ -222,9 +221,8 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 patch.object(llm_runtime.settings, "llm_main_gpu", 0),
                 patch.object(llm_runtime, "get_cuda_device_count", return_value=2),
             ):
-                with self.assertRaises(HTTPException) as error:
+                with self.assertRaises(ValueError):
                     llm_runtime.build_prompt_llm_config()
-            self.assertEqual(error.exception.status_code, 400)
 
             with (
                 patch.object(llm_runtime.settings, "llm_model_path", str(model_path)),
@@ -234,9 +232,8 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 patch.object(llm_runtime.settings, "llm_main_gpu", 0),
                 patch.object(llm_runtime, "get_cuda_device_count", return_value=2),
             ):
-                with self.assertRaises(HTTPException) as error:
+                with self.assertRaises(ValueError):
                     llm_runtime.build_prompt_llm_config()
-            self.assertEqual(error.exception.status_code, 400)
 
     def test_get_prompt_llm_passes_multi_gpu_kwargs(self) -> None:
         config = llm_runtime.PromptLlmConfig(
@@ -351,16 +348,15 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
         try:
             with (
                 patch.object(llm_runtime, "_load_llama_cls", return_value=FakeFailingPromptLlm),
-                self.assertRaises(HTTPException) as error,
+                self.assertRaises(RuntimeError) as error,
             ):
                 llm_runtime._get_prompt_llm_locked(config())
 
-            self.assertEqual(error.exception.status_code, 503)
-            self.assertIn("Failed to create llama_context", error.exception.detail)
-            self.assertIn("context_size=4096", error.exception.detail)
-            self.assertIn("flash_attn=True", error.exception.detail)
-            self.assertIn("swa_full=False", error.exception.detail)
-            self.assertIn("LLM_CONTEXT_SIZE", error.exception.detail)
+            self.assertIn("Failed to create llama_context", str(error.exception))
+            self.assertIn("context_size=4096", str(error.exception))
+            self.assertIn("flash_attn=True", str(error.exception))
+            self.assertIn("swa_full=False", str(error.exception))
+            self.assertIn("LLM_CONTEXT_SIZE", str(error.exception))
         finally:
             llm_runtime.release_llm_runtime()
 
@@ -383,6 +379,7 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
             patch.object(llm_chat, "acquire_gpu_model_multi", return_value=NullAsyncContext()),
             patch.object(llm_runtime, "_get_prompt_llm_locked", return_value=fake_llm),
             patch.object(llm_chat, "_create_chat_ram_cache", return_value=FakeCache()),
+            patch.object(llm_chat, "monotonic", side_effect=[0.0, 0.01, 0.04]),
         ):
             result = await llm_chat.generate_chat_with_llm(
                 [{"role": "user", "content": "hello"}],
@@ -399,7 +396,7 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.remaining_tokens, 4096 - fake_llm.n_tokens)
         self.assertTrue(result.cache_enabled)
         self.assertEqual(fake_llm.set_cache_calls, 1)
-        self.assertEqual(events, ["안녕", "하세요"])
+        self.assertEqual(events, ["안녕하세요"])
         self.assertEqual(fake_llm.kwargs["stream"], True)
         self.assertEqual(fake_llm.kwargs["messages"], [{"role": "user", "content": "hello"}])
         self.assertEqual(fake_llm.kwargs["max_tokens"], 32)
@@ -421,11 +418,10 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
             patch.object(llm_runtime, "_get_prompt_llm_locked", return_value=fake_llm),
             patch.object(llm_chat, "_create_chat_ram_cache", return_value=FakeCache()),
         ):
-            with self.assertRaises(HTTPException) as error:
+            with self.assertRaises(RuntimeError) as error:
                 await llm_chat.generate_chat_with_llm([{"role": "user", "content": "hello"}])
 
-        self.assertEqual(error.exception.status_code, 502)
-        self.assertEqual(error.exception.detail, "LLM returned empty answer")
+        self.assertEqual(str(error.exception), "LLM returned empty answer")
 
     def test_prepare_chat_messages_and_prune_live_in_llm_chat(self) -> None:
         memory = {}

@@ -264,7 +264,7 @@ export default function LaunchersPage() {
                           <button
                             type="button"
                             className="button smallButton"
-                            disabled={!runtime || actionLauncherId === launcher.id}
+                            disabled={!runtime || runtime.resetting || actionLauncherId === launcher.id}
                             onClick={() => {
                               void resetWorker(launcher.id);
                             }}

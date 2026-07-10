@@ -13,13 +13,13 @@ poetry install
 
 - `LLM_MODEL_PATH`, `LLM_USE_MAX_GPU`, and `LLM_ENABLE_THINKING` for `ai.llm`
 - `SDXL_CKPT_PATH` for `ai.sdxl.t2i`
-- `EMBEDDING_MODEL_NAME` or `EMBEDDING_MODEL_PATH` for `ai.embeddings`
+- local `EMBEDDING_MODEL_PATH`, or `EMBEDDING_MODEL_NAME` plus an immutable `EMBEDDING_MODEL_REVISION` commit SHA for `ai.embeddings`; cached snapshots load offline by default
 
 ## Run
 
 ```powershell
 cd app_v1/launcher
-poetry run gpstation-v1-slave-launcher
+poetry run launcher
 ```
 
 The launcher discovers `../slaves/*/manifest.json`. Each executable must have its own `.venv`; if it is missing, job startup fails with a clear `worker_start_failed` error explaining which Poetry install is needed.

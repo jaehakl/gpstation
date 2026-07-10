@@ -30,7 +30,7 @@ export default function UserDetailPage() {
   const [tokens, setTokens] = useState<CrudAccessKeyRow[]>([]);
   const [tokenName, setTokenName] = useState('');
   const [tokenExpiresAt, setTokenExpiresAt] = useState('');
-  const [tokenScopes, setTokenScopes] = useState<AccessKeyScope[]>(['client', 'launcher']);
+  const [tokenScopes, setTokenScopes] = useState<AccessKeyScope[]>(['client']);
   const [createdSecret, setCreatedSecret] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);

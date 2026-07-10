@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import base64
 from io import BytesIO
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from fastapi import HTTPException
 from app.model_runtime import gpu_residency
 from app.models import SdxlT2IRequest
 from app.service import image as image_service
@@ -230,19 +228,17 @@ class SdxlT2IServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.count, 1)
         self.assertEqual(response.images[0].format, "jpg")
-        encoded_bytes = base64.b64decode(response.images[0].image_base64)
-        with Image.open(BytesIO(encoded_bytes)) as encoded_image:
+        with Image.open(BytesIO(response.images[0].image_bytes)) as encoded_image:
             self.assertEqual(encoded_image.format, "JPEG")
             self.assertEqual(encoded_image.mode, "RGB")
 
     async def test_generation_rejects_unsupported_format(self) -> None:
-        with self.assertRaises(HTTPException) as context:
+        with self.assertRaises(ValueError) as context:
             await image_service.generate_sdxl_t2i_images(
                 SdxlT2IRequest(prompts=["a prompt"], format="webp"),
             )
 
-        self.assertEqual(context.exception.status_code, 400)
-        self.assertEqual(context.exception.detail, "unsupported image format")
+        self.assertEqual(str(context.exception), "unsupported image format")
 
 
 if __name__ == "__main__":

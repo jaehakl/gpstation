@@ -7,18 +7,28 @@ from app.logging import log
 
 
 _embedding_lock = asyncio.Lock()
-_embedding_model_name: str | None = None
+_embedding_model_key: tuple[str, str | None, bool] | None = None
 _embedding_model: Any | None = None
 
 
-async def encode_cut_text(model_name: str, text: str) -> list[float]:
+async def encode_cut_text(
+    model_name: str,
+    text: str,
+    revision: str | None = None,
+    local_files_only: bool = True,
+) -> list[float]:
     async with _embedding_lock:
-        return await asyncio.to_thread(_encode_cut_text_locked, model_name, text)
+        return await asyncio.to_thread(_encode_cut_text_locked, model_name, text, revision, local_files_only)
 
 
-def _encode_cut_text_locked(model_name: str, text: str) -> list[float]:
+def _encode_cut_text_locked(
+    model_name: str,
+    text: str,
+    revision: str | None = None,
+    local_files_only: bool = True,
+) -> list[float]:
     log(f"embedding encode start model={model_name} text_chars={len(text)}")
-    model = _get_embedding_model_locked(model_name)
+    model = _get_embedding_model_locked(model_name, revision, local_files_only)
     raw_embedding = model.encode(text)
     if hasattr(raw_embedding, "tolist"):
         raw_embedding = raw_embedding.tolist()
@@ -27,15 +37,21 @@ def _encode_cut_text_locked(model_name: str, text: str) -> list[float]:
     return embedding
 
 
-def _get_embedding_model_locked(model_name: str) -> Any:
-    global _embedding_model_name, _embedding_model
+def _get_embedding_model_locked(model_name: str, revision: str | None, local_files_only: bool) -> Any:
+    global _embedding_model_key, _embedding_model
 
-    if _embedding_model is None or _embedding_model_name != model_name:
+    model_key = (model_name, revision, local_files_only)
+    if _embedding_model is None or _embedding_model_key != model_key:
         SentenceTransformer = _load_sentence_transformer_cls(model_name)
 
         log(f"loading embedding model model={model_name}")
-        _embedding_model = _load_sentence_transformer(SentenceTransformer, model_name)
-        _embedding_model_name = model_name
+        _embedding_model = _load_sentence_transformer(
+            SentenceTransformer,
+            model_name,
+            revision,
+            local_files_only,
+        )
+        _embedding_model_key = model_key
         log(f"embedding model loaded model={model_name}")
     return _embedding_model
 
@@ -51,12 +67,16 @@ def _load_sentence_transformer_cls(model_name: str) -> Any:
     return SentenceTransformer
 
 
-def _load_sentence_transformer(sentence_transformer_cls: Any, model_name: str) -> Any:
-    try:
-        return sentence_transformer_cls(
-            model_name,
-            device="cpu",
-            model_kwargs={"low_cpu_mem_usage": False},
-        )
-    except TypeError:
-        return sentence_transformer_cls(model_name, device="cpu")
+def _load_sentence_transformer(
+    sentence_transformer_cls: Any,
+    model_name: str,
+    revision: str | None,
+    local_files_only: bool,
+) -> Any:
+    return sentence_transformer_cls(
+        model_name,
+        device="cpu",
+        revision=revision,
+        local_files_only=local_files_only,
+        model_kwargs={"low_cpu_mem_usage": False},
+    )

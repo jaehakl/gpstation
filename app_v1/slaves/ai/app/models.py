@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator
 
+LLM_TEXT_MAX_BYTES = 256 * 1024
+EMBEDDING_TEXT_MAX_BYTES = 128 * 1024
+IMAGE_PROMPT_MAX_BYTES = 16 * 1024
+IMAGE_BATCH_MAX_ITEMS = 8
+
 
 class LlmRequest(BaseModel):
     system_prompt: str
@@ -14,6 +19,8 @@ class LlmRequest(BaseModel):
     def reject_surrogates(cls, value: str) -> str:
         if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
             raise ValueError("LLM text contains invalid Unicode surrogate characters")
+        if len(value.encode("utf-8")) > LLM_TEXT_MAX_BYTES:
+            raise ValueError(f"LLM text exceeds {LLM_TEXT_MAX_BYTES} bytes")
         return value
 
 
@@ -41,13 +48,15 @@ class ChatRequest(BaseModel):
     def reject_surrogates(cls, value: str | None) -> str | None:
         if value is not None and any(0xD800 <= ord(char) <= 0xDFFF for char in value):
             raise ValueError("LLM text contains invalid Unicode surrogate characters")
+        if value is not None and len(value.encode("utf-8")) > LLM_TEXT_MAX_BYTES:
+            raise ValueError(f"LLM text exceeds {LLM_TEXT_MAX_BYTES} bytes")
         return value
 
 
 class SdxlT2IRequest(BaseModel):
-    prompts: list[str]
-    negative_prompts: list[str] | None = None
-    seeds: list[int | None] | None = None
+    prompts: list[str] = Field(min_length=1, max_length=IMAGE_BATCH_MAX_ITEMS)
+    negative_prompts: list[str] | None = Field(default=None, max_length=IMAGE_BATCH_MAX_ITEMS)
+    seeds: list[int | None] | None = Field(default=None, max_length=IMAGE_BATCH_MAX_ITEMS)
     step: int = Field(default=30, ge=1, le=150)
     cfg: float = Field(default=7.0, ge=0.0, le=30.0)
     height: int = Field(default=1024, ge=64, le=2048)
@@ -61,9 +70,16 @@ class SdxlT2IRequest(BaseModel):
     clip_skip: int | None = Field(default=None, ge=1, le=12)
     format: str = "png"
 
+    @field_validator("prompts", "negative_prompts")
+    @classmethod
+    def validate_image_prompts(cls, values: list[str] | None) -> list[str] | None:
+        if values is not None and any(len(value.encode("utf-8")) > IMAGE_PROMPT_MAX_BYTES for value in values):
+            raise ValueError(f"Image prompt exceeds {IMAGE_PROMPT_MAX_BYTES} bytes")
+        return values
+
 
 class GeneratedImage(BaseModel):
-    image_base64: str
+    image_bytes: bytes
     format: str
     seed: int
 
@@ -75,6 +91,13 @@ class SdxlT2IResponse(BaseModel):
 
 class EmbeddingRequest(BaseModel):
     text: str
+
+    @field_validator("text")
+    @classmethod
+    def validate_text_size(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > EMBEDDING_TEXT_MAX_BYTES:
+            raise ValueError(f"Embedding text exceeds {EMBEDDING_TEXT_MAX_BYTES} bytes")
+        return value
 
 
 class EmbeddingResponse(BaseModel):

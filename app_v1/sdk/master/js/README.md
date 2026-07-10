@@ -6,16 +6,19 @@ Build it before running the AI master app:
 
 ```powershell
 cd app_v1/sdk/master/js
-npm install --no-package-lock
+npm ci
 npm run build
 ```
 
 ```ts
 import { GpStationClient } from '@gpstation/v1-master-js-sdk';
 
+const token = window.prompt('Client-scoped GP Station Access Token');
+if (!token) throw new Error('Access Token is required');
+
 const client = new GpStationClient({
   apiBaseUrl: 'https://gps.qutat.com',
-  token: process.env.GPSTATION_V1_ACCESS_TOKEN!,
+  token,
 });
 
 const launchers = await client.listLaunchers();
@@ -32,6 +35,8 @@ const result = await client.runJob(
 
 console.log(result.payload);
 ```
+
+Browser tokens must be supplied at runtime. Do not put them in `VITE_*`, a bundle, `localStorage`, or `sessionStorage`.
 
 `runJob` uses a long-lived WebRTC job protocol internally. By default it sends one handler call and automatically finishes the job. To keep the DataChannel open for more calls, set `autoFinish: false` and finish the returned session explicitly:
 

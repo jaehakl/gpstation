@@ -46,8 +46,11 @@ def make_access(user: User) -> str:
     )
 
 
-def make_refresh(user_id: str, session_id: str) -> str:
-    return make_token(user_id, settings.refresh_ttl_sec, {"typ": "refresh", "sid": session_id})
+def make_refresh(user_id: str, session_id: str, refresh_jti: str | None = None) -> str:
+    extra = {"typ": "refresh", "sid": session_id}
+    if refresh_jti is not None:
+        extra["jti"] = refresh_jti
+    return make_token(user_id, settings.refresh_ttl_sec, extra)
 
 
 def verify_token(token: str) -> dict[str, Any]:

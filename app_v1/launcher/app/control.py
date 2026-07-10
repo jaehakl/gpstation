@@ -5,6 +5,14 @@ import json
 from typing import Any
 
 import websockets
+from sdk.protocol.messages import (
+    ControlError,
+    JobCancel,
+    JobStart,
+    LauncherAccepted,
+    WorkerReset,
+    parse_server_message,
+)
 
 from app.settings import LauncherSettings
 from app.slave_registry import SlaveAppRegistry, load_default_registry
@@ -44,10 +52,10 @@ async def run_connection(settings: LauncherSettings) -> None:
                 send_lock,
                 launcher_hello_payload(settings, registry),
             )
-            accepted = json.loads(await websocket.recv())
-            if accepted.get("type") != "launcher.accepted":
-                raise RuntimeError(f"Expected launcher.accepted, received {accepted.get('type')}")
-            print(f"Launcher connection: {accepted.get('launcher_id')}", flush=True)
+            accepted = parse_server_message(json.loads(await websocket.recv()))
+            if not isinstance(accepted, LauncherAccepted):
+                raise RuntimeError(f"Expected launcher.accepted, received {accepted.type}")
+            print(f"Launcher connection: {accepted.launcher_id}", flush=True)
             manager = WorkerManager(
                 settings,
                 lambda message: send_json(websocket, send_lock, message),
@@ -103,26 +111,26 @@ async def send_heartbeats(
         )
 
 
-async def handle_server_message(manager: WorkerManager, message: dict[str, Any]) -> None:
-    message_type = message.get("type")
-    if message_type == "job.start":
+async def handle_server_message(manager: WorkerManager, value: Any) -> None:
+    message = parse_server_message(value)
+    if isinstance(message, JobStart):
         await manager.start_job(
-            job_id=str(message["job_id"]),
-            handler_type=str(message["handler_type"]),
-            slave_app_id=str(message["slave_app_id"]),
-            offer=message["offer"],
+            job_id=message.job_id,
+            handler_type=message.handler_type,
+            slave_app_id=message.slave_app_id,
+            offer=message.offer.model_dump(exclude_none=True),
         )
         return
-    if message_type == "job.cancel":
-        await manager.cancel_job(str(message["job_id"]), str(message.get("reason") or "cancelled"))
+    if isinstance(message, JobCancel):
+        await manager.cancel_job(message.job_id, message.reason)
         return
-    if message_type == "worker.reset":
-        await manager.reset_worker(str(message.get("reason") or "reset requested"))
+    if isinstance(message, WorkerReset):
+        await manager.reset_worker(message.reason)
         return
-    if message_type == "error":
-        print(f"Server control error: {message.get('detail') or message}", flush=True)
+    if isinstance(message, ControlError):
+        print(f"Server control error: {message.detail}", flush=True)
         return
-    print(f"Unsupported server message: {message_type}", flush=True)
+    raise RuntimeError(f"Unexpected server message after handshake: {message.type}")
 
 
 def launcher_hello_payload(settings: LauncherSettings, registry: SlaveAppRegistry) -> dict[str, Any]:

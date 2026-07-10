@@ -190,6 +190,10 @@ class WorkerManager:
             self.current_job_id = None
         self.worker_status = "idle"
         if worker is None:
+            if current_job_id is not None:
+                await self.send_control({"type": "job.cancelled", "job_id": current_job_id, "reason": reason})
+            if notify_reset:
+                await self.send_control({"type": "worker.reset.done"})
             return
         worker.stopping = True
         if worker.process.stdin is not None and worker.process.returncode is None:
@@ -293,7 +297,32 @@ def json_line(message: dict[str, Any]) -> bytes:
 
 
 def subprocess_env(settings: LauncherSettings) -> dict[str, str]:
-    env = os.environ.copy()
+    inherited_names = (
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "TEMP",
+        "TMP",
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "CUDA_VISIBLE_DEVICES",
+        "CUDA_PATH",
+        "CUDA_HOME",
+        "NVIDIA_VISIBLE_DEVICES",
+        "HF_HOME",
+        "HUGGINGFACE_HUB_CACHE",
+        "TRANSFORMERS_CACHE",
+        "TORCH_HOME",
+        "XDG_CACHE_HOME",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+    )
+    env = {name: os.environ[name] for name in inherited_names if name in os.environ}
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
     env["GPSTATION_V1_RTC_ICE_SERVERS_JSON"] = settings.rtc_ice_servers_json

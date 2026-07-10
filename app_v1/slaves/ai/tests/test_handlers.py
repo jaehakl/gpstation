@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from types import SimpleNamespace
@@ -13,7 +12,21 @@ from app import __main__ as ai_slave
 from app.model_runtime import embedding as embedding_runtime
 from app.model_runtime import image as image_runtime
 from app.model_runtime import llm_chat
-from app.models import ChatRequest, ChatResponse, EmbeddingResponse, GeneratedImage, LlmRequest, LlmResponse, SdxlT2IResponse
+from app.models import (
+    ChatRequest,
+    ChatResponse,
+    EMBEDDING_TEXT_MAX_BYTES,
+    EmbeddingRequest,
+    EmbeddingResponse,
+    GeneratedImage,
+    IMAGE_BATCH_MAX_ITEMS,
+    LLM_TEXT_MAX_BYTES,
+    LlmRequest,
+    LlmResponse,
+    SdxlT2IRequest,
+    SdxlT2IResponse,
+)
+from app.service import embedding as embedding_service
 
 
 def context() -> SlaveContext:
@@ -75,6 +88,14 @@ class AiHandlerTest(unittest.IsolatedAsyncioTestCase):
             LlmRequest(system_prompt="system", prompt="bad\udcec")
 
         self.assertIn("invalid Unicode surrogate", str(error.exception))
+
+    def test_ai_requests_reject_oversized_payloads(self) -> None:
+        with self.assertRaises(ValueError):
+            LlmRequest(system_prompt="system", prompt="x" * (LLM_TEXT_MAX_BYTES + 1))
+        with self.assertRaises(ValueError):
+            EmbeddingRequest(text="x" * (EMBEDDING_TEXT_MAX_BYTES + 1))
+        with self.assertRaises(ValueError):
+            SdxlT2IRequest(prompts=["prompt"] * (IMAGE_BATCH_MAX_ITEMS + 1))
 
     async def test_chat_handler_streams_and_returns_answer_payload(self) -> None:
         events = []
@@ -326,7 +347,7 @@ class AiHandlerTest(unittest.IsolatedAsyncioTestCase):
             return_value=SdxlT2IResponse(
                 images=[
                     GeneratedImage(
-                        image_base64=base64.b64encode(image_bytes).decode("ascii"),
+                        image_bytes=image_bytes,
                         format="png",
                         seed=123,
                     )
@@ -432,9 +453,18 @@ class AiHandlerTest(unittest.IsolatedAsyncioTestCase):
 
     def test_embedding_runtime_logs_import_and_encode_to_stderr(self) -> None:
         class FakeSentenceTransformer:
-            def __init__(self, model_name, device="cpu", model_kwargs=None):
+            def __init__(
+                self,
+                model_name,
+                device="cpu",
+                revision=None,
+                local_files_only=False,
+                model_kwargs=None,
+            ):
                 self.model_name = model_name
                 self.device = device
+                self.revision = revision
+                self.local_files_only = local_files_only
                 self.model_kwargs = model_kwargs
 
             def encode(self, text):
@@ -443,7 +473,7 @@ class AiHandlerTest(unittest.IsolatedAsyncioTestCase):
         stdout = StringIO()
         stderr = StringIO()
         embedding_runtime._embedding_model = None
-        embedding_runtime._embedding_model_name = None
+        embedding_runtime._embedding_model_key = None
         try:
             with (
                 patch.dict(
@@ -453,10 +483,15 @@ class AiHandlerTest(unittest.IsolatedAsyncioTestCase):
                 redirect_stdout(stdout),
                 redirect_stderr(stderr),
             ):
-                embedding = embedding_runtime._encode_cut_text_locked("fake-model", "hello")
+                embedding = embedding_runtime._encode_cut_text_locked(
+                    "fake-model",
+                    "hello",
+                    "a" * 40,
+                    True,
+                )
         finally:
             embedding_runtime._embedding_model = None
-            embedding_runtime._embedding_model_name = None
+            embedding_runtime._embedding_model_key = None
 
         self.assertEqual(embedding, [0.1, 0.2])
         self.assertEqual(stdout.getvalue(), "")
@@ -464,6 +499,39 @@ class AiHandlerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("importing sentence_transformers", stderr.getvalue())
         self.assertIn("loading embedding model", stderr.getvalue())
         self.assertIn("embedding encode complete", stderr.getvalue())
+
+
+class EmbeddingServiceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_remote_model_requires_immutable_revision(self) -> None:
+        with (
+            patch.object(embedding_service.settings, "embedding_model_name", "org/model"),
+            patch.object(embedding_service.settings, "embedding_model_path", ""),
+            patch.object(embedding_service.settings, "embedding_model_revision", "main"),
+        ):
+            with self.assertRaises(RuntimeError) as error:
+                await embedding_service.generate_embedding(EmbeddingRequest(text="hello"))
+
+        self.assertIn("40-character commit SHA", str(error.exception))
+
+    async def test_remote_model_uses_pinned_offline_snapshot(self) -> None:
+        revision = "a" * 40
+        encode_cut_text = AsyncMock(return_value=[0.1, 0.2])
+        with (
+            patch.object(embedding_service.settings, "embedding_model_name", "org/model"),
+            patch.object(embedding_service.settings, "embedding_model_path", ""),
+            patch.object(embedding_service.settings, "embedding_model_revision", revision),
+            patch.object(embedding_service.settings, "embedding_local_files_only", True),
+            patch.object(embedding_service, "encode_cut_text", encode_cut_text),
+        ):
+            response = await embedding_service.generate_embedding(EmbeddingRequest(text="hello"))
+
+        self.assertEqual(response.embedding, [0.1, 0.2])
+        encode_cut_text.assert_awaited_once_with(
+            "org/model",
+            "hello",
+            revision=revision,
+            local_files_only=True,
+        )
 
 
 if __name__ == "__main__":

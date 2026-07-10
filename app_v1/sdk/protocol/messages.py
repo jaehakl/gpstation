@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
@@ -11,17 +12,25 @@ class StrictModel(BaseModel):
 
 class SignalPayload(StrictModel):
     type: Literal["offer", "answer", "ice", "end-of-candidates"]
-    sdp: str | None = None
-    candidate: str | None = None
-    sdpMid: str | None = None
+    sdp: str | None = Field(default=None, max_length=256 * 1024)
+    candidate: str | None = Field(default=None, max_length=16 * 1024)
+    sdpMid: str | None = Field(default=None, max_length=256)
     sdpMLineIndex: int | None = None
 
 
 class LauncherHello(StrictModel):
     type: Literal["launcher.hello"]
-    launcher_name: str
-    slave_app_ids: list[str] = Field(default_factory=list)
+    launcher_name: str = Field(min_length=1, max_length=128)
+    slave_app_ids: list[str] = Field(default_factory=list, max_length=64)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_hello_size(self) -> "LauncherHello":
+        if any(len(item) > 128 for item in self.slave_app_ids):
+            raise ValueError("slave_app_id exceeds 128 characters")
+        if len(json.dumps(self.metadata, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > 64 * 1024:
+            raise ValueError("launcher metadata exceeds 65536 bytes")
+        return self
 
 
 class LauncherHeartbeat(StrictModel):
@@ -31,6 +40,12 @@ class LauncherHeartbeat(StrictModel):
     loaded_slave_app_id: str | None = None
     worker_status: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_metadata_size(self) -> "LauncherHeartbeat":
+        if len(json.dumps(self.metadata, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > 64 * 1024:
+            raise ValueError("launcher metadata exceeds 65536 bytes")
+        return self
 
 
 class LauncherAccepted(StrictModel):
@@ -51,12 +66,17 @@ class JobStart(StrictModel):
 class JobCancel(StrictModel):
     type: Literal["job.cancel"]
     job_id: str
-    reason: str = "cancelled"
+    reason: str = Field(default="cancelled", max_length=4096)
 
 
 class WorkerReset(StrictModel):
     type: Literal["worker.reset"]
-    reason: str = "reset requested"
+    reason: str = Field(default="reset requested", max_length=4096)
+
+
+class ControlError(StrictModel):
+    type: Literal["error"]
+    detail: str = Field(max_length=16 * 1024)
 
 
 class JobAnswer(StrictModel):
@@ -84,14 +104,14 @@ class JobResult(StrictModel):
 class JobError(StrictModel):
     type: Literal["job.error"]
     job_id: str
-    code: str = "job_error"
-    detail: str
+    code: str = Field(default="job_error", max_length=128)
+    detail: str = Field(max_length=16 * 1024)
 
 
 class JobCancelled(StrictModel):
     type: Literal["job.cancelled"]
     job_id: str
-    reason: str = "cancelled"
+    reason: str = Field(default="cancelled", max_length=4096)
 
 
 class WorkerResetDone(StrictModel):
@@ -119,6 +139,7 @@ ServerToLauncherMessage = Annotated[
         JobStart,
         JobCancel,
         WorkerReset,
+        ControlError,
     ],
     Field(discriminator="type"),
 ]

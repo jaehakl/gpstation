@@ -6,12 +6,11 @@ import pytest
 from fastapi import HTTPException
 
 from app.db import AccessKey
-from app.models import UserData
+from app.models import CrudDeleteRequest, CrudUpsertRequest, UserData
 from app.routers.web import crud_access_keys as access_keys
 from app.routers.web import crud_launchers as launchers
 from app.routers.web import crud_users as users
 from app.routers.web.crud_auth import require_crud_user
-from app.routers.web.models import CrudDeleteRequest, CrudUpsertRequest
 from app.user_auth.utils.auth_utils import hash_token
 from app.utils import crud
 
@@ -36,6 +35,10 @@ class FakeDeleteDb:
     def __init__(self, rows):
         self.rows = rows
         self.commits = 0
+        self.added = []
+
+    def add(self, row):
+        self.added.append(row)
 
     async def execute(self, _stmt):
         return FakeExecuteResult(self.rows)
@@ -218,4 +221,4 @@ async def test_crud_access_key_delete_revokes_without_exposing_hash():
     assert access_key.status == "revoked"
     assert access_key.revoked_at is not None
     assert db.commits == 1
-
+    assert db.added[0].event == "token_revoked"

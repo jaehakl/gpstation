@@ -6,16 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.models import UserData
+from app.models import CrudDeleteRequest, CrudDeleteResponse, CrudListRequest, CrudListResponse, CrudUpsertRequest, CrudUpsertResponse, UserData
 from app.routers.web.crud_auth import require_crud_user
-from app.routers.web.models import (
-    CrudDeleteRequest,
-    CrudDeleteResponse,
-    CrudListRequest,
-    CrudListResponse,
-    CrudUpsertRequest,
-    CrudUpsertResponse,
-)
 from app.user_auth.db import User
 from app.utils.crud import CrudSpec, delete_rows, get_row, list_rows, upsert_rows
 

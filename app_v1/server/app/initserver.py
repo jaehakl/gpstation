@@ -6,12 +6,11 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.db import Base, SessionLocal, engine
-from app.service.launcher_service import LauncherService
+from app.db import SessionLocal, engine
+from app.schema_guard import ensure_database_current
+from app.service.job_orchestrator import start_job_dispatcher, stop_job_dispatcher
+from app.service.job_service import JobService
 from app.settings import settings, validate_runtime_settings
-from app.user_auth import db as user_auth_db
-
-_ = user_auth_db
 
 V1_CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -102,6 +101,8 @@ def server() -> FastAPI:
         try:
             yield
         finally:
+            await stop_job_dispatcher()
+            await engine.dispose()
             print("service is stopped.")
 
     app = FastAPI(
@@ -126,15 +127,10 @@ def server() -> FastAPI:
 
 async def start() -> None:
     validate_runtime_settings(settings)
-
-    async with engine.begin() as conn:
-        try:
-            await conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
-        except Exception:
-            pass
-        await conn.run_sync(Base.metadata.create_all)
+    await ensure_database_current()
 
     async with SessionLocal() as db:
-        await LauncherService.mark_stale_launchers_disconnected(db)
+        await JobService.recover_after_server_restart(db)
 
+    await start_job_dispatcher()
     print("service is started.")

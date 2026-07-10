@@ -17,6 +17,7 @@
 ```powershell
 cd app_v1/server
 poetry install
+poetry run alembic upgrade head
 poetry run gpstation-v1-server
 ```
 
@@ -28,7 +29,7 @@ poetry install
 ```powershell
 cd app_v1/launcher
 poetry install
-poetry run gpstation-v1-slave-launcher
+poetry run launcher
 ```
 
 ```powershell
@@ -39,7 +40,7 @@ npm run dev
 
 ```powershell
 cd app_v1/sdk/master/js
-npm install --no-package-lock
+npm ci
 npm run build
 
 cd ../../../masters/ai
@@ -47,7 +48,7 @@ npm install
 npm run dev
 ```
 
-웹사이트에서 `launcher` scope Access Token을 만들어 launcher `.env`에 넣고, `client` scope Access Token을 만들어 AI master `.env`에 넣습니다.
+웹사이트에서 `launcher` scope Access Token을 만들어 launcher `.env`에 넣고, `client` scope Access Token은 AI master 실행 화면에 직접 입력합니다. 브라우저 토큰은 Vite 환경변수나 빌드 결과에 포함하지 않습니다.
 
 ## 3. Job 생성 흐름
 
@@ -136,7 +137,7 @@ Launcher에서 서버로 보내는 주요 메시지:
 - `launchers`: 연결된 launcher의 DB 상태
 - `jobs`: job 요청, 할당, 결과, 오류 상태
 
-시작 시 서버는 과거 호환 데이터인 `slave_sessions` 테이블과 `launchers.active_session_ids` 컬럼을 삭제합니다.
+DB 구조 변경은 서버 시작 코드가 아니라 Alembic migration만 수행합니다. 서버는 시작 시 현재 schema revision을 검증하며, migration이 적용되지 않은 DB에서는 실행을 거부합니다.
 
 ## 7. 검증
 

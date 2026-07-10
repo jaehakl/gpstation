@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { dbTables } from '../api/api';
-import type { CrudLauncherRow, DashboardSummary, JobData } from '../api/types';
+import type { CrudLauncherRow, DashboardSummary, JobSummary } from '../api/types';
 import { useAuthStore } from '../stores/authStore';
 import { errorMessage, formatDate } from './format';
 
@@ -13,7 +13,7 @@ export default function DashboardPage() {
   const authReady = useAuthStore((state) => state.authReady);
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [launchers, setLaunchers] = useState<CrudLauncherRow[]>([]);
-  const [jobs, setJobs] = useState<JobData[]>([]);
+  const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

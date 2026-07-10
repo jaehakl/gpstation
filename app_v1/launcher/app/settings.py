@@ -33,7 +33,13 @@ class LauncherSettings(BaseSettings):
     @field_validator("api_url")
     @classmethod
     def strip_api_url(cls, value: str) -> str:
-        return value.rstrip("/")
+        normalized = value.rstrip("/")
+        parsed = urlparse(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("API URL must be an absolute http(s) URL")
+        if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            raise ValueError("Remote API URL must use https")
+        return normalized
 
     @field_validator("rtc_ice_servers_json")
     @classmethod

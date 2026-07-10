@@ -85,6 +85,26 @@ def test_parse_launcher_heartbeat_with_worker_state():
     assert message.worker_status == "busy"
 
 
+def test_launcher_protocol_rejects_oversized_metadata_and_error_detail():
+    with pytest.raises(ValidationError):
+        parse_launcher_message(
+            {
+                "type": "launcher.hello",
+                "launcher_name": "desktop",
+                "slave_app_ids": ["ai"],
+                "metadata": {"value": "x" * (64 * 1024)},
+            }
+        )
+    with pytest.raises(ValidationError):
+        parse_launcher_message(
+            {
+                "type": "job.error",
+                "job_id": "job-1",
+                "detail": "x" * (16 * 1024 + 1),
+            }
+        )
+
+
 def test_parse_job_start_message():
     message = parse_server_message(
         {

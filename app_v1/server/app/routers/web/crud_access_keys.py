@@ -8,9 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import AccessKey, get_db
-from app.models import UserData
+from app.models import CrudDeleteRequest, CrudDeleteResponse, CrudListRequest, CrudListResponse, UserData
 from app.routers.web.crud_auth import require_crud_user
-from app.routers.web.models import CrudDeleteRequest, CrudDeleteResponse, CrudListRequest, CrudListResponse
+from app.state import runtime
+from app.user_auth.db import AuthAudit
 from app.utils.crud import CrudSpec, delete_rows, get_row, list_rows
 
 
@@ -23,7 +24,16 @@ async def revoke_access_keys(db: AsyncSession, spec: CrudSpec, ids: list[str], o
     for row in rows:
         row.status = "revoked"
         row.revoked_at = row.revoked_at or now
+        db.add(
+            AuthAudit(
+                user_id=str(row.user_id),
+                event="token_revoked",
+                details={"access_key_id": str(row.id), "key_prefix": row.key_prefix},
+            )
+        )
     await db.commit()
+    for row in rows:
+        await runtime.close_launchers_for_access_key(str(row.id))
     return len(rows)
 
 

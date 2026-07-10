@@ -66,19 +66,17 @@ export type LauncherRuntimeData = {
   current_job_id?: string | null;
   loaded_slave_app_id?: string | null;
   worker_status?: string | null;
+  resetting: boolean;
   metadata: Record<string, unknown>;
 };
 
 export type JobState = 'queued' | 'assigned' | 'answer_ready' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'killed';
 
-export type JobData = {
+export type JobSummary = {
   id: string;
   user_id: string;
   handler_type: string;
   slave_app_id: string;
-  offer: Record<string, unknown>;
-  answer?: Record<string, unknown> | null;
-  progress: unknown[];
   state: JobState;
   launcher_id?: string | null;
   assigned_at?: string | null;
@@ -143,4 +141,10 @@ export type CrudLauncherRow = {
   disconnected_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+};
+
+export type JobData = JobSummary & {
+  offer: Record<string, unknown>;
+  answer?: Record<string, unknown> | null;
+  progress: unknown[];
 };

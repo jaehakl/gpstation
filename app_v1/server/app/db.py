@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import importlib
+import ssl
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from sqlalchemy import DateTime, ForeignKey, Integer, LargeBinary, MetaData, Text, func, text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, LargeBinary, MetaData, Text, desc, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -15,20 +19,45 @@ from app.settings import settings
 def make_async_db_url(url: str) -> str:
     if not url:
         return url
-    if url.startswith("postgresql+asyncpg://"):
-        return url
-    if url.startswith("postgresql+psycopg://"):
-        return url.replace("postgresql+psycopg://", "postgresql+asyncpg://", 1)
-    if url.startswith("postgresql+psycopg2://"):
-        return url.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
-    if url.startswith("postgresql://"):
-        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    if url.startswith("postgres://"):
-        return url.replace("postgres://", "postgresql+asyncpg://", 1)
-    return url
+    replacements = (
+        ("postgresql+psycopg://", "postgresql+asyncpg://"),
+        ("postgresql+psycopg2://", "postgresql+asyncpg://"),
+        ("postgresql://", "postgresql+asyncpg://"),
+        ("postgres://", "postgresql+asyncpg://"),
+    )
+    for prefix, replacement in replacements:
+        if url.startswith(prefix):
+            url = url.replace(prefix, replacement, 1)
+            break
+
+    # SQLAlchemy expands URL query parameters into asyncpg keyword arguments.
+    # asyncpg accepts ``ssl`` but not libpq's ``sslmode``/``sslrootcert``
+    # keywords, so those two options are converted to an SSLContext below.
+    parsed = urlsplit(url)
+    query = [(key, value) for key, value in parse_qsl(parsed.query) if key not in {"sslmode", "sslrootcert"}]
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
 
 
-engine = create_async_engine(make_async_db_url(settings.db_url), future=True, pool_pre_ping=True, echo=False)
+def db_connect_args(url: str) -> dict:
+    parsed = urlsplit(url)
+    query = dict(parse_qsl(parsed.query))
+    if query.get("sslmode") != "verify-full":
+        return {}
+
+    root_cert = query.get("sslrootcert")
+    context = ssl.create_default_context(cafile=str(Path(root_cert).expanduser()) if root_cert else None)
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    return {"ssl": context}
+
+
+engine = create_async_engine(
+    make_async_db_url(settings.db_url),
+    future=True,
+    pool_pre_ping=True,
+    echo=False,
+    connect_args=db_connect_args(settings.db_url),
+)
 SessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
@@ -80,6 +109,7 @@ class TimestampMixin:
 
 class AccessKey(Base):
     __tablename__ = "access_keys"
+    __table_args__ = (Index("ix_access_keys_user_id", "user_id"),)
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=uuid_text)
     user_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
@@ -102,6 +132,7 @@ class AccessKey(Base):
 
 class Launcher(TimestampMixin, Base):
     __tablename__ = "launchers"
+    __table_args__ = (Index("ix_launchers_user_id", "user_id"),)
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=uuid_text)
     user_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
@@ -114,11 +145,18 @@ class Launcher(TimestampMixin, Base):
     disconnected_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     user: Mapped["User"] = relationship("User", back_populates="launchers")
-    jobs: Mapped[list["Job"]] = relationship(back_populates="launcher", lazy="selectin")
+    jobs: Mapped[list["Job"]] = relationship(back_populates="launcher", lazy="raise")
 
 
 class Job(TimestampMixin, Base):
     __tablename__ = "jobs"
+    __table_args__ = (
+        Index("ix_jobs_queued_created", "created_at", "id", postgresql_where=text("state = 'queued'")),
+        Index("ix_jobs_user_queued_created", "user_id", "created_at", "id", postgresql_where=text("state = 'queued'")),
+        Index("ix_jobs_user_created_desc", "user_id", desc("created_at"), "id"),
+        Index("ix_jobs_created_desc", desc("created_at"), "id"),
+        Index("ix_jobs_launcher_state", "launcher_id", "state"),
+    )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=uuid_text)
     user_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
@@ -141,3 +179,8 @@ class Job(TimestampMixin, Base):
 
     user: Mapped["User"] = relationship("User", back_populates="jobs")
     launcher: Mapped[Optional["Launcher"]] = relationship(back_populates="jobs")
+
+
+# Keep the declarative registry complete for management scripts that import
+# app.db directly, not only for FastAPI routes that happen to import auth.
+importlib.import_module("app.user_auth.db")

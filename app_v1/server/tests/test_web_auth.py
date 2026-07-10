@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 from fastapi import HTTPException
+from fastapi import Response
 from starlette.requests import Request
 
 from app.routers.web import auth as web_auth
@@ -48,6 +49,10 @@ class FakeRefreshDb:
         self.session = session
         self.user = user
         self.commits = 0
+        self.added = []
+
+    def add(self, value):
+        self.added.append(value)
 
     async def scalar(self, _stmt):
         return self.session
@@ -164,14 +169,16 @@ async def test_revoked_refresh_session_is_not_active():
 @pytest.mark.asyncio
 async def test_csrf_token_is_bound_to_refresh_session():
     user = User(id="user-1", email="user@example.test", role="user", status="active")
+    refresh_jti = "refresh-jti-1"
     auth_session = AuthSession(
         id="session-row-1",
         user_id="user-1",
         session_id_hash=hash_token("session-1"),
+        refresh_jti_hash=hash_token(refresh_jti),
         created_at=datetime.now(timezone.utc),
         last_seen_at=datetime.now(timezone.utc),
     )
-    refresh = make_refresh("user-1", "session-1")
+    refresh = make_refresh("user-1", "session-1", refresh_jti)
 
     response = await web_auth.csrf_token(make_request({"refresh_token": refresh}), FakeRefreshDb(auth_session, user))
     csrf_token = response["csrf_token"]
@@ -191,6 +198,37 @@ async def test_csrf_token_is_bound_to_refresh_session():
             )
         )
     assert mismatch.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_refresh_rotation_allows_short_concurrent_grace_then_revokes_reuse():
+    user = User(id="user-1", email="user@example.test", role="user", status="active")
+    refresh_jti = "refresh-jti-1"
+    auth_session = AuthSession(
+        id="session-row-1",
+        user_id="user-1",
+        session_id_hash=hash_token("session-1"),
+        refresh_jti_hash=hash_token(refresh_jti),
+        created_at=datetime.now(timezone.utc),
+        last_seen_at=datetime.now(timezone.utc),
+    )
+    old_refresh = make_refresh("user-1", "session-1", refresh_jti)
+    db = FakeRefreshDb(auth_session, user)
+
+    first_response = Response()
+    await web_auth.refresh(make_request({"refresh_token": old_refresh}), first_response, db)
+
+    assert auth_session.refresh_jti_hash != hash_token(refresh_jti)
+    second_response = Response()
+    await web_auth.refresh(make_request({"refresh_token": old_refresh}), second_response, db)
+    assert not any(header.startswith("refresh_token=") for header in second_response.headers.getlist("set-cookie"))
+
+    auth_session.refresh_grace_until = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    with pytest.raises(HTTPException, match="Refresh token reuse detected"):
+        await web_auth.refresh(make_request({"refresh_token": old_refresh}), Response(), db)
+
+    assert auth_session.revoked_at is not None
+    assert db.added[-1].event == "refresh_reuse"
 
 
 def test_expired_csrf_token_is_rejected():

@@ -1,0 +1,102 @@
+name: app-v1 security audit
+
+on:
+  pull_request:
+    paths:
+      - "app_v1/**"
+      - ".github/workflows/app-v1-security.yml"
+  schedule:
+    - cron: "17 20 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-audit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - app_v1/server
+          - app_v1/sdk
+          - app_v1/launcher
+          - app_v1/slaves/ai
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v6
+      - name: Install Poetry export support
+        run: |
+          pipx install poetry
+          poetry self add poetry-plugin-export
+      - name: Export and audit locked dependencies
+        shell: bash
+        run: |
+          cd "${{ matrix.project }}"
+          requirements="$(mktemp)"
+          poetry export --only main --without-hashes --output "$requirements"
+          if [[ "${{ matrix.project }}" == "app_v1/slaves/ai" ]]; then
+            uvx pip-audit --requirement "$requirements" --ignore-vuln CVE-2025-69872
+          else
+            uvx pip-audit --requirement "$requirements"
+          fi
+
+  node-audit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - app_v1/sdk/master/js
+          - app_v1/website
+          - app_v1/masters/ai
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: "${{ matrix.project }}/package-lock.json"
+      - name: Audit locked dependencies
+        working-directory: "${{ matrix.project }}"
+        run: npm audit
+
+  ai-sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v6
+      - name: Install Poetry export support
+        run: |
+          pipx install poetry
+          poetry self add poetry-plugin-export
+      - name: Generate CUDA-aware CycloneDX SBOM
+        run: |
+          cd app_v1/slaves/ai
+          poetry export --only main --without-hashes --output ai-requirements.txt
+          uvx --from cyclonedx-bom cyclonedx-py requirements ai-requirements.txt --output-reproducible --output-file ../../../app-v1-ai-sbom.cdx.json
+          cd ../../..
+          grep -q '"name": "torch"' app-v1-ai-sbom.cdx.json
+          grep -q '"name": "llama-cpp-python"' app-v1-ai-sbom.cdx.json
+          grep -q '"name": "nvidia-cublas"' app-v1-ai-sbom.cdx.json
+          grep -q '"name": "nvidia-cuda-runtime"' app-v1-ai-sbom.cdx.json
+      - name: Scan SBOM against OSV advisories
+        run: >-
+          docker run --rm
+          -v "${{ github.workspace }}:/src"
+          ghcr.io/google/osv-scanner:v2.3.8
+          scan source --format=vertical --verbosity=error
+          --config=/src/app_v1/slaves/ai/osv-scanner.toml
+          /src/app-v1-ai-sbom.cdx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-v1-ai-cuda-sbom
+          path: app-v1-ai-sbom.cdx.json
+          if-no-files-found: error

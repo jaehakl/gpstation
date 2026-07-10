@@ -6,11 +6,16 @@ import sys
 from io import BytesIO
 
 import pytest
+import sdk.slave.channel as channel_module
+import sdk.slave.worker as worker_module
 
 from sdk.protocol.constants import DATA_CHANNEL_LABEL
 from sdk.slave import DataChannelAttachment, DataChannelMessage, SlaveApp, SlaveContext
 from sdk.slave.runtime import (
+    BUFFERED_AMOUNT_LOW_THRESHOLD,
     CHUNK_SIZE,
+    JOB_DATA_CHANNEL_MESSAGE_MAX_BYTES,
+    MAX_BUFFERED_AMOUNT,
     attach_worker_job_peer_handlers,
     configure_aioice_gather_timeout,
     emit,
@@ -264,10 +269,11 @@ def test_summarize_sdp_candidates_counts_candidate_types():
     assert summary == {"host": 1, "srflx": 1, "relay": 1, "prflx": 1, "unknown": 1, "total": 5}
 
 
-def test_send_job_result_uses_job_result_envelope():
+@pytest.mark.asyncio
+async def test_send_job_result_uses_job_result_envelope():
     channel = DummyChannel()
 
-    send_job_result(
+    await send_job_result(
         channel,
         "job-1",
         DataChannelMessage(id="job-1", type="ai.llm.result", payload={"text": "hello"}),
@@ -339,6 +345,17 @@ def test_parse_job_ready_message_reports_malformed_frame():
     assert "malformed job.ready frame" in error
 
 
+def test_parse_job_ready_message_rejects_oversized_frame():
+    is_ready, input_payload, error = parse_job_ready_message(
+        "x" * (JOB_DATA_CHANNEL_MESSAGE_MAX_BYTES + 1),
+        "job-1",
+    )
+
+    assert is_ready is True
+    assert input_payload is None
+    assert "exceeds" in error
+
+
 def test_datachannel_ready_then_call_enqueues_call():
     pc = FakePeerConnection()
     state = attach_worker_job_peer_handlers(pc, "job-1", "ai.llm", 0.0)
@@ -391,6 +408,21 @@ def test_datachannel_rejects_overlapping_call():
         "code": "worker_busy",
         "detail": "worker is already processing a job call",
     }
+
+
+def test_datachannel_rejects_oversized_binary_without_logging_contents(monkeypatch):
+    pc = FakePeerConnection()
+    state = attach_worker_job_peer_handlers(pc, "job-1", "ai.llm", 0.0)
+    channel = FakeDataChannel()
+    logs = []
+    monkeypatch.setattr(worker_module, "log", logs.append)
+
+    pc.handlers["datachannel"](channel)
+    channel.handlers["message"](b"secret-marker" + b"x" * JOB_DATA_CHANNEL_MESSAGE_MAX_BYTES)
+
+    assert state.ready_event.is_set()
+    assert "exceeds" in state.ready_error["detail"]
+    assert "secret-marker" not in "\n".join(logs)
 
 
 @pytest.mark.asyncio
@@ -449,11 +481,12 @@ async def test_slave_context_emit_event_uses_sender():
     assert events == [("token", {"text": "hello"})]
 
 
-def test_send_job_result_sends_attachment_chunks():
+@pytest.mark.asyncio
+async def test_send_job_result_sends_attachment_chunks():
     channel = DummyChannel()
     data = bytes(index % 251 for index in range(CHUNK_SIZE + 3))
 
-    send_job_result(
+    await send_job_result(
         channel,
         "job-1",
         DataChannelMessage(
@@ -500,3 +533,46 @@ def test_send_job_result_sends_attachment_chunks():
 
     assert len(chunks) == 2
     assert b"".join(chunks) == data
+
+
+@pytest.mark.asyncio
+async def test_send_job_result_waits_for_datachannel_backpressure():
+    channel = DummyChannel()
+    channel.bufferedAmount = MAX_BUFFERED_AMOUNT + 1
+
+    task = asyncio.create_task(
+        send_job_result(
+            channel,
+            "job-1",
+            DataChannelMessage(
+                id="job-1",
+                type="file.result",
+                attachments=[DataChannelAttachment(id="out", data=b"payload")],
+            ),
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert not task.done()
+    assert channel.bufferedAmountLowThreshold == BUFFERED_AMOUNT_LOW_THRESHOLD
+
+    channel.bufferedAmount = BUFFERED_AMOUNT_LOW_THRESHOLD
+    await task
+
+
+@pytest.mark.asyncio
+async def test_send_job_result_times_out_when_datachannel_buffer_never_drains(monkeypatch):
+    channel = DummyChannel()
+    channel.bufferedAmount = MAX_BUFFERED_AMOUNT + 1
+    monkeypatch.setattr(channel_module, "BUFFERED_AMOUNT_DRAIN_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(TimeoutError, match="did not drain"):
+        await send_job_result(
+            channel,
+            "job-1",
+            DataChannelMessage(
+                id="job-1",
+                type="file.result",
+                attachments=[DataChannelAttachment(id="out", data=b"payload")],
+            ),
+        )

@@ -31,6 +31,7 @@ from sdk.slave.rtc import (
 )
 
 JOB_RESULT_ACK_TIMEOUT_SECONDS = 5.0
+JOB_DATA_CHANNEL_MESSAGE_MAX_BYTES = 1024 * 1024
 
 
 @dataclass
@@ -221,7 +222,21 @@ def attach_worker_job_peer_handlers(pc: Any, job_id: str, handler_type: str, job
         @channel.on("message")
         def on_message(raw_message: Any) -> None:
             try:
+                if isinstance(raw_message, (bytes, bytearray, memoryview)):
+                    size = len(raw_message)
+                    detail = (
+                        f"binary job DataChannel message exceeds {JOB_DATA_CHANNEL_MESSAGE_MAX_BYTES} bytes"
+                        if size > JOB_DATA_CHANNEL_MESSAGE_MAX_BYTES
+                        else "binary job DataChannel messages are unsupported"
+                    )
+                    if not state.ready_event.is_set():
+                        state.ready_error["detail"] = detail
+                        state.ready_event.set()
+                    log(f"job datachannel message rejected: {detail}; size={size}")
+                    return
                 if isinstance(raw_message, str):
+                    if len(raw_message.encode("utf-8")) > JOB_DATA_CHANNEL_MESSAGE_MAX_BYTES:
+                        raise ValueError(f"job DataChannel message exceeds {JOB_DATA_CHANNEL_MESSAGE_MAX_BYTES} bytes")
                     payload = json.loads(raw_message)
                     kind = payload.get("kind")
                     if kind == "job.ready":
@@ -275,7 +290,7 @@ def attach_worker_job_peer_handlers(pc: Any, job_id: str, handler_type: str, job
                         state.ready_error["detail"] = f"expected job.ready before {kind or 'unknown message'}"
                         state.ready_event.set()
                         return
-                log(f"unsupported worker job datachannel message: {raw_message}")
+                log(f"unsupported worker job datachannel message type: {type(raw_message).__name__}")
             except Exception as exc:
                 if not state.ready_event.is_set():
                     state.ready_error["detail"] = f"malformed job.ready frame: {exc}"
@@ -526,7 +541,7 @@ async def run_worker_job_call(
         ack_event = asyncio.Event()
         state.result_ack_events[call_id] = ack_event
         try:
-            send_job_result(channel, call_id, response)
+            await send_job_result(channel, call_id, response)
             log(f"job call result sent: id={call_id} type={call_type}")
             log(f"job result ack wait: id={call_id} timeout_s={JOB_RESULT_ACK_TIMEOUT_SECONDS:g}")
             await wait_for_job_result_ack(call_id, ack_event, state.closed_event)
@@ -552,6 +567,8 @@ def send_job_error(channel: Any, call_id: str, code: str, detail: str) -> None:
 
 
 def parse_job_ready_message(raw_message: str, job_id: str) -> tuple[bool, Any, str | None]:
+    if len(raw_message.encode("utf-8")) > JOB_DATA_CHANNEL_MESSAGE_MAX_BYTES:
+        return True, None, f"job.ready frame exceeds {JOB_DATA_CHANNEL_MESSAGE_MAX_BYTES} bytes"
     try:
         payload = json.loads(raw_message)
     except Exception as exc:

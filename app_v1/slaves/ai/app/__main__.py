@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import time
 from typing import Any
 
@@ -159,7 +158,6 @@ async def ai_sdxl_t2i(message: DataChannelMessage, memory: dict[str, Any] | None
         payload_images = []
         attachments = []
         for index, image in enumerate(response.images, start=1):
-            image_bytes = base64.b64decode(image.image_base64)
             extension = "jpg" if image.format == "jpg" else "png"
             mime_type = "image/jpeg" if extension == "jpg" else "image/png"
             attachment_id = f"image-{index}"
@@ -169,8 +167,8 @@ async def ai_sdxl_t2i(message: DataChannelMessage, memory: dict[str, Any] | None
                     id=attachment_id,
                     name=name,
                     mimeType=mime_type,
-                    size=len(image_bytes),
-                    data=image_bytes,
+                    size=len(image.image_bytes),
+                    data=image.image_bytes,
                 )
             )
             payload_images.append(
@@ -179,7 +177,7 @@ async def ai_sdxl_t2i(message: DataChannelMessage, memory: dict[str, Any] | None
                     "name": name,
                     "format": image.format,
                     "mimeType": mime_type,
-                    "size": len(image_bytes),
+                    "size": len(image.image_bytes),
                     "seed": image.seed,
                 }
             )

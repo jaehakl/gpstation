@@ -3,9 +3,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from time import monotonic
 from typing import Any
-
-from fastapi import HTTPException, status
 
 from app.logging import log
 from app.model_runtime.gpu_residency import acquire_gpu_model_multi
@@ -16,6 +15,7 @@ from app.models import ChatRequest
 CHAT_MEMORY_KEY = "ai_chat"
 CHAT_MAX_HISTORY_MESSAGES = 41
 CHAT_CACHE_CAPACITY_BYTES = 512 * 1024 * 1024
+CHAT_DELTA_BATCH_SECONDS = 0.033
 
 
 @dataclass(frozen=True)
@@ -91,7 +91,7 @@ async def generate_chat_with_llm(
                 on_delta,
             )
     if not result.answer.strip():
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="LLM returned empty answer")
+        raise RuntimeError("LLM returned empty answer")
     return result
 
 
@@ -114,6 +114,8 @@ def _generate_chat_with_llm_locked(
         f"cache_enabled={cache_enabled}"
     )
     answer_parts: list[str] = []
+    pending_delta_parts: list[str] = []
+    last_delta_emit_at = monotonic()
     had_previous_override = hasattr(llm, "_gpstation_enable_thinking_override")
     previous_override = getattr(llm, "_gpstation_enable_thinking_override", None)
     if enable_thinking is not None:
@@ -132,7 +134,14 @@ def _generate_chat_with_llm_locked(
                 continue
             answer_parts.append(delta)
             if on_delta is not None:
-                asyncio.run_coroutine_threadsafe(on_delta(delta), loop).result()
+                pending_delta_parts.append(delta)
+                now = monotonic()
+                if now - last_delta_emit_at >= CHAT_DELTA_BATCH_SECONDS:
+                    asyncio.run_coroutine_threadsafe(on_delta("".join(pending_delta_parts)), loop).result()
+                    pending_delta_parts.clear()
+                    last_delta_emit_at = now
+        if on_delta is not None and pending_delta_parts:
+            asyncio.run_coroutine_threadsafe(on_delta("".join(pending_delta_parts)), loop).result()
     finally:
         if had_previous_override:
             setattr(llm, "_gpstation_enable_thinking_override", previous_override)

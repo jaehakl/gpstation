@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import AccessKey
 from app.models import AccessKeyCreate, AccessKeyCreateResult, AccessKeyData
-from app.user_auth.db import User
+from app.user_auth.db import AuthAudit, User
 from app.user_auth.utils.auth_utils import hash_token, random_urlsafe
 
 ACCESS_KEY_PREFIX = "gpsk_"
@@ -43,6 +44,51 @@ def normalize_optional_datetime(value: datetime | None) -> datetime | None:
 
 class AccessKeyService:
     @staticmethod
+    async def active_launcher_key_ids(db: AsyncSession, access_key_ids: set[str]) -> set[str]:
+        if not access_key_ids:
+            return set()
+        now = datetime.now(timezone.utc)
+        key_ids = await db.scalars(
+            select(AccessKey.id)
+            .join(User, User.id == AccessKey.user_id)
+            .where(
+                AccessKey.id.in_(access_key_ids),
+                AccessKey.status == "active",
+                AccessKey.revoked_at.is_(None),
+                or_(AccessKey.expires_at.is_(None), AccessKey.expires_at > now),
+                AccessKey.scopes.contains(["launcher"]),
+                User.status == "active",
+                User.role.in_(("admin", "user")),
+            )
+        )
+        return {str(key_id) for key_id in key_ids.all()}
+
+    @staticmethod
+    async def is_active_launcher_key(
+        db: AsyncSession,
+        access_key_id: str,
+        user_id: str | None = None,
+    ) -> bool:
+        now = datetime.now(timezone.utc)
+        stmt = (
+            select(AccessKey.id)
+            .join(User, User.id == AccessKey.user_id)
+            .where(
+                AccessKey.id == access_key_id,
+                AccessKey.status == "active",
+                AccessKey.revoked_at.is_(None),
+                or_(AccessKey.expires_at.is_(None), AccessKey.expires_at > now),
+                AccessKey.scopes.contains(["launcher"]),
+                User.status == "active",
+                User.role.in_(("admin", "user")),
+            )
+        )
+        if user_id is not None:
+            stmt = stmt.where(AccessKey.user_id == user_id)
+        key_id = await db.scalar(stmt)
+        return key_id is not None
+
+    @staticmethod
     async def create_user_access_key(
         db: AsyncSession,
         user_id: str,
@@ -73,6 +119,13 @@ class AccessKeyService:
             scopes=scopes,
             status="active",
             expires_at=normalize_optional_datetime(payload.expires_at),
+        )
+        db.add(
+            AuthAudit(
+                user_id=user_id,
+                event="token_created",
+                details={"name": name, "key_prefix": access_key.key_prefix, "scopes": scopes},
+            )
         )
         db.add(access_key)
         await db.commit()

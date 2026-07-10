@@ -48,12 +48,12 @@ class User(TimestampMixin, Base):
         Index("uq_users_username_lower", func.lower(username), unique=True),
     )
 
-    identities: Mapped[list["Identity"]] = relationship(back_populates="user", cascade="all, delete-orphan", lazy="selectin")
-    sessions: Mapped[list["Session"]] = relationship(back_populates="user", cascade="all, delete-orphan", lazy="selectin")
-    auth_audits: Mapped[list["AuthAudit"]] = relationship(back_populates="user", lazy="selectin")
-    access_keys: Mapped[list["AccessKey"]] = relationship("AccessKey", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
-    launchers: Mapped[list["Launcher"]] = relationship("Launcher", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
-    jobs: Mapped[list["Job"]] = relationship("Job", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
+    identities: Mapped[list["Identity"]] = relationship(back_populates="user", cascade="all, delete-orphan", lazy="raise")
+    sessions: Mapped[list["Session"]] = relationship(back_populates="user", cascade="all, delete-orphan", lazy="raise")
+    auth_audits: Mapped[list["AuthAudit"]] = relationship(back_populates="user", lazy="raise")
+    access_keys: Mapped[list["AccessKey"]] = relationship("AccessKey", back_populates="user", cascade="all, delete-orphan", lazy="raise")
+    launchers: Mapped[list["Launcher"]] = relationship("Launcher", back_populates="user", cascade="all, delete-orphan", lazy="raise")
+    jobs: Mapped[list["Job"]] = relationship("Job", back_populates="user", cascade="all, delete-orphan", lazy="raise")
 
 
 class Identity(TimestampMixin, Base):
@@ -84,6 +84,13 @@ class Session(Base):
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=uuid_text)
     user_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     session_id_hash: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    refresh_jti_hash: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
+    refresh_grace_jti_hashes: Mapped[list[str]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'[]'::jsonb"),
+    )
+    refresh_grace_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     ip: Mapped[Optional[str]] = mapped_column(INET)
@@ -115,7 +122,7 @@ class AuthAudit(Base):
     __table_args__ = (
         Index("idx_auth_audit_user_id", "user_id"),
         CheckConstraint(
-            "event IN ('login_success','login_failure','logout','link_success','unlink')",
+            "event IN ('login_success','login_failure','logout','link_success','unlink','token_created','token_revoked','refresh_reuse','launcher_connected','launcher_rejected')",
             name="ck_auth_audit_event",
         ),
     )

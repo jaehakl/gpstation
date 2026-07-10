@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import ipaddress
 from functools import lru_cache
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -44,6 +45,7 @@ class Settings(BaseSettings):
     cookie_domain: str = Field(...)
     secure_cookies: bool = Field(...)
     cors_origins: str = Field(...)
+    allow_public_bind: bool = False
 
     @field_validator("public_base_url")
     @classmethod
@@ -78,8 +80,12 @@ def validate_runtime_settings(config: Settings) -> None:
 
     if is_placeholder(config.db_url) or "postgres:postgres@" in config.db_url:
         errors.append("GPSTATION_V1_DB_URL must not use placeholder credentials")
+    validate_database_transport(errors, config.db_url)
     if is_placeholder(config.jwt_secret) or len(config.jwt_secret) < 32:
         errors.append("GPSTATION_V1_JWT_SECRET must be a non-placeholder secret with at least 32 characters")
+
+    if config.host in {"0.0.0.0", "::"} and not config.allow_public_bind:
+        errors.append("GPSTATION_V1_ALLOW_PUBLIC_BIND=true is required when binding to all interfaces")
 
     redirect_uri = google_redirect_uri_for(config)
     validate_http_url(errors, "GPSTATION_V1_PUBLIC_BASE_URL", config.public_base_url, allow_local_http=True)
@@ -111,6 +117,31 @@ def require_value(errors: list[str], name: str, value: str) -> None:
 def is_placeholder(value: str) -> bool:
     lowered = value.strip().lower()
     return any(part in lowered for part in PLACEHOLDER_PARTS)
+
+
+def validate_database_transport(errors: list[str], value: str) -> None:
+    parsed = urlparse(value)
+    host = parsed.hostname
+    if not host:
+        errors.append("GPSTATION_V1_DB_URL must include a database host")
+        return
+    if host in {"localhost", "127.0.0.1", "::1"}:
+        return
+
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        errors.append("Remote GPSTATION_V1_DB_URL must use a DNS hostname for TLS hostname verification")
+
+    query = parse_qs(parsed.query)
+    if query.get("sslmode", [""])[-1] != "verify-full":
+        errors.append("Remote GPSTATION_V1_DB_URL must set sslmode=verify-full")
+
+    root_cert = query.get("sslrootcert", [""])[-1]
+    if root_cert and not Path(root_cert).expanduser().is_file():
+        errors.append("GPSTATION_V1_DB_URL sslrootcert must point to a readable CA certificate")
 
 
 def validate_http_url(errors: list[str], name: str, value: str, *, allow_local_http: bool) -> None:
