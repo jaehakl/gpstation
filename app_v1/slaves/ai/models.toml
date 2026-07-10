@@ -1,12 +1,12 @@
 [llm]
 default_model = "Qwen3.6-35B-A3B-Q8"
-use_max_gpu = false
+use_max_gpu = true
 # Optional. When omitted, use_max_gpu selects -1 (GPU) or 0 (CPU).
 # n_gpu_layers = -1
 # Optional. When omitted, llama.cpp chooses its thread count.
 # n_threads = 8
 context_size = 262144
-split_mode = "tensor"
+split_mode = "none"
 tensor_split = []
 main_gpu = 0
 flash_attn = true
