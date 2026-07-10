@@ -12,7 +12,6 @@ from unittest.mock import patch
 from app.model_runtime.voicevox import (
     VoicevoxInitializeOptions,
     VoicevoxLoadOnnxruntimeOptions,
-    VoicevoxLoadVoiceModelOptions,
     VoicevoxRuntime,
     VoicevoxSynthesisOptions,
 )
@@ -29,11 +28,12 @@ class FakeFunction:
 
 
 class FakeVoicevoxLibrary:
-    def __init__(self, onnx_filename: str) -> None:
+    def __init__(self, onnx_filename: str, version: str = "0.16.4") -> None:
         self.buffers = []
         self.json_frees = []
         self.wav_frees = []
         self.calls = []
+        self.voicevox_get_version = FakeFunction(lambda: version.encode("utf-8"))
         self.voicevox_get_onnxruntime_lib_versioned_filename = FakeFunction(
             lambda: onnx_filename.encode("utf-8")
         )
@@ -56,9 +56,6 @@ class FakeVoicevoxLibrary:
         self.voicevox_synthesizer_delete = FakeFunction(
             lambda pointer: self.calls.append(("delete_synthesizer", self._value(pointer)))
         )
-        self.voicevox_make_default_load_voice_model_options = FakeFunction(
-            lambda: VoicevoxLoadVoiceModelOptions()
-        )
         self.voicevox_voice_model_file_open = FakeFunction(
             lambda path, output: self._set_output("open_model", output, 104, path)
         )
@@ -66,8 +63,8 @@ class FakeVoicevoxLibrary:
             lambda pointer: self.calls.append(("delete_model", self._value(pointer)))
         )
         self.voicevox_synthesizer_load_voice_model = FakeFunction(
-            lambda synthesizer, model, options: self._record_ok(
-                "load_model", self._value(synthesizer), self._value(model), options.on_existing
+            lambda synthesizer, model: self._record_ok(
+                "load_model", self._value(synthesizer), self._value(model)
             )
         )
         self.voicevox_synthesizer_create_metas_json = FakeFunction(
@@ -170,6 +167,7 @@ class VoicevoxRuntimeTest(unittest.TestCase):
         self.assertEqual(load_library.call_count, 1)
         self.assertEqual(sum(call[0] == "load_onnx" for call in library.calls), 1)
         self.assertEqual(sum(call[0] == "load_model" for call in library.calls), 1)
+        self.assertIn(("load_model", 103, 104), library.calls)
         self.assertEqual(len(library.json_frees), 2)
         self.assertEqual(len(library.wav_frees), 1)
         self.assertIn(("audio_query", "こんにちは".encode("utf-8"), 2), library.calls)
@@ -192,6 +190,19 @@ class VoicevoxRuntimeTest(unittest.TestCase):
             runtime.close()
 
         self.assertEqual(library.wav_frees, [])
+
+    def test_runtime_rejects_mismatched_core_version_before_initialization(self) -> None:
+        library = FakeVoicevoxLibrary(self.onnx_filename, version="0.16.3")
+        runtime = VoicevoxRuntime(self.runtime_dir)
+
+        with patch("app.model_runtime.voicevox.ctypes.CDLL", return_value=library):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Unsupported VOICEVOX Core version: expected 0.16.4, got 0.16.3",
+            ):
+                runtime.speakers()
+
+        self.assertFalse(any(call[0] == "load_onnx" for call in library.calls))
 
     def test_concurrent_first_calls_share_one_initialization(self) -> None:
         library = FakeVoicevoxLibrary(self.onnx_filename)

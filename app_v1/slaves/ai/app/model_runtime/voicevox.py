@@ -13,6 +13,7 @@ from app.settings import settings
 
 VOICEVOX_RESULT_OK = 0
 VOICEVOX_ACCELERATION_MODE_CPU = 1
+VOICEVOX_CORE_VERSION = "0.16.4"
 
 
 class VoicevoxLoadOnnxruntimeOptions(ctypes.Structure):
@@ -24,10 +25,6 @@ class VoicevoxInitializeOptions(ctypes.Structure):
         ("acceleration_mode", ctypes.c_int32),
         ("cpu_num_threads", ctypes.c_uint16),
     ]
-
-
-class VoicevoxLoadVoiceModelOptions(ctypes.Structure):
-    _fields_ = [("on_existing", ctypes.c_int32)]
 
 
 class VoicevoxSynthesisOptions(ctypes.Structure):
@@ -134,6 +131,7 @@ class VoicevoxRuntime:
                 self._dll_directory_handles.append(os.add_dll_directory(str(directory)))
 
         library = ctypes.CDLL(str(core_library))
+        self._validate_library_version(library)
         self._configure_library(library)
 
         onnx_filename = library.voicevox_get_onnxruntime_lib_versioned_filename().decode("utf-8")
@@ -182,10 +180,9 @@ class VoicevoxRuntime:
                     f"open voice model {model_path.name}",
                 )
                 try:
-                    load_options = library.voicevox_make_default_load_voice_model_options()
                     self._raise_for_result_with_library(
                         library,
-                        library.voicevox_synthesizer_load_voice_model(synthesizer, model, load_options),
+                        library.voicevox_synthesizer_load_voice_model(synthesizer, model),
                         f"load voice model {model_path.name}",
                     )
                 finally:
@@ -228,6 +225,18 @@ class VoicevoxRuntime:
         raise RuntimeError(f"VOICEVOX failed to {operation}: {detail}")
 
     @staticmethod
+    def _validate_library_version(library: Any) -> None:
+        library.voicevox_get_version.argtypes = []
+        library.voicevox_get_version.restype = ctypes.c_char_p
+        raw_version = library.voicevox_get_version()
+        actual_version = raw_version.decode("utf-8", errors="replace") if raw_version else "unknown"
+        if actual_version != VOICEVOX_CORE_VERSION:
+            raise RuntimeError(
+                "Unsupported VOICEVOX Core version: "
+                f"expected {VOICEVOX_CORE_VERSION}, got {actual_version}"
+            )
+
+    @staticmethod
     def _configure_library(library: Any) -> None:
         library.voicevox_get_onnxruntime_lib_versioned_filename.argtypes = []
         library.voicevox_get_onnxruntime_lib_versioned_filename.restype = ctypes.c_char_p
@@ -253,8 +262,6 @@ class VoicevoxRuntime:
         library.voicevox_synthesizer_new.restype = ctypes.c_int32
         library.voicevox_synthesizer_delete.argtypes = [ctypes.c_void_p]
         library.voicevox_synthesizer_delete.restype = None
-        library.voicevox_make_default_load_voice_model_options.argtypes = []
-        library.voicevox_make_default_load_voice_model_options.restype = VoicevoxLoadVoiceModelOptions
         library.voicevox_voice_model_file_open.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)]
         library.voicevox_voice_model_file_open.restype = ctypes.c_int32
         library.voicevox_voice_model_file_delete.argtypes = [ctypes.c_void_p]
@@ -262,7 +269,6 @@ class VoicevoxRuntime:
         library.voicevox_synthesizer_load_voice_model.argtypes = [
             ctypes.c_void_p,
             ctypes.c_void_p,
-            VoicevoxLoadVoiceModelOptions,
         ]
         library.voicevox_synthesizer_load_voice_model.restype = ctypes.c_int32
         library.voicevox_synthesizer_create_metas_json.argtypes = [ctypes.c_void_p]
