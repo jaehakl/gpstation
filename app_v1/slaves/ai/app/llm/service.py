@@ -18,6 +18,7 @@ async def generate_llm_answer(request: LlmRequest) -> LlmResponse:
         temperature=request.temperature,
         context_size=request.context_size,
         top_p=request.top_p,
+        enable_thinking=request.think,
     )
     return LlmResponse(model=model_name, answer=answer)
 

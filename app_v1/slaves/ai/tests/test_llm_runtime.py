@@ -42,6 +42,18 @@ class FakeCache:
     pass
 
 
+class FakePromptCompletionLlm:
+    def __init__(self, error: Exception | None = None):
+        self.error = error
+        self.enable_thinking_override = None
+
+    def create_chat_completion(self, **kwargs):
+        self.enable_thinking_override = getattr(self, "_gpstation_enable_thinking_override", None)
+        if self.error is not None:
+            raise self.error
+        return {"choices": [{"message": {"content": "answer"}}]}
+
+
 def config() -> llm_runtime.PromptLlmConfig:
     return llm_runtime.PromptLlmConfig(
         name="test-llm",
@@ -392,6 +404,75 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("models.toml", str(error.exception))
         finally:
             llm_runtime.release_llm_runtime()
+
+    async def test_generate_prompt_with_llm_applies_and_clears_thinking_override(self) -> None:
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                fake_llm = FakePromptCompletionLlm()
+                with (
+                    patch.object(llm_runtime, "build_prompt_llm_config", return_value=config()),
+                    patch.object(llm_runtime, "acquire_gpu_model_multi", return_value=NullAsyncContext()),
+                    patch.object(llm_runtime, "_get_prompt_llm_locked", return_value=fake_llm),
+                ):
+                    answer = await llm_runtime.generate_prompt_with_llm(
+                        [{"role": "user", "content": "hello"}],
+                        enable_thinking=enabled,
+                        response_format_json=False,
+                    )
+
+                self.assertEqual(answer, "answer")
+                self.assertIs(fake_llm.enable_thinking_override, enabled)
+                self.assertFalse(hasattr(fake_llm, "_gpstation_enable_thinking_override"))
+
+    async def test_generate_prompt_with_llm_uses_model_default_when_think_is_omitted(self) -> None:
+        fake_llm = FakePromptCompletionLlm()
+        with (
+            patch.object(llm_runtime, "build_prompt_llm_config", return_value=config()),
+            patch.object(llm_runtime, "acquire_gpu_model_multi", return_value=NullAsyncContext()),
+            patch.object(llm_runtime, "_get_prompt_llm_locked", return_value=fake_llm),
+        ):
+            answer = await llm_runtime.generate_prompt_with_llm(
+                [{"role": "user", "content": "hello"}],
+                response_format_json=False,
+            )
+
+        self.assertEqual(answer, "answer")
+        self.assertIsNone(fake_llm.enable_thinking_override)
+        self.assertFalse(hasattr(fake_llm, "_gpstation_enable_thinking_override"))
+
+    async def test_generate_prompt_with_llm_restores_previous_thinking_override(self) -> None:
+        fake_llm = FakePromptCompletionLlm()
+        fake_llm._gpstation_enable_thinking_override = False
+        with (
+            patch.object(llm_runtime, "build_prompt_llm_config", return_value=config()),
+            patch.object(llm_runtime, "acquire_gpu_model_multi", return_value=NullAsyncContext()),
+            patch.object(llm_runtime, "_get_prompt_llm_locked", return_value=fake_llm),
+        ):
+            await llm_runtime.generate_prompt_with_llm(
+                [{"role": "user", "content": "hello"}],
+                enable_thinking=True,
+                response_format_json=False,
+            )
+
+        self.assertIs(fake_llm.enable_thinking_override, True)
+        self.assertIs(fake_llm._gpstation_enable_thinking_override, False)
+
+    async def test_generate_prompt_with_llm_clears_thinking_override_after_failure(self) -> None:
+        fake_llm = FakePromptCompletionLlm(RuntimeError("completion failed"))
+        with (
+            patch.object(llm_runtime, "build_prompt_llm_config", return_value=config()),
+            patch.object(llm_runtime, "acquire_gpu_model_multi", return_value=NullAsyncContext()),
+            patch.object(llm_runtime, "_get_prompt_llm_locked", return_value=fake_llm),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "completion failed"):
+                await llm_runtime.generate_prompt_with_llm(
+                    [{"role": "user", "content": "hello"}],
+                    enable_thinking=True,
+                    response_format_json=False,
+                )
+
+        self.assertIs(fake_llm.enable_thinking_override, True)
+        self.assertFalse(hasattr(fake_llm, "_gpstation_enable_thinking_override"))
 
     async def test_generate_chat_with_llm_streams_ordered_deltas_and_returns_answer(self) -> None:
         fake_llm = FakeStreamingLlm(

@@ -41,6 +41,7 @@ class LlmHandlerTest(unittest.IsolatedAsyncioTestCase):
                         "prompt": "Say hello.",
                         "context_size": 8192,
                         "top_p": 0.75,
+                        "think": True,
                     },
                 ),
                 context(),
@@ -53,11 +54,17 @@ class LlmHandlerTest(unittest.IsolatedAsyncioTestCase):
         request = generate_llm_answer.await_args.args[0]
         self.assertEqual(request.context_size, 8192)
         self.assertEqual(request.top_p, 0.75)
+        self.assertIs(request.think, True)
 
     def test_llm_request_accepts_korean_text(self) -> None:
         request = LlmRequest(system_prompt="친절하게 답하세요.", prompt="한글 질문입니다.")
 
         self.assertEqual(request.prompt, "한글 질문입니다.")
+
+    def test_llm_request_accepts_think_and_defaults_to_model_setting(self) -> None:
+        self.assertIs(LlmRequest(system_prompt="system", prompt="prompt", think=True).think, True)
+        self.assertIs(LlmRequest(system_prompt="system", prompt="prompt", think=False).think, False)
+        self.assertIsNone(LlmRequest(system_prompt="system", prompt="prompt").think)
 
     def test_llm_request_rejects_surrogate_text(self) -> None:
         with self.assertRaises(ValueError) as error:
@@ -325,6 +332,7 @@ class LlmServiceTest(unittest.IsolatedAsyncioTestCase):
             prompt="prompt",
             context_size=12288,
             top_p=0.65,
+            think=True,
         )
         with (
             patch.object(llm_service, "get_selected_model_name", return_value="model-a"),
@@ -335,6 +343,7 @@ class LlmServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.model, "model-a")
         self.assertEqual(ask_llm.await_args.kwargs["context_size"], 12288)
         self.assertEqual(ask_llm.await_args.kwargs["top_p"], 0.65)
+        self.assertIs(ask_llm.await_args.kwargs["enable_thinking"], True)
 
     async def test_chat_forwards_context_size_and_top_p(self) -> None:
         generate_chat = AsyncMock(

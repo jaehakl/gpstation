@@ -78,6 +78,7 @@ async def generate_prompt_with_llm(
     temperature: float | None = None,
     context_size: int | None = None,
     top_p: float | None = None,
+    enable_thinking: bool | None = None,
     response_format_json: bool = True,
 ) -> str:
     config = build_prompt_llm_config(
@@ -93,6 +94,7 @@ async def generate_prompt_with_llm(
                 _generate_prompt_with_llm_locked,
                 config,
                 messages,
+                enable_thinking,
                 response_format_json,
             )
 
@@ -105,6 +107,7 @@ async def ask_llm(
     temperature: float | None = None,
     context_size: int | None = None,
     top_p: float | None = None,
+    enable_thinking: bool | None = None,
 ) -> str:
     trimmed_system_message = system_message.strip()
     trimmed_question = question.strip()
@@ -122,6 +125,7 @@ async def ask_llm(
         temperature=temperature,
         context_size=context_size,
         top_p=top_p,
+        enable_thinking=enable_thinking,
         response_format_json=False,
     )
     if not answer.strip():
@@ -281,10 +285,17 @@ def _parse_llm_json_object(
 def _generate_prompt_with_llm_locked(
     config: PromptLlmConfig,
     messages: list[dict[str, str]],
+    enable_thinking: bool | None,
     response_format_json: bool,
 ) -> str:
     llm = _get_prompt_llm_locked(config)
-    log(f"LLM completion start max_tokens={config.max_tokens} temperature={config.temperature}")
+    effective_enable_thinking = config.enable_thinking if enable_thinking is None else enable_thinking
+    log(
+        "LLM completion start "
+        f"max_tokens={config.max_tokens} "
+        f"temperature={config.temperature} "
+        f"enable_thinking={effective_enable_thinking}"
+    )
     completion_kwargs: dict[str, Any] = {
         "messages": messages,
         "max_tokens": config.max_tokens,
@@ -293,7 +304,17 @@ def _generate_prompt_with_llm_locked(
     }
     if response_format_json:
         completion_kwargs["response_format"] = {"type": "json_object"}
-    response = llm.create_chat_completion(**completion_kwargs)
+    had_previous_override = hasattr(llm, "_gpstation_enable_thinking_override")
+    previous_override = getattr(llm, "_gpstation_enable_thinking_override", None)
+    if enable_thinking is not None:
+        setattr(llm, "_gpstation_enable_thinking_override", enable_thinking)
+    try:
+        response = llm.create_chat_completion(**completion_kwargs)
+    finally:
+        if had_previous_override:
+            setattr(llm, "_gpstation_enable_thinking_override", previous_override)
+        elif hasattr(llm, "_gpstation_enable_thinking_override"):
+            delattr(llm, "_gpstation_enable_thinking_override")
     log("LLM completion returned")
     if not isinstance(response, dict):
         return ""

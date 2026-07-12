@@ -11,6 +11,7 @@ class LlmRequest(BaseModel):
     temperature: float | None = None
     context_size: int | None = None
     top_p: float | None = None
+    think: bool | None = None
 
     @field_validator("system_prompt", "prompt")
     @classmethod

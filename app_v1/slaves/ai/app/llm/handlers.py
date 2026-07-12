@@ -47,7 +47,8 @@ async def ai_llm(
             f"system_chars={len(request.system_prompt)} "
             f"prompt_chars={len(request.prompt)} "
             f"max_tokens={request.max_tokens} "
-            f"temperature={request.temperature}"
+            f"temperature={request.temperature} "
+            f"think={request.think}"
         )
         response = await generate_llm_answer(request)
         duration_ms = int((time.perf_counter() - started_at) * 1000)
