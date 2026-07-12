@@ -5,6 +5,8 @@ import type { JobEvent, JobSession } from '@gpstation/v1-master-js-sdk';
 
 import { parseOptionalFloat, parseOptionalInt } from '../format';
 import type { AiSession } from '../useAiSession';
+import { GenerationOptionsFields } from './GenerationOptionsFields';
+import type { ResponseFormat, ThinkingEffort } from './GenerationOptionsFields';
 
 const CHAT_TIMEOUT_MS = 600_000;
 
@@ -22,6 +24,9 @@ type ChatPayload = {
   prompt: string;
   max_tokens?: number;
   temperature?: number;
+  think: boolean;
+  thinking_effort: ThinkingEffort;
+  response_format: ResponseFormat;
 };
 
 type ChatMessage = {
@@ -36,6 +41,9 @@ export function ChatPanel({ session, active }: { session: AiSession; active: boo
   const [prompt, setPrompt] = useState('Say hello from the streaming chat handler.');
   const [maxTokens, setMaxTokens] = useState('512');
   const [temperature, setTemperature] = useState('0.5');
+  const [think, setThink] = useState(true);
+  const [thinkingEffort, setThinkingEffort] = useState<ThinkingEffort>('low');
+  const [responseFormat, setResponseFormat] = useState<ResponseFormat>('text');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [context, setContext] = useState<ChatResponse | null>(null);
   const [jobSession, setJobSession] = useState<JobSession | null>(null);
@@ -138,6 +146,9 @@ export function ChatPanel({ session, active }: { session: AiSession; active: boo
         prompt: trimmedPrompt,
         max_tokens: parseOptionalInt(maxTokens, 'max tokens'),
         temperature: parseOptionalFloat(temperature, 'temperature'),
+        think,
+        thinking_effort: thinkingEffort,
+        response_format: responseFormat,
       };
     } catch (error) {
       session.reportError(error, 'ai.chat');
@@ -246,6 +257,14 @@ export function ChatPanel({ session, active }: { session: AiSession; active: boo
             <input value={temperature} inputMode="decimal" onChange={(event) => setTemperature(event.target.value)} />
           </label>
         </div>
+        <GenerationOptionsFields
+          think={think}
+          thinkingEffort={thinkingEffort}
+          responseFormat={responseFormat}
+          onThinkChange={setThink}
+          onThinkingEffortChange={setThinkingEffort}
+          onResponseFormatChange={setResponseFormat}
+        />
       </div>
 
       <div className="panel resultPanel">

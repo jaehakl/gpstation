@@ -1,17 +1,38 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, field_validator
+from typing import Any
+
+from pydantic import BaseModel, field_validator, model_validator
+
+from app.llm.generation import ResponseFormat, ThinkingEffort
 
 
-class LlmRequest(BaseModel):
+class GenerationRequest(BaseModel):
     model: str | None = None
-    system_prompt: str
-    prompt: str
     max_tokens: int | None = None
     temperature: float | None = None
     context_size: int | None = None
     top_p: float | None = None
     think: bool | None = None
+    thinking_effort: ThinkingEffort = "default"
+    response_format: ResponseFormat = "text"
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_enable_thinking(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "enable_thinking" not in value:
+            return value
+        copied = dict(value)
+        legacy_value = copied.pop("enable_thinking")
+        if "think" in copied and copied["think"] != legacy_value:
+            raise ValueError("think and enable_thinking must match when both are provided")
+        copied.setdefault("think", legacy_value)
+        return copied
+
+
+class LlmRequest(GenerationRequest):
+    system_prompt: str
+    prompt: str
 
     @field_validator("system_prompt", "prompt")
     @classmethod
@@ -34,15 +55,9 @@ class ChatResponse(LlmResponse):
     cache_enabled: bool
 
 
-class ChatRequest(BaseModel):
-    model: str | None = None
+class ChatRequest(GenerationRequest):
     system_prompt: str | None = None
     prompt: str
-    max_tokens: int | None = None
-    temperature: float | None = None
-    context_size: int | None = None
-    top_p: float | None = None
-    enable_thinking: bool | None = None
 
     @field_validator("system_prompt", "prompt")
     @classmethod

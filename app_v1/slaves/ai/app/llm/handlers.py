@@ -48,7 +48,9 @@ async def ai_llm(
             f"prompt_chars={len(request.prompt)} "
             f"max_tokens={request.max_tokens} "
             f"temperature={request.temperature} "
-            f"think={request.think}"
+            f"think={request.think} "
+            f"thinking_effort={request.thinking_effort} "
+            f"response_format={request.response_format}"
         )
         response = await generate_llm_answer(request)
         duration_ms = int((time.perf_counter() - started_at) * 1000)
@@ -82,7 +84,10 @@ async def ai_chat(
             f"history_messages={len(messages)} "
             f"prompt_chars={len(request.prompt)} "
             f"max_tokens={request.max_tokens} "
-            f"temperature={request.temperature}"
+            f"temperature={request.temperature} "
+            f"think={request.think} "
+            f"thinking_effort={request.thinking_effort} "
+            f"response_format={request.response_format}"
         )
 
         async def emit_delta(delta: str) -> None:

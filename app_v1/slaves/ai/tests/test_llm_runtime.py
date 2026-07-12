@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from app.llm import chat as llm_chat
+from app.llm import generation as llm_generation
 from app.llm import runtime as llm_runtime
 from app.model_catalog import LlmModelConfig
 
@@ -43,15 +44,18 @@ class FakeCache:
 
 
 class FakePromptCompletionLlm:
-    def __init__(self, error: Exception | None = None):
+    def __init__(self, content: str = "answer", error: Exception | None = None):
+        self.content = content
         self.error = error
         self.enable_thinking_override = None
+        self.kwargs = None
 
     def create_chat_completion(self, **kwargs):
+        self.kwargs = kwargs
         self.enable_thinking_override = getattr(self, "_gpstation_enable_thinking_override", None)
         if self.error is not None:
             raise self.error
-        return {"choices": [{"message": {"content": "answer"}}]}
+        return {"choices": [{"message": {"content": self.content}}]}
 
 
 def config() -> llm_runtime.PromptLlmConfig:
@@ -458,7 +462,7 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(fake_llm._gpstation_enable_thinking_override, False)
 
     async def test_generate_prompt_with_llm_clears_thinking_override_after_failure(self) -> None:
-        fake_llm = FakePromptCompletionLlm(RuntimeError("completion failed"))
+        fake_llm = FakePromptCompletionLlm(error=RuntimeError("completion failed"))
         with (
             patch.object(llm_runtime, "build_prompt_llm_config", return_value=config()),
             patch.object(llm_runtime, "acquire_gpu_model_multi", return_value=NullAsyncContext()),
@@ -473,6 +477,113 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(fake_llm.enable_thinking_override, True)
         self.assertFalse(hasattr(fake_llm, "_gpstation_enable_thinking_override"))
+
+    async def test_generate_prompt_with_llm_removes_gemma_and_qwen_reasoning(self) -> None:
+        cases = {
+            "gemma": "<|channel>thought\nsecret reasoning<channel|>final answer<turn|>",
+            "qwen": "<think>secret reasoning</think>final answer",
+            "qwen-closing-only": "secret reasoning</think>final answer",
+        }
+        for reasoning_format, content in cases.items():
+            with self.subTest(reasoning_format=reasoning_format):
+                fake_llm = FakePromptCompletionLlm(content)
+                log = Mock()
+                with (
+                    patch.object(llm_runtime, "build_prompt_llm_config", return_value=config()),
+                    patch.object(llm_runtime, "acquire_gpu_model_multi", return_value=NullAsyncContext()),
+                    patch.object(llm_runtime, "_get_prompt_llm_locked", return_value=fake_llm),
+                    patch.object(llm_runtime, "log", log),
+                ):
+                    answer = await llm_runtime.generate_prompt_with_llm(
+                        [{"role": "user", "content": "hello"}],
+                        enable_thinking=True,
+                        response_format_json=False,
+                    )
+
+                self.assertEqual(answer, "final answer")
+                self.assertNotIn("secret reasoning", " ".join(call.args[0] for call in log.call_args_list))
+
+    async def test_generate_prompt_with_llm_rejects_unterminated_or_empty_reasoning_output(self) -> None:
+        cases = (
+            "<|channel>thought\nreasoning without end",
+            "<think>reasoning without end",
+            "reasoning</think>",
+        )
+        for content in cases:
+            with self.subTest(content=content):
+                fake_llm = FakePromptCompletionLlm(content)
+                with (
+                    patch.object(llm_runtime, "build_prompt_llm_config", return_value=config()),
+                    patch.object(llm_runtime, "acquire_gpu_model_multi", return_value=NullAsyncContext()),
+                    patch.object(llm_runtime, "_get_prompt_llm_locked", return_value=fake_llm),
+                ):
+                    with self.assertRaises(RuntimeError):
+                        await llm_runtime.generate_prompt_with_llm(
+                            [{"role": "user", "content": "hello"}],
+                            enable_thinking=True,
+                            response_format_json=False,
+                        )
+
+    async def test_generate_prompt_with_llm_validates_and_recovers_json_final(self) -> None:
+        cases = {
+            "strict": ('{"value":{"nested":true}}', '{"value":{"nested":true}}'),
+            "recovered": (
+                'Result:\n```json\n{"value":{"nested":true}}\n```',
+                '{"value":{"nested":true}}',
+            ),
+            "reasoning-and-recovered": (
+                '<|channel>thought\nsecret<channel|>Result: {"value":1}',
+                '{"value":1}',
+            ),
+        }
+        for name, (content, expected) in cases.items():
+            with self.subTest(name=name):
+                fake_llm = FakePromptCompletionLlm(content)
+                with (
+                    patch.object(llm_runtime, "build_prompt_llm_config", return_value=config()),
+                    patch.object(llm_runtime, "acquire_gpu_model_multi", return_value=NullAsyncContext()),
+                    patch.object(llm_runtime, "_get_prompt_llm_locked", return_value=fake_llm),
+                ):
+                    answer = await llm_runtime.generate_prompt_with_llm(
+                        [{"role": "user", "content": "hello"}],
+                        enable_thinking=True,
+                        response_format_json=True,
+                    )
+
+                self.assertEqual(answer, expected)
+                self.assertNotIn("response_format", fake_llm.kwargs)
+
+    async def test_generate_prompt_with_llm_uses_json_grammar_without_thinking(self) -> None:
+        fake_llm = FakePromptCompletionLlm('{"value":1}')
+        with (
+            patch.object(llm_runtime, "build_prompt_llm_config", return_value=config()),
+            patch.object(llm_runtime, "acquire_gpu_model_multi", return_value=NullAsyncContext()),
+            patch.object(llm_runtime, "_get_prompt_llm_locked", return_value=fake_llm),
+        ):
+            await llm_runtime.generate_prompt_with_llm(
+                [{"role": "user", "content": "hello"}],
+                enable_thinking=False,
+                response_format_json=True,
+            )
+
+        self.assertEqual(fake_llm.kwargs["response_format"], {"type": "json_object"})
+
+    async def test_generate_prompt_with_llm_rejects_ambiguous_or_non_object_json(self) -> None:
+        cases = ('{"first":1} and {"second":2}', '[{"value":1}]', "no json")
+        for content in cases:
+            with self.subTest(content=content):
+                fake_llm = FakePromptCompletionLlm(content)
+                with (
+                    patch.object(llm_runtime, "build_prompt_llm_config", return_value=config()),
+                    patch.object(llm_runtime, "acquire_gpu_model_multi", return_value=NullAsyncContext()),
+                    patch.object(llm_runtime, "_get_prompt_llm_locked", return_value=fake_llm),
+                ):
+                    with self.assertRaises(RuntimeError):
+                        await llm_runtime.generate_prompt_with_llm(
+                            [{"role": "user", "content": "hello"}],
+                            enable_thinking=True,
+                            response_format_json=True,
+                        )
 
     async def test_generate_chat_with_llm_streams_ordered_deltas_and_returns_answer(self) -> None:
         fake_llm = FakeStreamingLlm(
@@ -518,6 +629,71 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(fake_llm.enable_thinking_override, True)
         self.assertFalse(hasattr(fake_llm, "_gpstation_enable_thinking_override"))
 
+    async def test_generate_chat_with_llm_hides_reasoning_from_stream_and_answer(self) -> None:
+        fake_llm = FakeStreamingLlm(
+            [
+                {"choices": [{"delta": {"content": "<|channel>tho"}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": "ught\nsecret reasoning<chan"}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": "nel|>final "}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": "answer"}, "finish_reason": None}]},
+                {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+            ]
+        )
+        events = []
+
+        async def on_delta(delta: str) -> None:
+            events.append(delta)
+
+        with (
+            patch.object(llm_chat, "build_prompt_llm_config", return_value=config()),
+            patch.object(llm_chat, "acquire_gpu_model_multi", return_value=NullAsyncContext()),
+            patch.object(llm_runtime, "_get_prompt_llm_locked", return_value=fake_llm),
+            patch.object(llm_chat, "_create_chat_ram_cache", return_value=FakeCache()),
+        ):
+            result = await llm_chat.generate_chat_with_llm(
+                [{"role": "system", "content": "system"}, {"role": "user", "content": "hello"}],
+                enable_thinking=True,
+                thinking_effort="low",
+                on_delta=on_delta,
+            )
+
+        self.assertEqual(result.answer, "final answer")
+        self.assertEqual("".join(events), "final answer")
+        self.assertNotIn("secret reasoning", "".join(events))
+        self.assertEqual(
+            fake_llm.kwargs["messages"][0]["content"],
+            f"system\n\n{llm_generation.LOW_THINKING_INSTRUCTION}",
+        )
+
+    async def test_generate_chat_with_llm_buffers_json_until_validated(self) -> None:
+        fake_llm = FakeStreamingLlm(
+            [
+                {"choices": [{"delta": {"content": "reasoning</think>Result: "}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": '{"value":1}'}, "finish_reason": None}]},
+                {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+            ]
+        )
+        events = []
+
+        async def on_delta(delta: str) -> None:
+            events.append(delta)
+
+        with (
+            patch.object(llm_chat, "build_prompt_llm_config", return_value=config()),
+            patch.object(llm_chat, "acquire_gpu_model_multi", return_value=NullAsyncContext()),
+            patch.object(llm_runtime, "_get_prompt_llm_locked", return_value=fake_llm),
+            patch.object(llm_chat, "_create_chat_ram_cache", return_value=FakeCache()),
+        ):
+            result = await llm_chat.generate_chat_with_llm(
+                [{"role": "user", "content": "hello"}],
+                enable_thinking=True,
+                response_format="json",
+                on_delta=on_delta,
+            )
+
+        self.assertEqual(result.answer, '{"value":1}')
+        self.assertEqual(events, ['{"value":1}'])
+
     async def test_generate_chat_with_llm_rejects_empty_answer(self) -> None:
         fake_llm = FakeStreamingLlm(
             [
@@ -535,7 +711,7 @@ class LlmChatRuntimeTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(RuntimeError) as error:
                 await llm_chat.generate_chat_with_llm([{"role": "user", "content": "hello"}])
 
-        self.assertEqual(str(error.exception), "LLM returned empty answer")
+        self.assertEqual(str(error.exception), "LLM returned no final answer after reasoning")
 
     def test_prepare_chat_messages_and_prune_live_in_llm_chat(self) -> None:
         memory = {}

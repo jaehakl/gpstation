@@ -65,6 +65,9 @@ class LlmHandlerTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(LlmRequest(system_prompt="system", prompt="prompt", think=True).think, True)
         self.assertIs(LlmRequest(system_prompt="system", prompt="prompt", think=False).think, False)
         self.assertIsNone(LlmRequest(system_prompt="system", prompt="prompt").think)
+        defaults = LlmRequest(system_prompt="system", prompt="prompt")
+        self.assertEqual(defaults.thinking_effort, "default")
+        self.assertEqual(defaults.response_format, "text")
 
     def test_llm_request_rejects_surrogate_text(self) -> None:
         with self.assertRaises(ValueError) as error:
@@ -262,8 +265,8 @@ class LlmHandlerTest(unittest.IsolatedAsyncioTestCase):
                 context(),
             )
 
-        self.assertIs(requests[0].enable_thinking, False)
-        self.assertIs(requests[1].enable_thinking, True)
+        self.assertIs(requests[0].think, False)
+        self.assertIs(requests[1].think, True)
 
     def test_chat_request_accepts_korean_text(self) -> None:
         request = ChatRequest(system_prompt="친절하게 답하세요.", prompt="한글 질문입니다.")
@@ -273,7 +276,16 @@ class LlmHandlerTest(unittest.IsolatedAsyncioTestCase):
     def test_chat_request_accepts_enable_thinking(self) -> None:
         request = ChatRequest(system_prompt="system", prompt="prompt", enable_thinking=True)
 
-        self.assertIs(request.enable_thinking, True)
+        self.assertIs(request.think, True)
+
+    def test_chat_request_rejects_conflicting_thinking_fields(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must match"):
+            ChatRequest(
+                system_prompt="system",
+                prompt="prompt",
+                think=True,
+                enable_thinking=False,
+            )
 
     def test_chat_request_rejects_surrogate_text(self) -> None:
         with self.assertRaises(ValueError) as error:
@@ -344,6 +356,42 @@ class LlmServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ask_llm.await_args.kwargs["context_size"], 12288)
         self.assertEqual(ask_llm.await_args.kwargs["top_p"], 0.65)
         self.assertIs(ask_llm.await_args.kwargs["enable_thinking"], True)
+        self.assertIs(ask_llm.await_args.kwargs["response_format_json"], False)
+
+    async def test_llm_adds_low_thinking_instruction_and_forwards_json_format(self) -> None:
+        ask_llm = AsyncMock(return_value='{"answer":"ok"}')
+        request = LlmRequest(
+            system_prompt="system",
+            prompt="prompt",
+            think=True,
+            thinking_effort="low",
+            response_format="json",
+        )
+        with (
+            patch.object(llm_service, "get_selected_model_name", return_value="model-a"),
+            patch.object(llm_service, "ask_llm", ask_llm),
+        ):
+            await llm_service.generate_llm_answer(request)
+
+        self.assertEqual(ask_llm.await_args.args[0], "system")
+        self.assertEqual(ask_llm.await_args.kwargs["thinking_effort"], "low")
+        self.assertIs(ask_llm.await_args.kwargs["response_format_json"], True)
+
+    async def test_llm_does_not_add_low_instruction_when_thinking_is_disabled(self) -> None:
+        ask_llm = AsyncMock(return_value="answer")
+        request = LlmRequest(
+            system_prompt="system",
+            prompt="prompt",
+            think=False,
+            thinking_effort="low",
+        )
+        with (
+            patch.object(llm_service, "get_selected_model_name", return_value="model-a"),
+            patch.object(llm_service, "ask_llm", ask_llm),
+        ):
+            await llm_service.generate_llm_answer(request)
+
+        self.assertEqual(ask_llm.await_args.args[0], "system")
 
     async def test_chat_forwards_context_size_and_top_p(self) -> None:
         generate_chat = AsyncMock(

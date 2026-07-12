@@ -33,8 +33,13 @@ type ChatPayload = {
   temperature?: number;
   context_size?: number;
   top_p?: number;
-  enable_thinking?: boolean;
+  think: boolean;
+  thinking_effort: ThinkingEffort;
+  response_format: ResponseFormat;
 };
+
+type ThinkingEffort = 'default' | 'low';
+type ResponseFormat = 'text' | 'json';
 
 type LlmModelSummary = {
   name: string;
@@ -54,16 +59,6 @@ type ChatMessage = {
   streaming: boolean;
 };
 
-type AssistantThinkParts = {
-  visible: string;
-  thinking: string;
-  thinkingInProgress: boolean;
-};
-
-const THINKING_TEXT_HEADER_PATTERN =
-  /^\s*(?:here(?:'|’)?s\s+a\s+thinking\s+process|thinking\s+process|thought\s+process)\s*:\s*/i;
-const THINKING_ANSWER_HEADER_PATTERN = /(?:^|\n)\s*(?:final\s+answer|answer|response)\s*:\s*/i;
-
 export default function ChatPage() {
   const user = useAuthStore((state) => state.user);
   const authReady = useAuthStore((state) => state.authReady);
@@ -73,7 +68,9 @@ export default function ChatPage() {
   const [temperature, setTemperature] = useState('1.0');
   const [contextSize, setContextSize] = useState('');
   const [topP, setTopP] = useState('');
-  const [enableThinking, setEnableThinking] = useState(false);
+  const [think, setThink] = useState(false);
+  const [thinkingEffort, setThinkingEffort] = useState<ThinkingEffort>('low');
+  const [responseFormat, setResponseFormat] = useState<ResponseFormat>('text');
   const [llmModels, setLlmModels] = useState<LlmModelSummary[]>([]);
   const [defaultModel, setDefaultModel] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
@@ -299,7 +296,9 @@ export default function ChatPage() {
         temperature: parseOptionalFloat(temperature, 'temperature'),
         context_size: parseOptionalInt(contextSize, 'context size'),
         top_p: parseOptionalFloat(topP, 'top p'),
-        enable_thinking: enableThinking,
+        think,
+        thinking_effort: thinkingEffort,
+        response_format: responseFormat,
       };
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : String(nextError));
@@ -415,7 +414,7 @@ export default function ChatPage() {
             <div key={item.id} className={`chatMessage ${item.role}`}>
               <div className={item.role === 'user' ? 'chatBubble' : 'chatMarkdown'}>
                 {item.role === 'assistant' ? (
-                  <AssistantMessageContent content={item.content || (item.streaming ? '...' : '')} streaming={item.streaming} />
+                  <AssistantMessageContent content={item.content || (item.streaming ? '...' : '')} />
                 ) : (
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
@@ -563,11 +562,35 @@ export default function ChatPage() {
             <label className="checkField">
               <input
                 type="checkbox"
-                checked={enableThinking}
-                onChange={(event) => setEnableThinking(event.target.checked)}
+                checked={think}
+                onChange={(event) => setThink(event.target.checked)}
               />
-              <span>Allow Thinking</span>
+              <span>Enable Thinking</span>
             </label>
+            <div className="formGrid">
+              <label className="field">
+                <span>Thinking Effort</span>
+                <select
+                  value={thinkingEffort}
+                  disabled={!think}
+                  onChange={(event) => setThinkingEffort(event.target.value as ThinkingEffort)}
+                >
+                  <option value="low">LOW</option>
+                  <option value="default">DEFAULT</option>
+                </select>
+                <span className="mutedText">LOW는 짧고 효율적인 추론을 유도하지만 토큰 수를 보장하지 않습니다.</span>
+              </label>
+              <label className="field">
+                <span>Response Format</span>
+                <select
+                  value={responseFormat}
+                  onChange={(event) => setResponseFormat(event.target.value as ResponseFormat)}
+                >
+                  <option value="text">Text</option>
+                  <option value="json">JSON</option>
+                </select>
+              </label>
+            </div>
           </div>
         </div>
       ) : null}
@@ -575,103 +598,15 @@ export default function ChatPage() {
   );
 }
 
-function AssistantMessageContent({ content, streaming }: { content: string; streaming: boolean }) {
-  const parts = parseAssistantThinkParts(content, streaming);
-
-  if (!parts) {
-    return (
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
-        rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
-      >
-        {formatChatMarkdown(content, 'assistant')}
-      </ReactMarkdown>
-    );
-  }
-
+function AssistantMessageContent({ content }: { content: string }) {
   return (
-    <>
-      {parts.thinking || parts.thinkingInProgress ? (
-        <details className="thinkBlock">
-          <summary className="thinkSummary">{parts.thinkingInProgress ? '생각 과정 생성 중' : '생각 과정'}</summary>
-          <div className="thinkContent">{parts.thinking.trim() || '아직 생각 과정이 생성되는 중입니다.'}</div>
-        </details>
-      ) : null}
-      {parts.visible ? (
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
-          rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
-        >
-          {formatChatMarkdown(parts.visible, 'assistant')}
-        </ReactMarkdown>
-      ) : null}
-    </>
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
+      rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+    >
+      {formatChatMarkdown(content, 'assistant')}
+    </ReactMarkdown>
   );
-}
-
-function parseAssistantThinkParts(content: string, streaming: boolean): AssistantThinkParts | null {
-  const thinkTagPattern = /<\/?think\s*>|<\|channel>|<channel\|>/gi;
-  const parts: AssistantThinkParts = {
-    visible: '',
-    thinking: '',
-    thinkingInProgress: false,
-  };
-  let inThinking = false;
-  let index = 0;
-  let match = thinkTagPattern.exec(content);
-
-  while (match !== null) {
-    const segment = content.slice(index, match.index);
-    if (inThinking) {
-      parts.thinking += segment;
-    } else {
-      parts.visible += segment;
-    }
-    inThinking = isThinkingStartMarker(match[0]);
-    index = match.index + match[0].length;
-    match = thinkTagPattern.exec(content);
-  }
-
-  if (index === 0) {
-    return parseTextThinkParts(content, streaming);
-  }
-
-  if (inThinking) {
-    parts.thinking += content.slice(index);
-  } else {
-    parts.visible += content.slice(index);
-  }
-  parts.thinkingInProgress = inThinking;
-
-  return parts;
-}
-
-function isThinkingStartMarker(marker: string): boolean {
-  const normalized = marker.toLowerCase();
-  return normalized === '<|channel>' || normalized.startsWith('<think');
-}
-
-function parseTextThinkParts(content: string, streaming: boolean): AssistantThinkParts | null {
-  const headerMatch = THINKING_TEXT_HEADER_PATTERN.exec(content);
-  if (!headerMatch) {
-    return null;
-  }
-
-  const remainder = content.slice(headerMatch[0].length);
-  const answerMatch = THINKING_ANSWER_HEADER_PATTERN.exec(remainder);
-  if (!answerMatch) {
-    return {
-      visible: '',
-      thinking: remainder,
-      thinkingInProgress: streaming,
-    };
-  }
-
-  return {
-    visible: remainder.slice(answerMatch.index + answerMatch[0].length),
-    thinking: remainder.slice(0, answerMatch.index),
-    thinkingInProgress: false,
-  };
 }
 
 function readChatDelta(payload: unknown): string {

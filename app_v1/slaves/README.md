@@ -35,8 +35,8 @@ Manifest files require `id`, `name`, and `module`. They may also set `startup_ti
 `ai` supports these job handler types:
 
 - `ai.llm.models`, `ai.sdxl.models`, `ai.embeddings.models`: return `default_model` and ordered model details without local filesystem paths.
-- `ai.llm`: payload `{"model":"main-llm", "system_prompt":"...", "prompt":"...", "max_tokens":512, "temperature":0.5}` returns `{"model":"main-llm", "answer":"..."}`.
-- `ai.chat`: the first payload may select an LLM with `model`; results include the selected `model` and stream `ai.chat.delta` events. The latest selected model and message history are retained in the open job session, including across model switches.
+- `ai.llm`: payload `{"model":"main-llm", "system_prompt":"...", "prompt":"...", "max_tokens":512, "temperature":0.5, "think":true, "thinking_effort":"low", "response_format":"text"}` returns `{"model":"main-llm", "answer":"..."}`.
+- `ai.chat`: accepts the same generation options as `ai.llm`; the first payload may select an LLM with `model`. Results include the selected `model` and stream only final-answer text through `ai.chat.delta` events. Reasoning is discarded before events, responses, and retained message history. The legacy `enable_thinking` input remains an alias for `think`.
 - `ai.embeddings`: payload `{"model":"local-embedding", "text":"..."}` returns `{"model":"local-embedding", "embedding":[...], "dimensions":123}`.
 - `ai.embeddings.batch`: payload `{"model":"local-embedding", "texts":["...", "..."]}` returns ordered `embeddings`, `dimensions`, and `count` in one model call.
 - `ai.sdxl.t2i`: payload `{"model":"main-sdxl", "prompts":["..."], "format":"png"}` returns the selected `model`, image metadata, and each generated image as a DataChannel file attachment.
@@ -49,6 +49,8 @@ Manifest files require `id`, `name`, and `module`. They may also set `startup_ti
 The image-input handlers accept PNG, JPEG, and WebP attachments up to 20 MiB each. Input images are resized to the requested output size. A mask is converted to grayscale; white pixels are regenerated and black pixels are preserved by the Diffusers inpaint pipeline. A fully white scribble is treated as inactive. When both controls are present, the runtime applies them in `scribble`, then `pose` order. ControlNet weights may be downloaded into the Hugging Face cache the first time a configured model is used.
 
 The `model` field is optional on every generation handler. When omitted, the family default is used; explicit request settings override the selected model's TOML defaults. Every result includes the external model name that was actually used.
+
+LLM `thinking_effort` accepts `default` or `low`, while `response_format` accepts `text` or `json`. JSON responses are validated as objects before being returned. When thinking is enabled, Gemma and Qwen reasoning markers are removed and only the final answer is exposed.
 
 Example `ai.sdxl.t2i` payload:
 

@@ -4,7 +4,6 @@ import asyncio
 import ctypes
 import gc
 import importlib.util
-import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +11,13 @@ from typing import Any
 
 from app.logging import log
 from app.gpu_residency import acquire_gpu_model_multi, get_cuda_device_count
+from app.llm.generation import (
+    GenerationOutputParser,
+    ThinkingEffort,
+    apply_thinking_effort,
+    resolve_thinking,
+    thinking_override,
+)
 from app.model_catalog import resolve_llm_model
 
 LLM_SPLIT_MODE_NONE = 0
@@ -79,6 +85,7 @@ async def generate_prompt_with_llm(
     context_size: int | None = None,
     top_p: float | None = None,
     enable_thinking: bool | None = None,
+    thinking_effort: ThinkingEffort = "default",
     response_format_json: bool = True,
 ) -> str:
     config = build_prompt_llm_config(
@@ -88,12 +95,14 @@ async def generate_prompt_with_llm(
         context_size=context_size,
         top_p=top_p,
     )
+    effective_enable_thinking = resolve_thinking(config.enable_thinking, enable_thinking)
+    generation_messages = apply_thinking_effort(messages, effective_enable_thinking, thinking_effort)
     async with acquire_gpu_model_multi("llm", config.lease_device_ids, config.model_key, release_llm_runtime):
         async with _prompt_llm_lock:
             return await asyncio.to_thread(
                 _generate_prompt_with_llm_locked,
                 config,
-                messages,
+                generation_messages,
                 enable_thinking,
                 response_format_json,
             )
@@ -108,6 +117,8 @@ async def ask_llm(
     context_size: int | None = None,
     top_p: float | None = None,
     enable_thinking: bool | None = None,
+    thinking_effort: ThinkingEffort = "default",
+    response_format_json: bool = False,
 ) -> str:
     trimmed_system_message = system_message.strip()
     trimmed_question = question.strip()
@@ -126,7 +137,8 @@ async def ask_llm(
         context_size=context_size,
         top_p=top_p,
         enable_thinking=enable_thinking,
-        response_format_json=False,
+        thinking_effort=thinking_effort,
+        response_format_json=response_format_json,
     )
     if not answer.strip():
         raise RuntimeError("LLM returned empty answer")
@@ -256,32 +268,6 @@ def release_llm_runtime(device_id: int | None = None) -> None:
     gc.collect()
 
 
-def _parse_llm_json_object(
-    raw_output: str,
-    empty_detail: str,
-    invalid_detail: str,
-) -> dict[str, Any]:
-    raw_output = raw_output.strip()
-    if not raw_output:
-        raise RuntimeError(empty_detail)
-
-    try:
-        payload = json.loads(raw_output)
-    except json.JSONDecodeError as exc:
-        json_start = raw_output.find("{")
-        json_end = raw_output.rfind("}")
-        if json_start < 0 or json_end <= json_start:
-            raise RuntimeError(invalid_detail) from exc
-        try:
-            payload = json.loads(raw_output[json_start:json_end + 1])
-        except json.JSONDecodeError as nested_exc:
-            raise RuntimeError(invalid_detail) from nested_exc
-
-    if not isinstance(payload, dict):
-        raise RuntimeError(invalid_detail)
-    return payload
-
-
 def _generate_prompt_with_llm_locked(
     config: PromptLlmConfig,
     messages: list[dict[str, str]],
@@ -289,7 +275,7 @@ def _generate_prompt_with_llm_locked(
     response_format_json: bool,
 ) -> str:
     llm = _get_prompt_llm_locked(config)
-    effective_enable_thinking = config.enable_thinking if enable_thinking is None else enable_thinking
+    effective_enable_thinking = resolve_thinking(config.enable_thinking, enable_thinking)
     log(
         "LLM completion start "
         f"max_tokens={config.max_tokens} "
@@ -302,19 +288,10 @@ def _generate_prompt_with_llm_locked(
         "temperature": config.temperature,
         "top_p": config.top_p,
     }
-    if response_format_json:
+    if response_format_json and not effective_enable_thinking:
         completion_kwargs["response_format"] = {"type": "json_object"}
-    had_previous_override = hasattr(llm, "_gpstation_enable_thinking_override")
-    previous_override = getattr(llm, "_gpstation_enable_thinking_override", None)
-    if enable_thinking is not None:
-        setattr(llm, "_gpstation_enable_thinking_override", enable_thinking)
-    try:
+    with thinking_override(llm, enable_thinking):
         response = llm.create_chat_completion(**completion_kwargs)
-    finally:
-        if had_previous_override:
-            setattr(llm, "_gpstation_enable_thinking_override", previous_override)
-        elif hasattr(llm, "_gpstation_enable_thinking_override"):
-            delattr(llm, "_gpstation_enable_thinking_override")
     log("LLM completion returned")
     if not isinstance(response, dict):
         return ""
@@ -332,7 +309,14 @@ def _generate_prompt_with_llm_locked(
         return ""
 
     content = message.get("content")
-    return content if isinstance(content, str) else ""
+    if not isinstance(content, str):
+        return ""
+    parser = GenerationOutputParser(
+        expect_reasoning=effective_enable_thinking,
+        response_format="json" if response_format_json else "text",
+    )
+    parser.feed(content)
+    return parser.finish(config.name).answer
 
 
 def _create_llm_chat_handler(enable_thinking: bool) -> Any:

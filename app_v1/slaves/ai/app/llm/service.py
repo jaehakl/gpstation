@@ -19,6 +19,8 @@ async def generate_llm_answer(request: LlmRequest) -> LlmResponse:
         context_size=request.context_size,
         top_p=request.top_p,
         enable_thinking=request.think,
+        thinking_effort=request.thinking_effort,
+        response_format_json=request.response_format == "json",
     )
     return LlmResponse(model=model_name, answer=answer)
 
@@ -36,7 +38,9 @@ async def generate_chat_answer(
         temperature=request.temperature,
         context_size=request.context_size,
         top_p=request.top_p,
-        enable_thinking=request.enable_thinking,
+        enable_thinking=request.think,
+        thinking_effort=request.thinking_effort,
+        response_format=request.response_format,
         on_delta=on_delta,
     )
     return ChatResponse(

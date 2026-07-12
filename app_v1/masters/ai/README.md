@@ -14,7 +14,7 @@ npm install
 npm run dev
 ```
 
-Open `http://127.0.0.1:3002`, use a website-created Access Token with `client` scope, refresh launchers, select a launcher that advertises `ai`, connect, and test `ai.llm`, `ai.embeddings`, or `ai.sdxl.t2i`.
+Open `http://127.0.0.1:3002`, use a website-created Access Token with `client` scope, refresh launchers, select a launcher that advertises `ai`, connect, and test `ai.llm`, `ai.chat`, `ai.embeddings`, or `ai.sdxl.t2i`. The LLM and Chat panels share controls for thinking, thinking effort, and text or JSON response validation.
 
 The app reads only `VITE_GPSTATION_V1_API_URL` and optional ICE configuration from `app_v1/masters/ai/.env`. Enter the client-scoped Access Token in the runtime password field; it is kept in memory and is never embedded in a build or persisted by the app. Use `env.example` as the shared local template.
 
