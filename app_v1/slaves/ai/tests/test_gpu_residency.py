@@ -224,6 +224,98 @@ class GpuResidencyTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(released, [("llm-a", 1)])
 
+    async def test_clip_wd14_and_sdxl_coexist_on_one_gpu(self) -> None:
+        released: list[tuple[str, int]] = []
+
+        with patch.object(gpu_residency, "get_cuda_device_count", return_value=1):
+            for role in ("clip", "wd14", "sdxl"):
+                async with gpu_residency.acquire_gpu_model(
+                    role,
+                    0,
+                    (f"{role}-a",),
+                    lambda device_id, role=role: released.append((role, device_id)),
+                    exclusive=False,
+                ):
+                    pass
+
+        self.assertEqual(released, [])
+        self.assertEqual(set(gpu_residency._loaded_models_by_device[0]), {"clip", "wd14", "sdxl"})
+
+    async def test_visual_slot_key_change_releases_only_same_slot(self) -> None:
+        released: list[tuple[str, int]] = []
+
+        with patch.object(gpu_residency, "get_cuda_device_count", return_value=1):
+            for role in ("clip", "wd14", "sdxl"):
+                async with gpu_residency.acquire_gpu_model(
+                    role,
+                    0,
+                    (f"{role}-a",),
+                    lambda device_id, role=role: released.append((role, device_id)),
+                    exclusive=False,
+                ):
+                    pass
+            async with gpu_residency.acquire_gpu_model(
+                "sdxl",
+                0,
+                ("sdxl-b",),
+                lambda device_id: released.append(("sdxl-b", device_id)),
+                exclusive=False,
+            ):
+                pass
+
+        self.assertEqual(released, [("sdxl", 0)])
+        self.assertEqual(set(gpu_residency._loaded_models_by_device[0]), {"clip", "wd14", "sdxl"})
+
+    async def test_exclusive_llm_releases_all_co_resident_visual_models(self) -> None:
+        released: list[tuple[str, int]] = []
+
+        with patch.object(gpu_residency, "get_cuda_device_count", return_value=1):
+            for role in ("clip", "wd14", "sdxl"):
+                async with gpu_residency.acquire_gpu_model(
+                    role,
+                    0,
+                    (role,),
+                    lambda device_id, role=role: released.append((role, device_id)),
+                    exclusive=False,
+                ):
+                    pass
+            async with gpu_residency.acquire_gpu_model(
+                "llm",
+                0,
+                ("llm",),
+                lambda device_id: released.append(("llm", device_id)),
+            ):
+                pass
+
+        self.assertEqual(released, [("clip", 0), ("wd14", 0), ("sdxl", 0)])
+        self.assertEqual(set(gpu_residency._loaded_models_by_device[0]), {"llm"})
+
+    async def test_oom_eviction_releases_all_other_visual_slots(self) -> None:
+        released: list[tuple[str, int]] = []
+
+        with patch.object(gpu_residency, "get_cuda_device_count", return_value=1):
+            for role in ("clip", "wd14"):
+                async with gpu_residency.acquire_gpu_model(
+                    role,
+                    0,
+                    (role,),
+                    lambda device_id, role=role: released.append((role, device_id)),
+                    exclusive=False,
+                ):
+                    pass
+            lease = gpu_residency.acquire_gpu_model(
+                "sdxl",
+                0,
+                ("sdxl",),
+                lambda device_id: released.append(("sdxl", device_id)),
+                exclusive=False,
+            )
+            async with lease:
+                self.assertTrue(await lease.evict_co_resident_models())
+
+        self.assertEqual(released, [("clip", 0), ("wd14", 0)])
+        self.assertEqual(set(gpu_residency._loaded_models_by_device[0]), {"sdxl"})
+
 
 class SdxlT2IRequestTest(unittest.TestCase):
     def test_request_model_does_not_expose_manual_device_id(self) -> None:

@@ -8,13 +8,14 @@ from unittest.mock import AsyncMock, patch
 from sdk.slave import DataChannelAttachment, DataChannelMessage, SlaveContext
 
 from app import __main__ as ai_slave
-from app import embeddings, llm, sdxl
+from app import embeddings, llm, sdxl, vision
 from app.embeddings import handlers as embedding_handlers
 from app.embeddings.models import EMBEDDING_TEXT_MAX_BYTES, EmbeddingRequest
 from app.llm import handlers as llm_handlers
 from app.llm.models import LlmRequest
 from app.sdxl import handlers as sdxl_handlers
 from app.sdxl.models import IMAGE_BATCH_MAX_ITEMS, SdxlT2IRequest
+from app.vision.models import CLIP_TEXT_MAX_BYTES, ClipTextRequest
 
 
 def context() -> SlaveContext:
@@ -31,33 +32,41 @@ class AiAppTest(unittest.IsolatedAsyncioTestCase):
         async def initialize_llm(context):
             calls.append("llm")
 
+        async def initialize_vision(context):
+            calls.append("vision")
+
         async def initialize_sdxl(context):
             calls.append("sdxl")
 
         with (
             patch.object(ai_slave, "initialize_embeddings", initialize_embeddings),
+            patch.object(ai_slave, "initialize_vision", initialize_vision),
             patch.object(ai_slave, "initialize_llm", initialize_llm),
             patch.object(ai_slave, "initialize_sdxl", initialize_sdxl),
         ):
             await ai_slave.initialize(None, context())
 
-        self.assertEqual(calls, ["embeddings", "llm", "sdxl"])
+        self.assertEqual(calls, ["embeddings", "vision", "llm", "sdxl"])
 
     async def test_feature_initializers_warm_runtime_imports(self) -> None:
         with (
             patch.object(embeddings, "warmup_embedding_import") as warmup_embedding_import,
+            patch.object(vision, "warmup_vision_imports") as warmup_vision_imports,
             patch.object(llm, "warmup_llm_import") as warmup_llm_import,
             patch.object(sdxl, "warmup_sdxl_imports") as warmup_sdxl_imports,
             redirect_stderr(StringIO()) as stderr,
         ):
             await embeddings.initialize(context())
+            await vision.initialize(context())
             await llm.initialize(context())
             await sdxl.initialize(context())
 
         warmup_embedding_import.assert_called_once_with("startup")
+        warmup_vision_imports.assert_called_once_with()
         warmup_llm_import.assert_called_once_with()
         warmup_sdxl_imports.assert_called_once_with()
         self.assertIn("ai initialize embedding import warmup complete", stderr.getvalue())
+        self.assertIn("ai initialize vision import warmup complete", stderr.getvalue())
         self.assertIn("ai initialize LLM import warmup complete", stderr.getvalue())
         self.assertIn("ai initialize SDXL import warmup complete", stderr.getvalue())
 
@@ -71,6 +80,9 @@ class AiAppTest(unittest.IsolatedAsyncioTestCase):
                 "ai.embeddings",
                 "ai.embeddings.batch",
                 "ai.embeddings.models",
+                "ai.clip.image",
+                "ai.clip.text",
+                "ai.wd14.tags",
                 "ai.sdxl.t2i",
                 "ai.sdxl.i2i",
                 "ai.sdxl.inpaint",
@@ -89,6 +101,8 @@ class AiAppTest(unittest.IsolatedAsyncioTestCase):
             EmbeddingRequest(text="x" * (EMBEDDING_TEXT_MAX_BYTES + 1))
         with self.assertRaises(ValueError):
             SdxlT2IRequest(prompts=["prompt"] * (IMAGE_BATCH_MAX_ITEMS + 1))
+        with self.assertRaises(ValueError):
+            ClipTextRequest(text="x" * (CLIP_TEXT_MAX_BYTES + 1))
 
     def test_llm_request_accepts_large_text(self) -> None:
         prompt = "x" * (512 * 1024)
@@ -131,6 +145,7 @@ class AiAppTest(unittest.IsolatedAsyncioTestCase):
             ("ai.embeddings.batch", {"texts": ["first", "second"]}),
             ("ai.llm.models", {}),
             ("ai.embeddings.models", {}),
+            ("ai.clip.text", {"text": "text"}),
             ("ai.sdxl.t2i", {"prompts": ["prompt"]}),
             ("ai.sdxl.models", {}),
             ("ai.voicevox.speakers", {}),

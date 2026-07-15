@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from io import BytesIO, StringIO
+from types import SimpleNamespace
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from PIL import Image
 from sdk.slave import DataChannelAttachment, DataChannelMessage, SlaveContext
+import torch
 
 from app import __main__ as ai_slave
 from app.sdxl import handlers as sdxl_handlers
@@ -362,6 +364,100 @@ class SdxlServiceTest(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertIn("scribble guidance end", str(error.exception))
+
+
+class SdxlRuntimeTest(unittest.IsolatedAsyncioTestCase):
+    async def test_cuda_oom_evicts_co_residents_and_retries_only_once(self) -> None:
+        class Lease:
+            def __init__(self):
+                self.evictions = 0
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return None
+
+            async def evict_co_resident_models(self):
+                self.evictions += 1
+                return True
+
+        class Cuda:
+            OutOfMemoryError = torch.cuda.OutOfMemoryError
+
+            @staticmethod
+            def is_available():
+                return True
+
+            @staticmethod
+            def device_count():
+                return 1
+
+            @staticmethod
+            def device(_device_id):
+                return nullcontext()
+
+            @staticmethod
+            def empty_cache():
+                return None
+
+        generated = ([Image.new("RGB", (8, 8))], [7])
+        cases = (
+            ([torch.cuda.OutOfMemoryError("oom"), generated], False),
+            ([torch.cuda.OutOfMemoryError("oom"), torch.cuda.OutOfMemoryError("oom again")], True),
+        )
+        for side_effect, should_fail in cases:
+            with self.subTest(should_fail=should_fail):
+                lease = Lease()
+                operation = Mock(side_effect=side_effect)
+                acquire = Mock(return_value=lease)
+                fake_torch = SimpleNamespace(cuda=Cuda())
+                with (
+                    patch.object(sdxl_runtime, "_load_image_torch", return_value=fake_torch),
+                    patch.object(sdxl_runtime, "get_image_cuda_device_id", return_value=0),
+                    patch.object(sdxl_runtime, "acquire_gpu_model", acquire),
+                    patch.object(sdxl_runtime, "_generate_images_batch_locked", operation),
+                ):
+                    call = sdxl_runtime.generate_images_batch(
+                        "model.safetensors",
+                        "t2i",
+                        ["prompt"],
+                        [""],
+                        [],
+                        [],
+                        [],
+                        [7],
+                        1,
+                        7.0,
+                        64,
+                        64,
+                        1.0,
+                        1,
+                        0,
+                        10,
+                        "euler",
+                        "",
+                        None,
+                        [],
+                        [],
+                        [],
+                        [],
+                    )
+                    if should_fail:
+                        with self.assertRaises(torch.cuda.OutOfMemoryError):
+                            await call
+                    else:
+                        self.assertEqual(await call, generated)
+
+                self.assertEqual(operation.call_count, 2)
+                self.assertEqual(lease.evictions, 1)
+                acquire.assert_called_once_with(
+                    "sdxl",
+                    0,
+                    ("model.safetensors", "t2i", None),
+                    sdxl_runtime.release_image_runtime,
+                    exclusive=False,
+                )
 
 
 def make_image_attachment(

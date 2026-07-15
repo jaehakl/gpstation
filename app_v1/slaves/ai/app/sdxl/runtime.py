@@ -47,35 +47,51 @@ async def generate_images_batch(
     device_id = get_image_cuda_device_id()
     controlnet_key = tuple(controlnet_model_ids) if normalized_image_mode.startswith("controlnet_") else None
     model_key = ckpt_path, normalized_image_mode, controlnet_key
-    async with acquire_gpu_model("image", device_id, model_key, release_image_runtime):
+    generation_args = (
+        ckpt_path,
+        normalized_image_mode,
+        positive_prompt_list,
+        negative_prompt_list,
+        init_image_list,
+        mask_image_list,
+        controlnet_image_list,
+        seed_list,
+        step,
+        cfg,
+        height,
+        width,
+        strength,
+        max_chunk_size,
+        seed_min,
+        seed_max,
+        sampler,
+        scheduler,
+        clip_skip,
+        controlnet_model_ids,
+        controlnet_conditioning_scales,
+        control_guidance_starts,
+        control_guidance_ends,
+        device_id,
+    )
+    lease = acquire_gpu_model(
+        "sdxl",
+        device_id,
+        model_key,
+        release_image_runtime,
+        exclusive=False,
+    )
+    async with lease:
         async with _get_image_lock(device_id):
-            return await asyncio.to_thread(
-                _generate_images_batch_locked,
-                ckpt_path,
-                normalized_image_mode,
-                positive_prompt_list,
-                negative_prompt_list,
-                init_image_list,
-                mask_image_list,
-                controlnet_image_list,
-                seed_list,
-                step,
-                cfg,
-                height,
-                width,
-                strength,
-                max_chunk_size,
-                seed_min,
-                seed_max,
-                sampler,
-                scheduler,
-                clip_skip,
-                controlnet_model_ids,
-                controlnet_conditioning_scales,
-                control_guidance_starts,
-                control_guidance_ends,
-                device_id,
-            )
+            torch = _load_image_torch()
+            try:
+                return await asyncio.to_thread(_generate_images_batch_locked, *generation_args)
+            except torch.cuda.OutOfMemoryError as exc:
+                if not await lease.evict_co_resident_models():
+                    raise
+                exc.__traceback__ = None
+                log(f"SDXL CUDA OOM evicted co-resident vision models device=cuda:{device_id}; retrying")
+                _clear_cuda_cache(torch, device_id)
+                return await asyncio.to_thread(_generate_images_batch_locked, *generation_args)
 
 
 def _reset_image_runtime_for_tests() -> None:

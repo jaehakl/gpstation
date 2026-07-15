@@ -16,10 +16,11 @@ class LoadedGpuModel:
     model_key: ModelKey
     release_loaded_model: ReleaseLoadedModel
     device_ids: tuple[int, ...]
+    exclusive: bool
 
 
 _gpu_locks: dict[int, asyncio.Lock] = {}
-_loaded_models_by_device: dict[int, LoadedGpuModel] = {}
+_loaded_models_by_device: dict[int, dict[str, LoadedGpuModel]] = {}
 
 
 def get_cuda_device_count() -> int:
@@ -55,17 +56,21 @@ class GpuModelLease:
         device_ids: tuple[int, ...],
         model_key: ModelKey,
         release_loaded_model: ReleaseLoadedModel,
+        exclusive: bool,
     ) -> None:
         self.role = role
         self.device_ids = device_ids
         self.model_key = model_key
         self.release_loaded_model = release_loaded_model
+        self.exclusive = exclusive
         self._locks: list[asyncio.Lock] = []
+        self._active_device_ids: tuple[int, ...] = ()
 
     async def __aenter__(self) -> GpuModelLease:
         device_ids = _normalize_device_ids(self.device_ids)
         if not device_ids:
             return self
+        self._active_device_ids = device_ids
 
         self._locks = [_get_gpu_lock(device_id) for device_id in device_ids]
         for lock in self._locks:
@@ -74,33 +79,64 @@ class GpuModelLease:
             conflicts: list[tuple[int, LoadedGpuModel]] = []
             seen_conflicts: set[int] = set()
             for device_id in device_ids:
-                current = _loaded_models_by_device.get(device_id)
-                if current is not None and (
-                    current.role != self.role or current.model_key != self.model_key
-                ) and id(current) not in seen_conflicts:
-                    conflicts.append((device_id, current))
-                    seen_conflicts.add(id(current))
+                for current in _loaded_models_by_device.get(device_id, {}).values():
+                    same_model = current.role == self.role and current.model_key == self.model_key
+                    if (
+                        not same_model
+                        and (current.role == self.role or current.exclusive or self.exclusive)
+                        and id(current) not in seen_conflicts
+                    ):
+                        conflicts.append((device_id, current))
+                        seen_conflicts.add(id(current))
 
             for device_id, current in conflicts:
                 await asyncio.to_thread(current.release_loaded_model, device_id)
                 for loaded_device_id in current.device_ids:
-                    if _loaded_models_by_device.get(loaded_device_id) is current:
-                        _loaded_models_by_device.pop(loaded_device_id, None)
+                    loaded_by_role = _loaded_models_by_device.get(loaded_device_id)
+                    if loaded_by_role is not None and loaded_by_role.get(current.role) is current:
+                        loaded_by_role.pop(current.role, None)
+                        if not loaded_by_role:
+                            _loaded_models_by_device.pop(loaded_device_id, None)
 
             loaded = LoadedGpuModel(
                 role=self.role,
                 model_key=self.model_key,
                 release_loaded_model=self.release_loaded_model,
                 device_ids=device_ids,
+                exclusive=self.exclusive,
             )
             for device_id in device_ids:
-                _loaded_models_by_device[device_id] = loaded
+                _loaded_models_by_device.setdefault(device_id, {})[self.role] = loaded
         except Exception:
             for lock in reversed(self._locks):
                 lock.release()
             self._locks = []
+            self._active_device_ids = ()
             raise
         return self
+
+    async def evict_co_resident_models(self) -> bool:
+        evictions: list[tuple[int, LoadedGpuModel]] = []
+        seen_models: set[int] = set()
+        for device_id in self._active_device_ids:
+            for current in _loaded_models_by_device.get(device_id, {}).values():
+                if (
+                    current.role != self.role
+                    and not current.exclusive
+                    and id(current) not in seen_models
+                ):
+                    evictions.append((device_id, current))
+                    seen_models.add(id(current))
+
+        for device_id, current in evictions:
+            await asyncio.to_thread(current.release_loaded_model, device_id)
+            for loaded_device_id in current.device_ids:
+                loaded_by_role = _loaded_models_by_device.get(loaded_device_id)
+                if loaded_by_role is not None and loaded_by_role.get(current.role) is current:
+                    loaded_by_role.pop(current.role, None)
+                    if not loaded_by_role:
+                        _loaded_models_by_device.pop(loaded_device_id, None)
+        return bool(evictions)
 
     async def __aexit__(
         self,
@@ -111,6 +147,7 @@ class GpuModelLease:
         for lock in reversed(self._locks):
             lock.release()
         self._locks = []
+        self._active_device_ids = ()
 
 
 def acquire_gpu_model(
@@ -118,9 +155,17 @@ def acquire_gpu_model(
     device_id: int | None,
     model_key: ModelKey,
     release_loaded_model: ReleaseLoadedModel,
+    *,
+    exclusive: bool = True,
 ) -> GpuModelLease:
     device_ids = () if device_id is None else (device_id,)
-    return acquire_gpu_model_multi(role, device_ids, model_key, release_loaded_model)
+    return acquire_gpu_model_multi(
+        role,
+        device_ids,
+        model_key,
+        release_loaded_model,
+        exclusive=exclusive,
+    )
 
 
 def acquire_gpu_model_multi(
@@ -128,8 +173,10 @@ def acquire_gpu_model_multi(
     device_ids: tuple[int, ...],
     model_key: ModelKey,
     release_loaded_model: ReleaseLoadedModel,
+    *,
+    exclusive: bool = True,
 ) -> GpuModelLease:
-    return GpuModelLease(role, device_ids, model_key, release_loaded_model)
+    return GpuModelLease(role, device_ids, model_key, release_loaded_model, exclusive)
 
 
 def _get_gpu_lock(device_id: int) -> asyncio.Lock:

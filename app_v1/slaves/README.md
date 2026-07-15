@@ -1,6 +1,6 @@
 # GP Station v1 Slave Executables
 
-`slaves/` contains independent slave executable projects. The default built-in app is `ai`, which exposes LLM, streaming chat, SDXL image generation, and embedding handlers through the persistent worker/job runtime.
+`slaves/` contains independent slave executable projects. The default built-in app is `ai`, which exposes LLM, streaming chat, SDXL image generation, text embedding, CLIP, and WD14 handlers through the persistent worker/job runtime.
 
 ## Install
 
@@ -39,6 +39,9 @@ Manifest files require `id`, `name`, and `module`. They may also set `startup_ti
 - `ai.chat`: accepts the same generation options as `ai.llm`; the first payload may select an LLM with `model`. Results include the selected `model` and stream only final-answer text through `ai.chat.delta` events. Reasoning is discarded before events, responses, and retained message history. The legacy `enable_thinking` input remains an alias for `think`.
 - `ai.embeddings`: payload `{"model":"local-embedding", "text":"..."}` returns `{"model":"local-embedding", "embedding":[...], "dimensions":123}`.
 - `ai.embeddings.batch`: payload `{"model":"local-embedding", "texts":["...", "..."]}` returns ordered `embeddings`, `dimensions`, and `count` in one model call.
+- `ai.clip.image`: payload `{}` plus one PNG, JPEG, or WebP request attachment with ID `image` returns the fixed OpenAI CLIP ViT-L/14 model name, a normalized 768-dimensional `embedding`, and `dimensions`.
+- `ai.clip.text`: payload `{"text":"..."}` returns a normalized 768-dimensional embedding from the same CLIP model. Input is truncated to CLIP's 77-token limit.
+- `ai.wd14.tags`: payload `{}` plus one image attachment with ID `image` returns the fixed `SmilingWolf/wd-eva02-large-tagger-v3` model name, comma-separated `prompt`, and confidence-sorted `keywords`.
 - `ai.sdxl.t2i`: payload `{"model":"main-sdxl", "prompts":["..."], "format":"png"}` returns the selected `model`, image metadata, and each generated image as a DataChannel file attachment.
 - `ai.sdxl.i2i`: requires one request attachment with ID `image`.
 - `ai.sdxl.inpaint`: requires request attachments with IDs `image` and `mask`.
@@ -46,7 +49,9 @@ Manifest files require `id`, `name`, and `module`. They may also set `startup_ti
 - `ai.sdxl.controlnet.i2i`: requires `image` plus at least one of `scribble` or `pose`.
 - `ai.sdxl.controlnet.inpaint`: requires `image`, `mask`, plus at least one of `scribble` or `pose`.
 
-The image-input handlers accept PNG, JPEG, and WebP attachments up to 20 MiB each. Input images are resized to the requested output size. A mask is converted to grayscale; white pixels are regenerated and black pixels are preserved by the Diffusers inpaint pipeline. A fully white scribble is treated as inactive. When both controls are present, the runtime applies them in `scribble`, then `pose` order. ControlNet weights may be downloaded into the Hugging Face cache the first time a configured model is used.
+The image-input handlers accept PNG, JPEG, and WebP attachments up to 20 MiB each. SDXL input images are resized to the requested output size. A mask is converted to grayscale; white pixels are regenerated and black pixels are preserved by the Diffusers inpaint pipeline. A fully white scribble is treated as inactive. When both controls are present, the runtime applies them in `scribble`, then `pose` order. ControlNet weights may be downloaded into the Hugging Face cache the first time a configured model is used.
+
+CLIP uses its standard `~/.cache/clip` cache, while WD14 uses the Hugging Face cache selected by `HF_HOME` or `HUGGINGFACE_HUB_CACHE`. Model weights download on the first matching request; worker startup only warms imports. One CLIP model, one WD14 model, and one SDXL pipeline may remain loaded together on the image GPU. An overlapping GPU LLM lease remains exclusive. If a visual operation runs out of CUDA memory, the worker evicts the other co-resident visual models and retries that operation once.
 
 The `model` field is optional on every generation handler. When omitted, the family default is used; explicit request settings override the selected model's TOML defaults. Every result includes the external model name that was actually used.
 

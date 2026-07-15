@@ -11,12 +11,15 @@ from app.llm import register_handlers as register_llm_handlers
 from app.logging import log_exception
 from app.sdxl import initialize as initialize_sdxl
 from app.sdxl import register_handlers as register_sdxl_handlers
+from app.vision import initialize as initialize_vision
+from app.vision import register_handlers as register_vision_handlers
 from app.voicevox import register_handlers as register_voicevox_handlers
 
 
 app = SlaveApp(memory={})
 register_llm_handlers(app)
 register_embeddings_handlers(app)
+register_vision_handlers(app)
 register_sdxl_handlers(app)
 register_voicevox_handlers(app)
 
@@ -25,6 +28,7 @@ register_voicevox_handlers(app)
 async def initialize(memory: dict[str, Any] | None, context: SlaveContext) -> None:
     try:
         await initialize_embeddings(context)
+        await initialize_vision(context)
         await initialize_llm(context)
         await initialize_sdxl(context)
     except Exception as exc:
