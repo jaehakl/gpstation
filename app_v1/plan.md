@@ -5,6 +5,7 @@
 - [x] FastAPI server with DB-backed users, access keys, launchers, and jobs.
 - [x] Launcher control WebSocket with persistent worker subprocesses.
 - [x] Browser TypeScript SDK and AI master app using `/v1/jobs`.
+- [x] Async Python master SDK with job sessions, events, attachments, diagnostics, retry, and prewarm.
 - [x] Built-in `ai` slave app for `ai.llm`, `ai.embeddings`, and `ai.sdxl.t2i`.
 - [x] Website auth and management console for users, access tokens, launchers, and jobs.
 
@@ -16,7 +17,6 @@
 ## Remaining Targets
 - Add richer job progress/result views in the website.
 - Define launcher capacity policy for concurrent jobs if multi-worker support becomes a product requirement.
-- Add Python master SDK support for the current job protocol if needed.
 
 ## Local Demo Defaults
 - Client token: create an Access Token with `client` scope from the website.

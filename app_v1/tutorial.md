@@ -8,6 +8,7 @@
 - `launcher/`: 사용자의 머신에서 실행됩니다. 서버 control WebSocket에 연결하고, `slaves/ai` worker subprocess를 유지하면서 job을 실행합니다.
 - `sdk/`: Python slave runtime과 공통 protocol model을 제공합니다.
 - `sdk/master/js/`: 브라우저 master용 TypeScript SDK입니다. `runJob`과 job 조회 API를 제공합니다.
+- `sdk/master/python/`: asyncio master용 독립 Python SDK입니다. `run_job`, 다중 호출 session, 이벤트, 첨부파일과 prewarm을 제공합니다.
 - `slaves/ai/`: `ai.llm`, `ai.chat`, `ai.embeddings`, `ai.sdxl.t2i` handler를 제공하는 기본 slave app입니다.
 - `masters/ai/`: AI job 흐름을 브라우저에서 테스트하는 Vite 앱입니다.
 - `website/`: Google OAuth 로그인, Access Token 발급, Launcher/Job 관리 콘솔입니다.
@@ -45,6 +46,13 @@ npm run build
 cd ../../../masters/ai
 npm install
 npm run dev
+```
+
+Python master를 사용할 때는 별도 SDK 프로젝트를 설치합니다.
+
+```powershell
+cd app_v1/sdk/master/python
+poetry install
 ```
 
 웹사이트에서 `launcher` scope Access Token을 만들어 launcher `.env`에 넣고, `client` scope Access Token은 AI master 실행 화면에 직접 입력합니다. 브라우저 토큰은 Vite 환경변수나 빌드 결과에 포함하지 않습니다.
@@ -92,6 +100,34 @@ const followup = await first.session.call('ai.chat', {
 console.log(followup.payload.remaining_tokens);
 
 await first.session.finish();
+```
+
+Python master에서는 동일한 job protocol을 async API로 호출합니다.
+
+```python
+import asyncio
+import os
+
+from gpstation_master import GpStationClient
+
+
+async def main() -> None:
+    async with GpStationClient(
+        api_base_url="https://gps.qutat.com",
+        token=os.environ["GPSTATION_CLIENT_TOKEN"],
+    ) as client:
+        result = await client.run_job(
+            "ai.llm",
+            {
+                "prompt": "짧게 자기소개를 해줘",
+                "max_tokens": 128,
+            },
+            slave_app_id="ai",
+        )
+        print(result.payload)
+
+
+asyncio.run(main())
 ```
 
 SDK는 WebRTC offer를 만든 뒤 `POST /v1/jobs`로 job을 생성합니다. 서버는 사용자의 idle launcher를 찾아 `job.start` control message를 보냅니다.
@@ -159,6 +195,12 @@ python -m pytest
 cd app_v1/sdk/master/js
 npm run typecheck
 npm run build
+```
+
+```powershell
+cd app_v1/sdk/master/python
+poetry run pytest
+poetry build
 ```
 
 ```powershell
