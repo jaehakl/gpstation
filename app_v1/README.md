@@ -8,13 +8,14 @@ Fresh MVP implementation for the job-based GP Station runtime. This directory is
 - `server/`: FastAPI orchestration server for launchers, jobs, auth, and the management API.
 - `launcher/`: Python launcher that keeps a persistent slave worker and runs assigned jobs.
 - `slaves/ai/`: built-in AI slave executable project.
+- `slaves/cae/`: Caemble Python CAE slave with streamed RecordedData backpressure.
 - `sdk/master/js/`: browser TypeScript master SDK for `/v1/jobs`.
 - `masters/ai/`: browser AI master app.
 - `website/`: OAuth/JWT account and runtime management console.
 
 ## Local Run Order
 
-1. Install dependencies with Poetry in `server/`, `launcher/`, and `slaves/ai/`.
+1. Install dependencies with Poetry in `server/`, `launcher/`, `slaves/ai/`, and `slaves/cae/`.
 2. Point `server/.env` at a new empty Postgres database and copy `slaves/ai/models.example.toml` to `slaves/ai/models.toml` with local model paths.
 3. Start the v1 server with `cd app_v1/server && poetry run gpstation-v1-server`; it creates the schema from SQLAlchemy metadata.
 4. Start one launcher with `cd app_v1/launcher && poetry run launcher`.

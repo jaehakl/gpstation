@@ -10,6 +10,7 @@ from app.settings import LauncherSettings
 from app.slave_registry import SlaveAppRegistry, load_default_registry
 
 SendControl = Callable[[dict[str, Any]], Awaitable[None]]
+CANCEL_RESET_GRACE_SECONDS = 2
 
 
 @dataclass
@@ -36,6 +37,9 @@ class WorkerManager:
         self.worker: ManagedWorker | None = None
         self.current_job_id: str | None = None
         self.worker_status = "idle"
+        self.cancel_escalation_task: asyncio.Task[None] | None = None
+        self.cancel_cleanup_confirmed_job_id: str | None = None
+        self.cancel_terminal_forwarded_job_id: str | None = None
 
     def current_worker_slave_app_id(self) -> str | None:
         return self.worker.slave_app_id if self.worker is not None else None
@@ -74,6 +78,8 @@ class WorkerManager:
 
         self.current_job_id = job_id
         self.worker_status = "starting"
+        self.cancel_cleanup_confirmed_job_id = None
+        self.cancel_terminal_forwarded_job_id = None
         try:
             await self.ensure_worker(slave_app_id)
         except Exception as exc:
@@ -170,7 +176,12 @@ class WorkerManager:
     async def cancel_job(self, job_id: str, reason: str) -> None:
         if self.current_job_id != job_id:
             return
+        if self.cancel_cleanup_confirmed_job_id != job_id:
+            self.cancel_cleanup_confirmed_job_id = None
+        if self.cancel_terminal_forwarded_job_id != job_id:
+            self.cancel_terminal_forwarded_job_id = None
         if self.worker is None or self.worker.process.stdin is None or self.worker.process.returncode is not None:
+            self.cancel_cancel_escalation()
             await self.send_control({"type": "job.cancelled", "job_id": job_id, "reason": reason})
             self.current_job_id = None
             self.worker_status = "idle"
@@ -179,10 +190,15 @@ class WorkerManager:
         try:
             self.worker.process.stdin.write(json_line({"type": "job.cancel", "job_id": job_id, "reason": reason}))
             await self.worker.process.stdin.drain()
+            self.cancel_cancel_escalation()
+            self.cancel_escalation_task = asyncio.create_task(self.escalate_cancel(job_id, reason))
         except (BrokenPipeError, ConnectionResetError):
             await self.reset_worker(reason)
 
     async def reset_worker(self, reason: str, *, cancel_current_job: bool = True, notify_reset: bool = True) -> None:
+        self.cancel_cancel_escalation()
+        self.cancel_cleanup_confirmed_job_id = None
+        self.cancel_terminal_forwarded_job_id = None
         worker = self.worker
         current_job_id = self.current_job_id if cancel_current_job else None
         self.worker = None
@@ -232,10 +248,14 @@ class WorkerManager:
                 if not worker.ready:
                     ready_event.set()
                 failed_job_id = self.current_job_id
+                terminal_was_forwarded = self.cancel_terminal_forwarded_job_id == failed_job_id
                 self.worker = None
                 self.current_job_id = None
                 self.worker_status = "error"
-                if failed_job_id is not None:
+                self.cancel_cancel_escalation()
+                self.cancel_cleanup_confirmed_job_id = None
+                self.cancel_terminal_forwarded_job_id = None
+                if failed_job_id is not None and not terminal_was_forwarded:
                     await self.send_control(
                         {
                             "type": "job.error",
@@ -266,6 +286,23 @@ class WorkerManager:
                 self.worker.ready = True
                 self.worker.ready_event.set()
             return
+        if message_type == "cae.run.cleaned":
+            job_id = str(message.get("job_id") or "")
+            if (
+                self.current_worker_slave_app_id() == "cae"
+                and self.current_job_id == job_id
+            ):
+                self.cancel_cleanup_confirmed_job_id = job_id
+                if (
+                    self.worker_status == "cancelling"
+                    and self.cancel_terminal_forwarded_job_id == job_id
+                ):
+                    self.cancel_cancel_escalation()
+                    self.current_job_id = None
+                    self.worker_status = "idle"
+                    self.cancel_cleanup_confirmed_job_id = None
+                    self.cancel_terminal_forwarded_job_id = None
+            return
         if message_type in {
             "job.answer",
             "job.running",
@@ -276,8 +313,24 @@ class WorkerManager:
         }:
             await self.send_control(message)
             if message_type in {"job.result", "job.error", "job.cancelled"}:
+                job_id = str(message.get("job_id") or "")
+                if (
+                    self.current_worker_slave_app_id() == "cae"
+                    and self.current_job_id == job_id
+                ):
+                    self.cancel_terminal_forwarded_job_id = job_id
+                    if self.cancel_cleanup_confirmed_job_id != job_id:
+                        self.worker_status = "cancelling"
+                        if self.cancel_escalation_task is None:
+                            self.cancel_escalation_task = asyncio.create_task(
+                                self.escalate_cancel(job_id, "CAE run cleanup was not confirmed")
+                            )
+                        return
+                self.cancel_cancel_escalation()
                 self.current_job_id = None
                 self.worker_status = "idle"
+                self.cancel_cleanup_confirmed_job_id = None
+                self.cancel_terminal_forwarded_job_id = None
             return
         if message_type == "error" and self.current_job_id is not None:
             await self.send_control(
@@ -290,6 +343,33 @@ class WorkerManager:
             )
             self.current_job_id = None
             self.worker_status = "idle"
+            self.cancel_cancel_escalation()
+            self.cancel_cleanup_confirmed_job_id = None
+            self.cancel_terminal_forwarded_job_id = None
+
+    async def escalate_cancel(self, job_id: str, reason: str) -> None:
+        try:
+            await asyncio.sleep(CANCEL_RESET_GRACE_SECONDS)
+            if self.current_job_id == job_id:
+                terminal_was_forwarded = self.cancel_terminal_forwarded_job_id == job_id
+                await self.reset_worker(
+                    f"job {job_id} did not stop within {CANCEL_RESET_GRACE_SECONDS}s: {reason}",
+                    cancel_current_job=not terminal_was_forwarded,
+                )
+                if terminal_was_forwarded:
+                    self.current_job_id = None
+                    self.worker_status = "idle"
+        except asyncio.CancelledError:
+            return
+        finally:
+            if self.cancel_escalation_task is asyncio.current_task():
+                self.cancel_escalation_task = None
+
+    def cancel_cancel_escalation(self) -> None:
+        task = self.cancel_escalation_task
+        self.cancel_escalation_task = None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
 
 
 def json_line(message: dict[str, Any]) -> bytes:

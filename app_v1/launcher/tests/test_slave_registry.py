@@ -280,6 +280,241 @@ async def test_cancel_job_forwards_cancel_to_worker_without_reset():
     assert manager.current_job_id == "job-1"
     assert manager.worker_status == "cancelling"
     assert messages == []
+    manager.cancel_cancel_escalation()
+
+
+@pytest.mark.asyncio
+async def test_cancel_job_escalates_to_worker_reset_after_two_seconds(monkeypatch):
+    stdout_task = asyncio.create_task(asyncio.sleep(60))
+    stderr_task = asyncio.create_task(asyncio.sleep(60))
+    process = FakeWorkerProcess()
+    manager = WorkerManager(LauncherSettings(access_token="test-token"), async_noop, SlaveAppRegistry([]))
+    manager.worker = ManagedWorker(
+        slave_app_id="cae",
+        process=process,
+        ready_event=asyncio.Event(),
+        stdout_task=stdout_task,
+        stderr_task=stderr_task,
+        ready=True,
+    )
+    manager.current_job_id = "job-1"
+    resets = []
+
+    async def fake_reset(reason, **kwargs):
+        resets.append(reason)
+        manager.current_job_id = None
+
+    monkeypatch.setattr("app.subprocess_manager.CANCEL_RESET_GRACE_SECONDS", 0)
+    monkeypatch.setattr(manager, "reset_worker", fake_reset)
+    try:
+        await manager.cancel_job("job-1", "user cancel")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+    finally:
+        manager.cancel_cancel_escalation()
+        stdout_task.cancel()
+        stderr_task.cancel()
+
+    assert resets == ["job job-1 did not stop within 0s: user cancel"]
+
+
+@pytest.mark.asyncio
+async def test_terminal_worker_message_cancels_pending_cancel_escalation():
+    messages = []
+
+    async def send_control(message):
+        messages.append(message)
+
+    manager = WorkerManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
+    manager.current_job_id = "job-1"
+    manager.cancel_escalation_task = asyncio.create_task(asyncio.sleep(60))
+
+    await manager.handle_worker_message({"type": "job.cancelled", "job_id": "job-1", "reason": "user"})
+
+    assert manager.cancel_escalation_task is None
+    assert manager.current_job_id is None
+    assert messages == [{"type": "job.cancelled", "job_id": "job-1", "reason": "user"}]
+
+
+@pytest.mark.asyncio
+async def test_cae_cancel_waits_for_run_cleanup_before_reusing_worker():
+    messages = []
+
+    async def send_control(message):
+        messages.append(message)
+
+    stdout_task = asyncio.create_task(asyncio.sleep(60))
+    stderr_task = asyncio.create_task(asyncio.sleep(60))
+    manager = WorkerManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
+    manager.worker = ManagedWorker(
+        slave_app_id="cae",
+        process=FakeWorkerProcess(),
+        ready_event=asyncio.Event(),
+        stdout_task=stdout_task,
+        stderr_task=stderr_task,
+        ready=True,
+    )
+    manager.current_job_id = "job-1"
+    manager.worker_status = "cancelling"
+    manager.cancel_escalation_task = asyncio.create_task(asyncio.sleep(60))
+
+    try:
+        await manager.handle_worker_message(
+            {"type": "cae.run.cleaned", "job_id": "job-1", "run_id": "run-1"}
+        )
+        assert manager.current_job_id == "job-1"
+        assert manager.cancel_cleanup_confirmed_job_id == "job-1"
+
+        await manager.handle_worker_message(
+            {"type": "job.cancelled", "job_id": "job-1", "reason": "user"}
+        )
+    finally:
+        manager.cancel_cancel_escalation()
+        stdout_task.cancel()
+        stderr_task.cancel()
+
+    assert messages == [{"type": "job.cancelled", "job_id": "job-1", "reason": "user"}]
+    assert manager.current_job_id is None
+    assert manager.worker_status == "idle"
+    assert manager.cancel_cleanup_confirmed_job_id is None
+    assert manager.cancel_terminal_forwarded_job_id is None
+
+
+@pytest.mark.asyncio
+async def test_cae_failed_start_cleanup_marker_allows_immediate_worker_reuse():
+    messages = []
+
+    async def send_control(message):
+        messages.append(message)
+
+    stdout_task = asyncio.create_task(asyncio.sleep(60))
+    stderr_task = asyncio.create_task(asyncio.sleep(60))
+    manager = WorkerManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
+    manager.worker = ManagedWorker(
+        slave_app_id="cae",
+        process=FakeWorkerProcess(),
+        ready_event=asyncio.Event(),
+        stdout_task=stdout_task,
+        stderr_task=stderr_task,
+        ready=True,
+    )
+    manager.current_job_id = "job-1"
+    manager.worker_status = "busy"
+
+    try:
+        await manager.handle_worker_message(
+            {"type": "cae.run.cleaned", "job_id": "job-1", "run_id": None}
+        )
+        await manager.handle_worker_message({"type": "job.result", "job_id": "job-1"})
+    finally:
+        manager.cancel_cancel_escalation()
+        stdout_task.cancel()
+        stderr_task.cancel()
+
+    assert messages == [{"type": "job.result", "job_id": "job-1"}]
+    assert manager.current_job_id is None
+    assert manager.worker_status == "idle"
+    assert manager.cancel_escalation_task is None
+
+
+@pytest.mark.asyncio
+async def test_cae_terminal_before_kill_waits_for_cleanup_and_keeps_escalation_armed():
+    messages = []
+
+    async def send_control(message):
+        messages.append(message)
+
+    stdout_task = asyncio.create_task(asyncio.sleep(60))
+    stderr_task = asyncio.create_task(asyncio.sleep(60))
+    manager = WorkerManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
+    manager.worker = ManagedWorker(
+        slave_app_id="cae",
+        process=FakeWorkerProcess(),
+        ready_event=asyncio.Event(),
+        stdout_task=stdout_task,
+        stderr_task=stderr_task,
+        ready=True,
+    )
+    manager.current_job_id = "job-1"
+    manager.worker_status = "busy"
+
+    try:
+        await manager.handle_worker_message(
+            {"type": "job.error", "job_id": "job-1", "code": "job_error", "detail": "peer closed"}
+        )
+        assert manager.current_job_id == "job-1"
+        assert manager.worker_status == "cancelling"
+        assert manager.cancel_escalation_task is not None
+        assert manager.cancel_terminal_forwarded_job_id == "job-1"
+
+        await manager.cancel_job("job-1", "user cancel")
+        assert manager.cancel_terminal_forwarded_job_id == "job-1"
+        assert manager.worker.process.stdin.messages == [
+            {
+                "type": "job.cancel",
+                "job_id": "job-1",
+                "reason": "user cancel",
+            }
+        ]
+
+        await manager.handle_worker_message(
+            {"type": "cae.run.cleaned", "job_id": "job-1", "run_id": "run-1"}
+        )
+    finally:
+        manager.cancel_cancel_escalation()
+        stdout_task.cancel()
+        stderr_task.cancel()
+
+    assert messages == [
+        {"type": "job.error", "job_id": "job-1", "code": "job_error", "detail": "peer closed"}
+    ]
+    assert manager.current_job_id is None
+    assert manager.worker_status == "idle"
+
+
+@pytest.mark.asyncio
+async def test_cae_cancel_without_cleanup_resets_worker_without_duplicate_terminal(monkeypatch):
+    messages = []
+    resets = []
+
+    async def send_control(message):
+        messages.append(message)
+
+    async def fake_reset(reason, **kwargs):
+        resets.append((reason, kwargs))
+
+    stdout_task = asyncio.create_task(asyncio.sleep(60))
+    stderr_task = asyncio.create_task(asyncio.sleep(60))
+    manager = WorkerManager(LauncherSettings(access_token="test-token"), send_control, SlaveAppRegistry([]))
+    manager.worker = ManagedWorker(
+        slave_app_id="cae",
+        process=FakeWorkerProcess(),
+        ready_event=asyncio.Event(),
+        stdout_task=stdout_task,
+        stderr_task=stderr_task,
+        ready=True,
+    )
+    manager.current_job_id = "job-1"
+    manager.worker_status = "cancelling"
+    manager.cancel_terminal_forwarded_job_id = "job-1"
+    monkeypatch.setattr("app.subprocess_manager.CANCEL_RESET_GRACE_SECONDS", 0)
+    monkeypatch.setattr(manager, "reset_worker", fake_reset)
+
+    try:
+        await manager.escalate_cancel("job-1", "user cancel")
+    finally:
+        stdout_task.cancel()
+        stderr_task.cancel()
+
+    assert resets == [
+        (
+            "job job-1 did not stop within 0s: user cancel",
+            {"cancel_current_job": False},
+        )
+    ]
+    assert messages == []
+    assert manager.current_job_id is None
+    assert manager.worker_status == "idle"
 
 
 @pytest.mark.asyncio
