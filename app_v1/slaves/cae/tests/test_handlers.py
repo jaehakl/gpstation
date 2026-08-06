@@ -1,6 +1,5 @@
 import asyncio
 import gc
-import hashlib
 
 import numpy as np
 import pytest
@@ -9,17 +8,119 @@ from sdk.slave import SlaveContext
 
 from app.errors import CaeError, ProtocolError
 from app.handlers import cae_simulation_next, cae_simulation_start
-from app.kernels import stable_hash
 from app.runtime import SimulationApi
 
 
+def task_config(kernel: str, output_method: str, output_key: str):
+    prefix = "dc" if kernel == "dc-current-density" else "heat"
+    boundary_conditions = (
+        [
+            {
+                "methodId": "dc.source-potential",
+                "target": ["structure.surface.source"],
+                "parameters": {
+                    "voltage": {
+                        "dtype": "float64",
+                        "unit": "V",
+                        "quantityKind": "electromagnetism.Voltage",
+                        "value": 1,
+                    }
+                },
+            },
+            {
+                "methodId": "dc.reference-potential",
+                "target": ["structure.surface.reference"],
+                "parameters": {
+                    "voltage": {
+                        "dtype": "float64",
+                        "unit": "V",
+                        "quantityKind": "electromagnetism.Voltage",
+                        "value": 0,
+                    }
+                },
+            },
+        ]
+        if prefix == "dc"
+        else [
+            {
+                "methodId": "heat.fixed-temperature",
+                "target": ["structure.surface.source"],
+                "parameters": {
+                    "temperature": {
+                        "dtype": "float64",
+                        "unit": "K",
+                        "quantityKind": "thermodynamics.Temperature",
+                        "value": 300,
+                    }
+                },
+            },
+            {
+                "methodId": "heat.fixed-temperature",
+                "target": ["structure.surface.reference"],
+                "parameters": {
+                    "temperature": {
+                        "dtype": "float64",
+                        "unit": "K",
+                        "quantityKind": "thermodynamics.Temperature",
+                        "value": 300,
+                    }
+                },
+            },
+        ]
+    )
+    output_parameters = (
+        {
+            "crossSectionPosition": {
+                "dtype": "float64",
+                "unit": "{fraction}",
+                "quantityKind": "DimensionlessRatio",
+                "value": 0.5,
+            }
+        }
+        if output_method in {"dc.current-density", "dc.total-current"}
+        else {}
+    )
+    return {
+        "parameters": {
+            "relativeTolerance": {
+                "dtype": "float64",
+                "unit": "{fraction}",
+                "quantityKind": "DimensionlessRatio",
+                "value": 1e-6,
+            },
+            "maxIterations": 100,
+        },
+        "initializations": [
+            {
+                "methodId": f"{prefix}.voxel-grid",
+                "target": ["structure.geometry.conductor"],
+                "parameters": {
+                    "gridShape": {
+                        "dtype": "int32",
+                        "axes": [{"length": 3}],
+                        "value": [3, 3, 3],
+                    }
+                },
+            }
+        ],
+        "boundaryConditions": boundary_conditions,
+        "outputs": [
+            {
+                "key": output_key,
+                "methodId": output_method,
+                "target": ["structure.geometry.conductor"],
+                "parameters": output_parameters,
+            }
+        ],
+    }
+
+
 def payload():
-    descriptor = {"name": "dc-current-density", "version": "0.0.0"}
-    descriptor_hash = stable_hash(descriptor)
     total_current_schema = {
         "dtype": "float64",
         "unit": "A",
         "quantityKind": "electromagnetism.ElectricCurrent",
+        "tensorOrder": 0,
     }
     recorded_data = {"totalCurrent": total_current_schema}
     source = (
@@ -60,37 +161,20 @@ def payload():
                 "seed": 1,
                 "sourceHash": "a" * 64,
                 "simulationProgram": {
-                    "formatVersion": 2,
-                    "simulationApiVersion": "1",
-                    "programHash": "a" * 64,
+                    "formatVersion": 3,
+                    "simulationApiVersion": 1,
                     "pythonSource": source,
-                    "pythonSourceHash": hashlib.sha256(source.encode("utf-8")).hexdigest(),
-                    "recordedDataSchemaHash": stable_hash(recorded_data),
-                    "kernelDescriptors": [
-                        {
-                            "descriptor": descriptor,
-                            "descriptorHash": descriptor_hash,
-                        }
-                    ],
                     "tasks": {
                         "electric": {
                             "kernel": {
                                 "name": "dc-current-density",
                                 "version": "0.0.0",
-                                "descriptorHash": descriptor_hash,
                             },
-                            "descriptor": {
-                                **descriptor,
-                                "inputPorts": {},
-                            },
-                            "config": {},
-                            "configHash": stable_hash({}),
-                            "outputArtifacts": {
-                                "totalCurrent": {
-                                    "artifactType": "caemble.dc/total-current@1",
-                                    "data": total_current_schema,
-                                }
-                            },
+                            "config": task_config(
+                                "dc-current-density",
+                                "dc.total-current",
+                                "totalCurrent",
+                            ),
                         }
                     },
                     "recordedData": recorded_data,
@@ -105,37 +189,23 @@ def payload():
 def artifact_chain_payload(
     artifact_expression,
     *,
-    input_name="carry",
-    artifact_types=None,
-    producer_schema=None,
-    consumer_schema=None,
+    input_name="heatSource",
+    producer_method="dc.joule-heating",
 ):
     request = payload()
     program = request["setup"]["experiment"]["simulationProgram"]
-    producer = program["tasks"].pop("electric")
-    output_spec = producer["outputArtifacts"]["totalCurrent"]
-    if producer_schema is not None:
-        output_spec = {**output_spec, "data": producer_schema}
-        producer = {
-            **producer,
-            "outputArtifacts": {"totalCurrent": output_spec},
-        }
     program["tasks"] = {
-        "producer": producer,
+        "producer": {
+            "kernel": {"name": "dc-current-density", "version": "0.0.0"},
+            "config": task_config("dc-current-density", producer_method, "heatSource"),
+        },
         "consumer": {
-            **producer,
-            "descriptor": {
-                **producer["descriptor"],
-                "inputPorts": {
-                    "carry": {
-                        "artifactTypes": artifact_types
-                        or [output_spec["artifactType"]],
-                        "minimumOccurrences": 1,
-                        "maximumOccurrences": 1,
-                        "data": consumer_schema or output_spec["data"],
-                    }
-                },
-            },
+            "kernel": {"name": "steady-state-heat", "version": "0.0.0"},
+            "config": task_config(
+                "steady-state-heat",
+                "heat.maximum-temperature",
+                "maximumTemperature",
+            ),
         },
     }
     source = (
@@ -145,8 +215,59 @@ def artifact_chain_payload(
         "    return None\n"
     )
     program["pythonSource"] = source
-    program["pythonSourceHash"] = hashlib.sha256(source.encode("utf-8")).hexdigest()
     return request
+
+
+def fake_artifacts(task):
+    artifacts = {}
+    for output in task["config"]["outputs"]:
+        method_id = output["methodId"]
+        if method_id == "dc.joule-heating":
+            artifacts[output["key"]] = {
+                "value": np.ones((1, 1, 1), dtype=np.float64),
+                "axes": [{"ticks": [0.5]}, {"ticks": [0.5]}, {"ticks": [0.5]}],
+            }
+        elif method_id in {"heat.temperature"}:
+            artifacts[output["key"]] = {
+                "value": np.full((1, 1, 1), 300.0, dtype=np.float64),
+                "axes": [{"ticks": [0.5]}, {"ticks": [0.5]}, {"ticks": [0.5]}],
+            }
+        else:
+            artifacts[output["key"]] = {"value": 300.0 if method_id.startswith("heat.") else 14.9}
+    return artifacts
+
+
+@pytest.mark.asyncio
+async def test_start_rejects_obsolete_contract_metadata_before_run_creation():
+    request = payload()
+    request["contract"] = {"version": "obsolete"}
+    memory = {"runs": {}}
+
+    response = await cae_simulation_start(
+        DataChannelMessage(id="start", type="cae.simulation.start", payload=request),
+        memory,
+        SlaveContext(session_id="session", ttl_seconds=10, call_id="start"),
+    )
+
+    assert response.payload["kind"] == "failed"
+    assert response.payload["sequence"] == 0
+    assert response.payload["error"]["code"] == "invalid_input"
+    assert memory["runs"] == {}
+
+
+@pytest.mark.asyncio
+async def test_start_rejects_an_unregistered_kernel_version():
+    request = payload()
+    request["setup"]["experiment"]["simulationProgram"]["tasks"]["electric"]["kernel"]["version"] = "9.9.9"
+
+    response = await cae_simulation_start(
+        DataChannelMessage(id="start", type="cae.simulation.start", payload=request),
+        {"runs": {}},
+        SlaveContext(session_id="session", ttl_seconds=10, call_id="start"),
+    )
+
+    assert response.payload["kind"] == "failed"
+    assert response.payload["error"]["code"] == "kernel_not_found"
 
 
 @pytest.mark.asyncio
@@ -214,7 +335,7 @@ async def test_start_does_not_compute_and_next_applies_record_ack_backpressure(m
 
     assert final.payload["kind"] == "complete"
     assert final.payload["recordSequences"] == [1]
-    assert final.payload["finalState"] == {"done": True}
+    assert set(final.payload) == {"kind", "sequence", "recordSequences"}
     assert previous_heartbeat.cancelled()
     assert run.heartbeat_task is None
     assert run.active_context is None
@@ -319,7 +440,6 @@ async def test_sim_run_rejects_equal_but_unregistered_task(monkeypatch):
         "    return await sim.run(task)\n"
     )
     program["pythonSource"] = source
-    program["pythonSourceHash"] = hashlib.sha256(source.encode("utf-8")).hexdigest()
     calls = 0
 
     async def fake_kernel(task, state, inputs, world, progress):
@@ -407,7 +527,6 @@ async def test_simulation_rejects_mutation_assignment_targets(mutation, monkeypa
         '    return await sim.run(tasks["electric"])\n'
     )
     program["pythonSource"] = source
-    program["pythonSourceHash"] = hashlib.sha256(source.encode("utf-8")).hexdigest()
     calls = 0
 
     async def fake_kernel(task, state, inputs, world, progress):
@@ -440,7 +559,6 @@ async def test_world_manifest_task_is_not_an_alias_of_registered_task(monkeypatc
         "    return await sim.run(task)\n"
     )
     program["pythonSource"] = source
-    program["pythonSourceHash"] = hashlib.sha256(source.encode("utf-8")).hexdigest()
     calls = 0
 
     async def fake_kernel(task, state, inputs, world, progress):
@@ -473,8 +591,8 @@ async def test_world_manifest_task_is_not_an_alias_of_registered_task(monkeypatc
 @pytest.mark.parametrize(
     "second_arguments",
     [
-        'state=coarse["state"], inputs={"carry": coarse["artifacts"]["totalCurrent"]}',
-        '{"state": coarse["state"], "inputs": {"carry": coarse["artifacts"]["totalCurrent"]}}',
+        'state=coarse["state"], inputs={"heatSource": coarse["artifacts"]["heatSource"]}',
+        '{"state": coarse["state"], "inputs": {"heatSource": coarse["artifacts"]["heatSource"]}}',
     ],
 )
 @pytest.mark.asyncio
@@ -484,43 +602,46 @@ async def test_sim_run_forwards_state_and_owned_artifact_to_registered_kernel(
 ):
     request = payload()
     program = request["setup"]["experiment"]["simulationProgram"]
-    electric = program["tasks"].pop("electric")
     program["tasks"] = {
-        "solveCoarse": electric,
-        "solveFine": {
-            **electric,
-            "descriptor": {
-                **electric["descriptor"],
-                "inputPorts": {
-                    "carry": {
-                        "artifactTypes": ["caemble.dc/total-current@1"],
-                        "minimumOccurrences": 1,
-                        "maximumOccurrences": 1,
-                        "data": electric["outputArtifacts"]["totalCurrent"]["data"],
-                    }
-                },
-            },
+        "solveCoarse": {
+            "kernel": {"name": "dc-current-density", "version": "0.0.0"},
+            "config": task_config("dc-current-density", "dc.joule-heating", "heatSource"),
         },
+        "solveFine": {
+            "kernel": {"name": "steady-state-heat", "version": "0.0.0"},
+            "config": task_config(
+                "steady-state-heat",
+                "heat.maximum-temperature",
+                "maximumTemperature",
+            ),
+        },
+    }
+    program["recordedData"] = {
+        "maximumTemperature": {
+            "dtype": "float64",
+            "unit": "K",
+            "quantityKind": "thermodynamics.Temperature",
+            "tensorOrder": 0,
+        }
     }
     source = (
         "async def simulate(*, sim, tasks, vars, world):\n"
         '    coarse = await sim.run(tasks["solveCoarse"])\n'
         f'    fine = await sim.run(tasks["solveFine"], {second_arguments})\n'
-        '    await sim.record("totalCurrent", fine["artifacts"]["totalCurrent"])\n'
+        '    await sim.record("maximumTemperature", fine["artifacts"]["maximumTemperature"])\n'
         '    return fine["state"]\n'
     )
     program["pythonSource"] = source
-    program["pythonSourceHash"] = hashlib.sha256(source.encode("utf-8")).hexdigest()
     calls = []
     produced = []
 
     async def fake_kernel(task, state, inputs, world, progress):
         calls.append({"task": task, "state": state, "inputs": inputs})
-        artifact = {"value": 14.9}
-        produced.append(artifact)
+        artifacts = fake_artifacts(task)
+        produced.extend(artifacts.values())
         return {
             "state": {"step": len(calls)},
-            "artifacts": {"totalCurrent": artifact},
+            "artifacts": artifacts,
             "observations": {},
         }
 
@@ -543,6 +664,7 @@ async def test_sim_run_forwards_state_and_owned_artifact_to_registered_kernel(
         memory,
         SlaveContext(session_id="session", ttl_seconds=10, call_id="next-1"),
     )
+    run = memory["runs"][run_id]
     complete = await cae_simulation_next(
         DataChannelMessage(
             id="next-2",
@@ -556,24 +678,23 @@ async def test_sim_run_forwards_state_and_owned_artifact_to_registered_kernel(
     assert calls[0]["state"] is None
     assert calls[0]["inputs"] == {}
     assert calls[1]["state"] == {"step": 1}
-    assert calls[1]["inputs"]["carry"] is produced[0]
-    assert [entry["task"] for entry in complete.payload["trace"]] == [
+    assert calls[1]["inputs"]["heatSource"] is produced[0]
+    assert set(complete.payload) == {"kind", "sequence", "recordSequences"}
+    assert [entry["task"] for entry in run.trace] == [
         "solveCoarse",
         "solveFine",
     ]
-    assert complete.payload["trace"][0]["inputStateRevision"] == 0
-    assert complete.payload["trace"][0]["outputStateRevision"] == 1
-    assert complete.payload["trace"][0]["inputArtifacts"] == {}
-    assert complete.payload["trace"][1]["inputStateRevision"] == 1
-    assert complete.payload["trace"][1]["outputStateRevision"] == 2
-    assert complete.payload["trace"][1]["inputArtifacts"] == {
-        "carry": {
+    assert run.trace[0]["inputStateRevision"] == 0
+    assert run.trace[0]["outputStateRevision"] == 1
+    assert run.trace[0]["inputArtifacts"] == {}
+    assert run.trace[1]["inputStateRevision"] == 1
+    assert run.trace[1]["outputStateRevision"] == 2
+    assert run.trace[1]["inputArtifacts"] == {
+        "heatSource": {
             "id": "artifact-1",
-            "artifactType": "caemble.dc/total-current@1",
+            "artifactType": "caemble.dc/joule-heating@1",
         }
     }
-    assert complete.payload["finalStateRevision"] == 2
-    assert complete.payload["finalState"] == {"step": 2}
 
 
 @pytest.mark.asyncio
@@ -585,7 +706,6 @@ async def test_sim_run_rejects_fabricated_state_before_kernel_execution(monkeypa
         '    return await sim.run(tasks["electric"], state={"forged": True})\n'
     )
     program["pythonSource"] = source
-    program["pythonSourceHash"] = hashlib.sha256(source.encode("utf-8")).hexdigest()
     calls = 0
 
     async def fake_kernel(task, state, inputs, world, progress):
@@ -628,33 +748,17 @@ async def test_sim_run_rejects_fabricated_state_before_kernel_execution(monkeypa
         ),
         (
             artifact_chain_payload(
-                'produced["artifacts"]["totalCurrent"]',
+                'produced["artifacts"]["heatSource"]',
                 input_name="wrongPort",
             ),
             "is not declared",
         ),
         (
             artifact_chain_payload(
-                'produced["artifacts"]["totalCurrent"]',
-                artifact_types=["caemble.other/value@1"],
+                'produced["artifacts"]["heatSource"]',
+                producer_method="dc.total-current",
             ),
             "rejects artifact type",
-        ),
-        (
-            artifact_chain_payload(
-                'produced["artifacts"]["totalCurrent"]',
-                producer_schema={
-                    "dtype": "float64",
-                    "unit": "m",
-                    "quantityKind": "Length",
-                },
-                consumer_schema={
-                    "dtype": "float64",
-                    "unit": "cm",
-                    "quantityKind": "Length",
-                },
-            ),
-            "DataSchema is incompatible",
         ),
     ],
 )
@@ -671,7 +775,7 @@ async def test_sim_run_rejects_unowned_or_incompatible_artifacts_before_consumer
         calls += 1
         return {
             "state": None,
-            "artifacts": {"totalCurrent": {"value": 14.9}},
+            "artifacts": fake_artifacts(task),
             "observations": {},
         }
 
@@ -701,18 +805,17 @@ async def test_sim_run_rejects_unowned_or_incompatible_artifacts_before_consumer
 
 @pytest.mark.asyncio
 async def test_sim_run_rejects_an_artifact_after_release(monkeypatch):
-    request = artifact_chain_payload('produced["artifacts"]["totalCurrent"]')
+    request = artifact_chain_payload('produced["artifacts"]["heatSource"]')
     program = request["setup"]["experiment"]["simulationProgram"]
     source = (
         "async def simulate(*, sim, tasks, vars, world):\n"
         '    produced = await sim.run(tasks["producer"])\n'
-        '    artifact = produced["artifacts"]["totalCurrent"]\n'
+        '    artifact = produced["artifacts"]["heatSource"]\n'
         "    sim.release(artifact)\n"
-        '    await sim.run(tasks["consumer"], inputs={"carry": artifact})\n'
+        '    await sim.run(tasks["consumer"], inputs={"heatSource": artifact})\n'
         "    return None\n"
     )
     program["pythonSource"] = source
-    program["pythonSourceHash"] = hashlib.sha256(source.encode("utf-8")).hexdigest()
     calls = 0
 
     async def fake_kernel(task, state, inputs, world, progress):
@@ -720,7 +823,7 @@ async def test_sim_run_rejects_an_artifact_after_release(monkeypatch):
         calls += 1
         return {
             "state": None,
-            "artifacts": {"totalCurrent": {"value": 14.9}},
+            "artifacts": fake_artifacts(task),
             "observations": {},
         }
 
@@ -759,9 +862,6 @@ async def test_duplicate_record_name_returns_terminal_domain_failure(monkeypatch
         "    return result[\"state\"]\n"
     )
     request["setup"]["experiment"]["simulationProgram"]["pythonSource"] = source
-    request["setup"]["experiment"]["simulationProgram"]["pythonSourceHash"] = hashlib.sha256(
-        source.encode("utf-8")
-    ).hexdigest()
 
     async def fake_kernel(task, state, inputs, world, progress):
         return {
@@ -819,7 +919,6 @@ async def test_failed_record_encoding_does_not_consume_a_protocol_sequence(monke
     )
     program = request["setup"]["experiment"]["simulationProgram"]
     program["pythonSource"] = source
-    program["pythonSourceHash"] = hashlib.sha256(source.encode("utf-8")).hexdigest()
     monkeypatch.setattr("app.runtime.validate_kernel_tasks", lambda *_args: None)
     memory = {"runs": {}}
     start = await cae_simulation_start(
@@ -852,7 +951,10 @@ async def test_start_rejects_incomplete_built_realizations(monkeypatch):
         DataChannelMessage(
             id="start",
             type="cae.simulation.start",
-            payload={"sample": {"kind": "sample"}, "setup": {"kind": "setup"}},
+            payload={
+                "sample": {"kind": "sample"},
+                "setup": {"kind": "setup"},
+            },
         ),
         memory,
         SlaveContext(session_id="session", ttl_seconds=10, call_id="start"),
@@ -1036,9 +1138,6 @@ async def test_sim_release_rejects_values_not_returned_by_sim_run(monkeypatch):
         "    return None\n"
     )
     request["setup"]["experiment"]["simulationProgram"]["pythonSource"] = source
-    request["setup"]["experiment"]["simulationProgram"]["pythonSourceHash"] = hashlib.sha256(
-        source.encode("utf-8")
-    ).hexdigest()
     monkeypatch.setattr("app.runtime.emit", lambda *_args: None)
     monkeypatch.setattr("app.runtime.validate_kernel_tasks", lambda *_args: None)
     memory = {"runs": {}}

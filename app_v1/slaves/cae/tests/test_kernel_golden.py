@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from app.errors import CaeError
-from app.kernels import run_kernel, stable_hash
+from app.kernels import run_kernel
 
 
 def box_world():
@@ -213,33 +213,16 @@ async def test_dc_and_heat_match_existing_uniform_bar_golden():
 
 
 @pytest.mark.asyncio
-async def test_alternate_ucum_units_match_uniform_bar_golden():
+async def test_solver_rejects_noncanonical_geometry_unit():
     async def report(_value):
         return None
 
     world = box_world()
-    length_scale = 0.3048006096012192
     world["structure"]["lengthUnit"] = "[ft_us]"
-    world["structure"]["parts"][0]["geometry"]["positions"] /= length_scale
-    electrical = world["sample"]["materialParameters"]["materials"]["Copper"]["electrical.conductivity"]["value"]
-    electrical["unit"] = "MS.m-1"
-    electrical["value"] = (np.eye(3) * 59.6).tolist()
-    thermal = world["sample"]["materialParameters"]["materials"]["Copper"]["thermal.conductivity"]["value"]
-    thermal["unit"] = "kcal_IT.h-1.m-1.Cel-1"
-    thermal["value"] = (np.eye(3) * (401.0 / 1.163)).tolist()
 
-    electric = await run_kernel(dc_task(), None, {}, world, report)
-    heat = await run_kernel(
-        heat_task(),
-        electric["state"],
-        {"heatSource": electric["artifacts"]["jouleHeating"]},
-        world,
-        report,
-    )
-
-    assert electric["artifacts"]["totalCurrent"]["value"] == pytest.approx(14.9, abs=1e-6)
-    assert np.mean(electric["artifacts"]["jouleHeating"]["value"]) == pytest.approx(5960.0, abs=1e-5)
-    assert heat["artifacts"]["maximumTemperature"]["value"] == pytest.approx(293.16857855, abs=2e-7)
+    with pytest.raises(CaeError, match="solver unit m") as error:
+        await run_kernel(dc_task(), None, {}, world, report)
+    assert error.value.code == "invalid_unit"
 
 
 @pytest.mark.asyncio
@@ -268,7 +251,7 @@ async def test_dc_resolution_study_preserves_supplied_state_for_stateless_kernel
     [
         (
             {"dtype": "float64", "value": (np.eye(3) * 5.96e7).tolist(), "unit": "W.m-1.K-1"},
-            "ElectricConductivity",
+            "canonical float64 in S.m-1",
         ),
         (
             {"dtype": "float64", "value": 5.96e7, "unit": "S.m-1"},
@@ -287,11 +270,3 @@ async def test_dc_rejects_noncanonical_material_descriptor(descriptor, expected)
     with pytest.raises(CaeError, match=expected) as error:
         await run_kernel(dc_task(), None, {}, world, report)
     assert error.value.code == "invalid_material"
-
-
-def test_canonical_hash_matches_typescript_golden_values():
-    assert stable_hash("한글") == "f0d67a21"
-    assert stable_hash(1e-7) == "ce4d481e"
-    assert stable_hash(1e21) == "16b2c856"
-    assert stable_hash({"가": 3, "é": 1, "z": 2}) == "781642d6"
-    assert stable_hash(-0.0) == stable_hash(0.0)

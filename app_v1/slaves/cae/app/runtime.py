@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import contextlib
-import hashlib
 import json
+import logging
 import math
 import time
 import uuid
@@ -18,7 +18,7 @@ from sdk.slave import SlaveContext
 from sdk.slave.runtime import emit
 
 from app.errors import CaeError, ProtocolError
-from app.kernels import run_kernel, stable_hash, validate_kernel_tasks
+from app.kernels import resolve_output_specs, run_kernel, solver_spec, validate_kernel_tasks
 from app.program import SIMULATION_API_VERSION, validate_and_load_simulate
 from app.tensor import (
     MAX_RECORDED_BYTES,
@@ -31,9 +31,9 @@ from app.tensor import (
 FIRST_NEXT_TIMEOUT_SECONDS = 30
 RECORD_ACK_TIMEOUT_SECONDS = 120
 DEFAULT_MAX_RUN_SECONDS = 2 * 60 * 60
-MAX_RUN_SECONDS = 2 * 60 * 60
 HEARTBEAT_SECONDS = 5
 LIVENESS_SECONDS = 5 * 60
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -61,10 +61,6 @@ class CaeRun:
         self.setup = copy.deepcopy(setup)
         manifest = _manifest(self.setup)
         source = _simulation_source(self.setup, manifest)
-        source_hash = manifest.get("pythonSourceHash")
-        actual_source_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
-        if source_hash != actual_source_hash:
-            raise CaeError("program_hash_mismatch", "Python simulation source hash does not match BuiltSetup")
         api_version = manifest.get("simulationApiVersion", manifest.get("simulation_api_version", SIMULATION_API_VERSION))
         if str(api_version) != SIMULATION_API_VERSION:
             raise CaeError("unsupported_program", f"simulation API version {api_version!r} is not supported")
@@ -73,14 +69,22 @@ class CaeRun:
         self.schemas = manifest.get("recordedData")
         if not isinstance(tasks, dict) or not tasks or not isinstance(self.schemas, dict):
             raise CaeError("invalid_program", "simulation manifest tasks and recordedData are required")
-        validate_kernel_tasks(tasks, manifest)
+        validate_kernel_tasks(tasks)
         canonical_tasks = copy.deepcopy(tasks)
         self._task_descriptors = {
-            name: _resolved_task_descriptor(manifest, task, name)
+            name: solver_spec(task, name)
+            for name, task in canonical_tasks.items()
+        }
+        self._output_specs = {
+            name: resolve_output_specs(task, name)
             for name, task in canonical_tasks.items()
         }
         for name, task in canonical_tasks.items():
-            _validate_task_artifact_contract(name, task, self._task_descriptors[name])
+            _validate_task_artifact_contract(
+                name,
+                self._task_descriptors[name],
+                self._output_specs[name],
+            )
         task_handles = {
             name: _read_only(task)
             for name, task in canonical_tasks.items()
@@ -97,13 +101,6 @@ class CaeRun:
         self.run_id = str(uuid.uuid4())
         self.max_run_seconds = max_run_seconds
         self.job_id = job_id
-        self.program_hash = _required_hash(manifest, "programHash", sha256=True)
-        experiment = self.setup.get("experiment")
-        if not isinstance(experiment, dict) or experiment.get("sourceHash") != self.program_hash:
-            raise CaeError("program_hash_mismatch", "programHash does not match the built Experiment sourceHash")
-        self.schema_hash = _required_hash(manifest, "recordedDataSchemaHash")
-        if self.schema_hash != stable_hash(self.schemas):
-            raise CaeError("program_hash_mismatch", "RecordedData schema hash does not match BuiltSetup")
         self.queue: asyncio.Queue[RecordPacket | dict[str, Any]] = asyncio.Queue()
         self.pending: RecordPacket | None = None
         self.task: asyncio.Task[None] | None = None
@@ -302,20 +299,21 @@ class CaeRun:
             )
             final_state_revision = sim.state_revision(final_state)
             await self._status("finalizing")
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            logger.info(
+                "CAE run completed run_id=%s tasks=%s records=%s bytes=%s final_state_revision=%s duration_ms=%s",
+                self.run_id,
+                [entry["task"] for entry in self.trace],
+                list(self.recorded_names),
+                self.recorded_bytes,
+                final_state_revision,
+                duration_ms,
+            )
             await self.queue.put(
                 {
                     "kind": "complete",
                     "sequence": self.sequence + 1,
                     "recordSequences": list(self.completed_sequences),
-                    "trace": self.trace,
-                    "provenance": {
-                        "programHash": self.program_hash,
-                        "recordedDataSchemaHash": self.schema_hash,
-                        "simulationApiVersion": SIMULATION_API_VERSION,
-                        "durationMs": int((time.perf_counter() - started) * 1000),
-                    },
-                    "finalStateRevision": final_state_revision,
-                    "finalState": _json_state(final_state),
                 }
             )
         except asyncio.CancelledError:
@@ -525,8 +523,8 @@ class SimulationApi:
         artifacts = result.get("artifacts")
         if not isinstance(artifacts, dict):
             raise CaeError("invalid_output", f"task {task_name} kernel artifacts must be an object")
-        output_specs = task.get("outputArtifacts")
-        if not isinstance(output_specs, dict) or set(artifacts) != set(output_specs):
+        output_specs = self._run._output_specs[task_name]
+        if set(artifacts) != set(output_specs):
             raise CaeError(
                 "invalid_output",
                 f"task {task_name} kernel artifacts do not match its resolved output specs",
@@ -582,7 +580,6 @@ class SimulationApi:
                 "kernel": {
                     "name": kernel.get("name"),
                     "version": kernel.get("version"),
-                    "descriptorHash": kernel.get("descriptorHash"),
                 },
                 "inputStateRevision": input_state_revision,
                 "outputStateRevision": output_state_revision,
@@ -738,36 +735,10 @@ class SimulationApi:
         return trace_inputs
 
 
-def _resolved_task_descriptor(
-    manifest: dict[str, Any],
-    task: dict[str, Any],
-    task_name: str,
-) -> dict[str, Any]:
-    candidate = task.get("descriptor")
-    candidates: list[Any] = [candidate] if candidate is not None else []
-    descriptors = manifest.get("kernelDescriptors")
-    if isinstance(descriptors, list):
-        candidates.extend(descriptors)
-    elif isinstance(descriptors, dict):
-        candidates.extend(descriptors.values())
-    kernel = task.get("kernel") or {}
-    identity = (kernel.get("name"), kernel.get("version"))
-    for item in candidates:
-        if not isinstance(item, dict):
-            continue
-        body = item.get("descriptor", item)
-        if isinstance(body, dict) and (body.get("name"), body.get("version")) == identity:
-            return body
-    raise CaeError(
-        "invalid_program",
-        f"task {task_name} has no descriptor for {identity[0]}@{identity[1]}",
-    )
-
-
 def _validate_task_artifact_contract(
     task_name: str,
-    task: dict[str, Any],
     descriptor: dict[str, Any],
+    output_specs: dict[str, Any],
 ) -> None:
     ports = descriptor.get("inputPorts")
     if not isinstance(ports, dict):
@@ -796,9 +767,6 @@ def _validate_task_artifact_contract(
         if port.get("data") is not None:
             validate_data_schema(port["data"], f"task {task_name}.inputPorts.{port_name}.data")
 
-    output_specs = task.get("outputArtifacts")
-    if not isinstance(output_specs, dict):
-        raise CaeError("invalid_program", f"task {task_name} resolved outputArtifacts are required")
     for output_name, spec in output_specs.items():
         if (
             not isinstance(output_name, str)
@@ -812,7 +780,7 @@ def _validate_task_artifact_contract(
                 "invalid_program",
                 f"task {task_name} resolved output artifact {output_name!r} is invalid",
             )
-        validate_data_schema(spec.get("data"), f"task {task_name}.outputArtifacts.{output_name}.data")
+        validate_data_schema(spec.get("data"), f"task {task_name}.outputs.{output_name}.data")
 
 
 def _read_only(value: Any) -> Any:
@@ -829,26 +797,19 @@ def create_run(
     job_id: str,
     on_cleanup: Callable[[str], None],
 ) -> CaeRun:
-    if not isinstance(payload, dict) or any(
-        key not in {"sample", "setup", "maxRunSeconds"} for key in payload
-    ):
-        raise CaeError("invalid_input", "start payload must contain only sample, setup, and maxRunSeconds")
+    if not isinstance(payload, dict) or set(payload) != {"sample", "setup"}:
+        raise CaeError(
+            "invalid_input",
+            "start payload must contain exactly sample and setup",
+        )
     sample = payload.get("sample")
     setup = payload.get("setup")
     _validate_built_realization(sample, "sample", "structure")
     _validate_built_realization(setup, "setup", "experiment")
-    max_run_seconds = payload.get("maxRunSeconds", DEFAULT_MAX_RUN_SECONDS)
-    if (
-        not isinstance(max_run_seconds, int)
-        or isinstance(max_run_seconds, bool)
-        or max_run_seconds < 1
-        or max_run_seconds > MAX_RUN_SECONDS
-    ):
-        raise CaeError("invalid_input", "maxRunSeconds must be between 1 and 7200")
     return CaeRun(
         sample=sample,
         setup=setup,
-        max_run_seconds=max_run_seconds,
+        max_run_seconds=DEFAULT_MAX_RUN_SECONDS,
         job_id=job_id,
         on_cleanup=on_cleanup,
     )
@@ -1191,8 +1152,6 @@ def started_payload(run: CaeRun) -> dict[str, Any]:
     return {
         "kind": "started",
         "runId": run.run_id,
-        "programHash": run.program_hash,
-        "recordedDataSchemaHash": run.schema_hash,
         "maxRunSeconds": run.max_run_seconds,
     }
 
@@ -1200,34 +1159,26 @@ def started_payload(run: CaeRun) -> dict[str, Any]:
 def _manifest(setup: dict[str, Any]) -> dict[str, Any]:
     experiment = setup.get("experiment")
     manifest = experiment.get("simulationProgram") if isinstance(experiment, dict) else None
-    if not isinstance(manifest, dict) or manifest.get("formatVersion") != 2:
-        raise CaeError("invalid_program", "BuiltSetup simulationProgram formatVersion 2 is required")
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("formatVersion") != 3
+        or set(manifest) != {
+            "formatVersion",
+            "simulationApiVersion",
+            "pythonSource",
+            "tasks",
+            "recordedData",
+        }
+    ):
+        raise CaeError("invalid_program", "BuiltSetup simulationProgram formatVersion 3 is required")
     return manifest
 
 
 def _simulation_source(setup: dict[str, Any], manifest: dict[str, Any]) -> str:
-    if isinstance(manifest.get("pythonSource"), str):
+    del setup
+    if isinstance(manifest.get("pythonSource"), str) and manifest["pythonSource"].strip():
         return manifest["pythonSource"]
-    python = manifest.get("python")
-    if isinstance(python, dict) and isinstance(python.get("source"), str):
-        return python["source"]
-    for key in ("simulationSource", "simulationCode", "simulation_code"):
-        if isinstance(setup.get(key), str):
-            return setup[key]
     raise CaeError("invalid_program", "BuiltSetup has no Python simulation source")
-
-
-def _required_hash(manifest: dict[str, Any], name: str, *, sha256: bool = False) -> str:
-    value = manifest.get(name)
-    if (
-        not isinstance(value, str)
-        or not value
-        or (sha256 and len(value) != 64)
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
-        expected = "a lowercase SHA-256 hash" if sha256 else "a lowercase hexadecimal hash"
-        raise CaeError("invalid_program", f"{name} must be {expected}")
-    return value
 
 
 def _variables(setup: dict[str, Any]) -> dict[str, Any]:

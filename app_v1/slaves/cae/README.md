@@ -4,9 +4,16 @@ Caemble의 fully-built `BuiltSample`과 `BuiltSetup`만 받아 Python kernel을 
 RecordedData만 GPStation WebRTC result attachment로 반환한다. GPStation SDK 소스는 수정하지
 않으며 application-level `cae.simulation.start` → `cae.simulation.next` protocol을 사용한다.
 
+CAE에는 전체 QuantityKind, Material, UCUM catalog가 없다. `kernels.py`에 등록된
+solver가 실제로 사용하는 canonical geometry unit, material property, parameter,
+input/output spec만 소유한다. 일반 tensor codec은 UI가 보낸 `dtype`, `tensorOrder`,
+shape, ticks와 byte length만 검증하며 `quantityKind`와 `unit` 문자열의 물리적 의미는
+해석하지 않는다.
+
 ```powershell
 cd app_v1/slaves/cae
 poetry install
+poetry run python -c "import app, numpy, aiortc"
 poetry run pytest
 ```
 
@@ -29,7 +36,12 @@ poetry run python -c "import app, numpy, aiortc"
 tail -f /home/cavenet/gpstation/app_v1/launcher/launcher.log
 ```
 
-Launcher는 `manifest.json`을 자동 검색한다. 첫 `next`가 계산을 시작하며 각 record는 다음
+UI와 CAE는 함께 배포하지만 별도 contract artifact나 hash 비교를 사용하지 않는다.
+solver의 단위 또는 입출력 계약을 바꿀 때는 UI의 해당 TS descriptor와 CAE의 해당
+solver spec을 같은 변경에서 갱신한다.
+
+Launcher는 `manifest.json`을 자동 검색한다. start payload는 정확히 `{sample, setup}`이다.
+첫 `next`가 계산을 시작하며 각 record는 다음
 `next`의 `ackSequence`를 받아야 해제된다. 기본 실행 제한은 2시간, 첫 `next` 제한은 30초,
 record ACK 제한은 120초다.
 

@@ -8,10 +8,6 @@ import numpy as np
 from sdk.protocol.messages import DataChannelAttachment
 
 from app.errors import CaeError
-from app.quantity_kind_orders import (
-    QUANTITY_KIND_APPLICABLE_UNITS,
-    QUANTITY_KIND_TENSOR_ORDERS,
-)
 
 INLINE_LIMIT_BYTES = 64 * 1024
 ATTACHMENT_SHARD_BYTES = 16 * 1024 * 1024
@@ -54,26 +50,34 @@ def dtype_for(name: str) -> np.dtype[Any]:
 def validate_data_schema(schema: Any, path: str = "DataSchema") -> None:
     if not isinstance(schema, dict):
         raise CaeError("invalid_schema", f"{path} must be an object")
-    allowed = {"dtype", "unit", "quantityKind", "basis", "axes"}
+    allowed = {"dtype", "unit", "quantityKind", "tensorOrder", "basis", "axes"}
     if any(key not in allowed for key in schema):
         raise CaeError("invalid_schema", f"{path} contains unsupported fields")
     dtype_name = schema.get("dtype")
     if dtype_name != "string" and dtype_name not in _DTYPES:
         raise CaeError("invalid_schema", f"{path}.dtype is not supported")
+    tensor_order = schema.get("tensorOrder")
+    if (
+        not isinstance(tensor_order, int)
+        or isinstance(tensor_order, bool)
+        or tensor_order < 0
+    ):
+        raise CaeError("invalid_schema", f"{path}.tensorOrder must be a non-negative integer")
     if isinstance(dtype_name, str) and dtype_name.startswith("float"):
         if not isinstance(schema.get("unit"), str) or not schema["unit"]:
             raise CaeError("invalid_schema", f"{path}.unit is required for a float dtype")
         if not isinstance(schema.get("quantityKind"), str) or not schema["quantityKind"]:
             raise CaeError("invalid_schema", f"{path}.quantityKind is required for a float dtype")
-        order = quantity_tensor_order(schema["quantityKind"])
-        validate_quantity_unit(schema["quantityKind"], schema["unit"], path)
         basis = schema.get("basis")
-        if order == 0 and basis is not None:
+        if tensor_order == 0 and basis is not None:
             raise CaeError("invalid_schema", f"{path}.basis is forbidden for a scalar QuantityKind")
-        if order > 0:
+        if tensor_order > 0:
             _validate_basis(basis, f"{path}.basis")
-    elif any(key in schema for key in ("unit", "quantityKind", "basis")):
-        raise CaeError("invalid_schema", f"{path} non-float data must not contain quantity metadata")
+    else:
+        if tensor_order != 0:
+            raise CaeError("invalid_schema", f"{path}.tensorOrder must be 0 for a non-float dtype")
+        if any(key in schema for key in ("unit", "quantityKind", "basis")):
+            raise CaeError("invalid_schema", f"{path} non-float data must not contain quantity metadata")
 
     axes = schema.get("axes")
     if axes is None:
@@ -104,12 +108,9 @@ def validate_data_schema(schema: Any, path: str = "DataSchema") -> None:
                 or not axis["unit"]
                 or not isinstance(axis["quantityKind"], str)
                 or not axis["quantityKind"]
-                or quantity_tensor_order(axis["quantityKind"]) != 0
             )
         ):
             raise CaeError("invalid_schema", f"{axis_path} quantity metadata is invalid")
-        if has_unit:
-            validate_quantity_unit(axis["quantityKind"], axis["unit"], axis_path)
         ticks = axis.get("ticks")
         if ticks is not None:
             if length is None or not isinstance(ticks, list) or len(ticks) != length:
@@ -371,10 +372,8 @@ def _validate_shape(schema: dict[str, Any], shape: list[int], axes: Any) -> None
     schema_axes = schema.get("axes") or []
     if not isinstance(schema_axes, list):
         raise CaeError("invalid_schema", "DataSchema axes must be an array")
-    component_order = schema.get("tensorOrder", schema.get("tensor_order"))
-    if component_order is None:
-        component_order = quantity_tensor_order(schema.get("quantityKind"))
-    if not isinstance(component_order, int) or component_order < 0:
+    component_order = schema.get("tensorOrder")
+    if not isinstance(component_order, int) or isinstance(component_order, bool) or component_order < 0:
         raise CaeError("invalid_schema", "DataSchema tensor order is invalid")
     expected_rank = len(schema_axes) + component_order
     if len(shape) != expected_rank:
@@ -392,7 +391,7 @@ def _validate_shape(schema: dict[str, Any], shape: list[int], axes: Any) -> None
         if length is None:
             has_dynamic_axis = True
     if component_order and shape[-component_order:] != [3] * component_order:
-        raise CaeError("invalid_tensor", "QuantityKind component shape must use length 3 for each tensor order")
+        raise CaeError("invalid_tensor", "tensor component shape must use length 3 for each tensor order")
     if axes is None:
         if has_dynamic_axis:
             raise CaeError("invalid_tensor", "tensor axes and ticks are required for a dynamic DataSchema axis")
@@ -418,22 +417,6 @@ def _validate_shape(schema: dict[str, Any], shape: list[int], axes: Any) -> None
             raise CaeError("invalid_tensor", f"tensor axis {index} ticks must be finite numbers or strings")
         if schema_ticks is not None and ticks != schema_ticks:
             raise CaeError("invalid_tensor", f"tensor axis {index} ticks do not match DataSchema")
-
-
-def quantity_tensor_order(quantity_kind: Any) -> int:
-    if quantity_kind is None:
-        return 0
-    if not isinstance(quantity_kind, str) or quantity_kind not in QUANTITY_KIND_TENSOR_ORDERS:
-        raise CaeError("invalid_schema", f"unknown QuantityKind: {quantity_kind!r}")
-    return QUANTITY_KIND_TENSOR_ORDERS[quantity_kind]
-
-
-def validate_quantity_unit(quantity_kind: str, unit: str, path: str) -> None:
-    if unit not in QUANTITY_KIND_APPLICABLE_UNITS[quantity_kind]:
-        raise CaeError(
-            "invalid_schema",
-            f"{path}.unit {unit!r} is not applicable to QuantityKind {quantity_kind!r}",
-        )
 
 
 def _string_shape_and_value(value: Any) -> tuple[list[int], Any]:

@@ -2,68 +2,255 @@ from __future__ import annotations
 
 import asyncio
 import math
-import struct
 from typing import Any, Awaitable, Callable
 
 import numpy as np
 
 from app.errors import CaeError
-from app.tensor import quantity_tensor_order, validate_data_schema
-from app.ucum import ucum_scale
 
 MAXIMUM_VOXEL_COUNT = 250_000
 _NEIGHBOR_OFFSETS = ((-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1))
-_IMPLEMENTATIONS = {
-    ("dc-current-density", "0.0.0"): "ec79ace3",
-    ("steady-state-heat", "0.0.0"): "a955fbb5",
+_IDENTITY_BASIS = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+_GEOMETRY_TARGET = {
+    "source": "structure",
+    "kind": "geometry",
+    "minimumTargets": 1,
+    "maximumTargets": 1,
+}
+_SURFACE_TARGET = {
+    "source": "structure",
+    "kind": "surface",
+    "minimumTargets": 1,
+    "maximumTargets": 1,
+}
+_AXIAL_AXES = [
+    {"name": "axial position", "quantityKind": "Length", "unit": "m"},
+    {"name": "cross-section v", "quantityKind": "Length", "unit": "m"},
+    {"name": "cross-section u", "quantityKind": "Length", "unit": "m"},
+]
+_RATIO = {
+    "dtype": "float64",
+    "quantityKind": "DimensionlessRatio",
+    "tensorOrder": 0,
+    "unit": "{fraction}",
+    "minimum": 0,
+    "maximum": 1,
+    "exclusiveMinimum": True,
+    "exclusiveMaximum": True,
+}
+_COMMON_PARAMETERS = {
+    "relativeTolerance": {"data": _RATIO},
+    "maxIterations": {"data": {"dtype": "int32", "minimum": 1}},
+}
+_GRID_SHAPE = {"gridShape": {"data": {"dtype": "int32", "axes": [{"length": 3}], "minimum": 3}}}
+
+_DC_OUTPUTS = {
+    "dc.current-density": {
+        "artifactType": "caemble.dc/current-density@1",
+        "data": {
+            "dtype": "float64",
+            "quantityKind": "electromagnetism.ElectricCurrentDensity",
+            "tensorOrder": 1,
+            "unit": "A.m-2",
+            "basis": _IDENTITY_BASIS,
+            "axes": _AXIAL_AXES[1:],
+        },
+    },
+    "dc.total-current": {
+        "artifactType": "caemble.dc/total-current@1",
+        "data": {
+            "dtype": "float64",
+            "quantityKind": "electromagnetism.ElectricCurrent",
+            "tensorOrder": 0,
+            "unit": "A",
+        },
+    },
+    "dc.joule-heating": {
+        "artifactType": "caemble.dc/joule-heating@1",
+        "data": {
+            "dtype": "float64",
+            "quantityKind": "PowerDensity",
+            "tensorOrder": 0,
+            "unit": "W.m-3",
+            "axes": _AXIAL_AXES,
+        },
+    },
+}
+_HEAT_OUTPUTS = {
+    "heat.temperature": {
+        "artifactType": "caemble.heat/temperature@1",
+        "data": {
+            "dtype": "float64",
+            "quantityKind": "thermodynamics.Temperature",
+            "tensorOrder": 0,
+            "unit": "K",
+            "axes": _AXIAL_AXES,
+        },
+    },
+    "heat.maximum-temperature": {
+        "artifactType": "caemble.heat/maximum-temperature@1",
+        "data": {
+            "dtype": "float64",
+            "quantityKind": "thermodynamics.Temperature",
+            "tensorOrder": 0,
+            "unit": "K",
+        },
+    },
+}
+
+
+def _method(
+    method_id: str,
+    target: dict[str, Any],
+    parameters: dict[str, Any],
+    minimum: int,
+    maximum: int,
+    output: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "methodId": method_id,
+        "target": target,
+        "parameters": parameters,
+        "minimumOccurrences": minimum,
+        "maximumOccurrences": maximum,
+        **(output or {}),
+    }
+
+
+_SOLVERS = {
+    ("dc-current-density", "0.0.0"): {
+        "name": "dc-current-density",
+        "version": "0.0.0",
+        "referenceLengthUnit": "m",
+        "minimumOutputs": 1,
+        "parameters": _COMMON_PARAMETERS,
+        "inputPorts": {},
+        "methods": {
+            "initializations": [_method("dc.voxel-grid", _GEOMETRY_TARGET, _GRID_SHAPE, 1, 1)],
+            "boundaryConditions": [
+                _method(
+                    "dc.source-potential",
+                    _SURFACE_TARGET,
+                    {
+                        "voltage": {
+                            "data": {
+                                "dtype": "float64",
+                                "quantityKind": "electromagnetism.Voltage",
+                                "tensorOrder": 0,
+                                "unit": "V",
+                            }
+                        }
+                    },
+                    1,
+                    1,
+                ),
+                _method(
+                    "dc.reference-potential",
+                    _SURFACE_TARGET,
+                    {
+                        "voltage": {
+                            "data": {
+                                "dtype": "float64",
+                                "quantityKind": "electromagnetism.Voltage",
+                                "tensorOrder": 0,
+                                "unit": "V",
+                            }
+                        }
+                    },
+                    1,
+                    1,
+                ),
+            ],
+            "outputs": [
+                _method(
+                    method_id,
+                    _GEOMETRY_TARGET,
+                    {"crossSectionPosition": {"data": _RATIO}} if method_id != "dc.joule-heating" else {},
+                    0,
+                    1 if method_id == "dc.joule-heating" else (1 << 53) - 1,
+                    output,
+                )
+                for method_id, output in _DC_OUTPUTS.items()
+            ],
+        },
+    },
+    ("steady-state-heat", "0.0.0"): {
+        "name": "steady-state-heat",
+        "version": "0.0.0",
+        "referenceLengthUnit": "m",
+        "minimumOutputs": 1,
+        "parameters": _COMMON_PARAMETERS,
+        "inputPorts": {
+            "heatSource": {
+                "artifactTypes": ["caemble.dc/joule-heating@1"],
+                "minimumOccurrences": 0,
+                "maximumOccurrences": 1,
+                "data": _DC_OUTPUTS["dc.joule-heating"]["data"],
+            }
+        },
+        "methods": {
+            "initializations": [_method("heat.voxel-grid", _GEOMETRY_TARGET, _GRID_SHAPE, 1, 1)],
+            "boundaryConditions": [
+                _method(
+                    "heat.fixed-temperature",
+                    _SURFACE_TARGET,
+                    {
+                        "temperature": {
+                            "data": {
+                                "dtype": "float64",
+                                "quantityKind": "thermodynamics.Temperature",
+                                "tensorOrder": 0,
+                                "unit": "K",
+                                "minimum": 0,
+                            }
+                        }
+                    },
+                    2,
+                    2,
+                )
+            ],
+            "outputs": [
+                _method(method_id, _GEOMETRY_TARGET, {}, 0, 1, output)
+                for method_id, output in _HEAT_OUTPUTS.items()
+            ],
+        },
+    },
 }
 _MATERIAL_KERNEL_SPECS = {
-    "electrical.conductivity": (
-        "electromagnetism.ElectricConductivity",
-        "S.m-1",
-    ),
-    "thermal.conductivity": (
-        "thermodynamics.ThermalConductivity",
-        "W.m-1.K-1",
-    ),
+    "electrical.conductivity": {"dtype": "float64", "unit": "S.m-1"},
+    "thermal.conductivity": {"dtype": "float64", "unit": "W.m-1.K-1"},
 }
 
 
-def validate_kernel_tasks(tasks: dict[str, Any], manifest: dict[str, Any]) -> None:
-    descriptors = manifest.get("kernelDescriptors")
+def solver_spec(task: dict[str, Any], task_name: str = "task") -> dict[str, Any]:
+    kernel = task.get("kernel") if isinstance(task, dict) else None
+    identity = (
+        kernel.get("name") if isinstance(kernel, dict) else None,
+        kernel.get("version") if isinstance(kernel, dict) else None,
+    )
+    descriptor = _SOLVERS.get(identity)
+    if descriptor is None:
+        raise CaeError("kernel_not_found", f"CAE kernel {identity[0]}@{identity[1]} is not registered")
+    return descriptor
+
+
+def resolve_output_specs(task: dict[str, Any], task_name: str) -> dict[str, Any]:
+    return _validate_normalized_task_config(solver_spec(task, task_name), task.get("config"), task_name)
+
+
+def validate_kernel_tasks(tasks: dict[str, Any]) -> None:
     for task_name, task in tasks.items():
         if not isinstance(task_name, str) or not task_name.strip():
             raise CaeError("invalid_program", "task names must be non-empty strings")
-        if not isinstance(task, dict) or not isinstance(task.get("kernel"), dict) or not isinstance(task.get("config"), dict):
+        if (
+            not isinstance(task, dict)
+            or set(task) != {"kernel", "config"}
+            or not isinstance(task.get("kernel"), dict)
+            or set(task["kernel"]) != {"name", "version"}
+            or not isinstance(task.get("config"), dict)
+        ):
             raise CaeError("invalid_program", f"task {task_name} is not a normalized kernel task")
-        kernel = task["kernel"]
-        identity = (kernel.get("name"), kernel.get("version"))
-        if identity not in _IMPLEMENTATIONS:
-            raise CaeError("kernel_not_found", f"CAE kernel {identity[0]}@{identity[1]} is not registered")
-        descriptor_hash = kernel.get("descriptorHash", task.get("descriptorHash"))
-        if not isinstance(descriptor_hash, str) or not descriptor_hash:
-            raise CaeError("invalid_program", f"task {task_name} has no descriptorHash")
-        descriptor = task.get("descriptor")
-        if descriptor is None:
-            descriptor = _find_descriptor(descriptors, identity)
-        if descriptor is None:
-            raise CaeError("invalid_program", f"descriptor for {identity[0]}@{identity[1]} is missing")
-        body = descriptor.get("descriptor", descriptor)
-        declared_hash = descriptor.get("descriptorHash", descriptor.get("hash", descriptor_hash))
-        actual_hash = stable_hash(body)
-        if descriptor_hash != declared_hash or descriptor_hash != actual_hash:
-            raise CaeError("descriptor_mismatch", f"descriptor hash mismatch for {identity[0]}@{identity[1]}")
-        if descriptor_hash != _IMPLEMENTATIONS[identity]:
-            raise CaeError(
-                "descriptor_mismatch",
-                f"descriptor hash is not registered for {identity[0]}@{identity[1]}",
-            )
-        if body.get("name") != identity[0] or body.get("version") != identity[1]:
-            raise CaeError("descriptor_mismatch", f"descriptor identity mismatch for task {task_name}")
-        config_hash = task.get("configHash")
-        if not isinstance(config_hash, str) or config_hash != stable_hash(task["config"]):
-            raise CaeError("program_hash_mismatch", f"config hash mismatch for task {task_name}")
-        _validate_normalized_task_config(body, task["config"], task.get("outputArtifacts"), task_name)
+        resolve_output_specs(task, task_name)
 
 
 async def run_kernel(
@@ -87,99 +274,11 @@ async def run_kernel(
     return result if "state" in result else {"state": state, **result}
 
 
-def stable_hash(value: Any) -> str:
-    result = 0x811C9DC5
-    ancestors: set[int] = set()
-
-    def append_bytes(data: bytes) -> None:
-        nonlocal result
-        for byte in data:
-            result ^= byte
-            result = (result * 0x01000193) & 0xFFFFFFFF
-
-    def append_length(length: int) -> None:
-        if length < 0 or length > 0xFFFFFFFF:
-            raise CaeError("invalid_program", "canonical data length exceeds uint32")
-        append_bytes(struct.pack("<I", length))
-
-    def string_bytes(text: str) -> bytes:
-        try:
-            return text.encode("utf-8", errors="strict")
-        except UnicodeEncodeError as exc:
-            raise CaeError("invalid_program", "canonical data contains invalid Unicode") from exc
-
-    def append_string(data: bytes) -> None:
-        append_bytes(b"\x04")
-        append_length(len(data))
-        append_bytes(data)
-
-    def append(current: Any) -> None:
-        if current is None:
-            append_bytes(b"\x00")
-            return
-        if current is False:
-            append_bytes(b"\x01")
-            return
-        if current is True:
-            append_bytes(b"\x02")
-            return
-        if isinstance(current, (int, float)) and not isinstance(current, bool):
-            try:
-                number = float(current)
-            except (OverflowError, ValueError) as exc:
-                raise CaeError("invalid_program", "canonical data number is invalid") from exc
-            if not math.isfinite(number):
-                raise CaeError("invalid_program", "canonical data numbers must be finite")
-            append_bytes(b"\x03")
-            append_bytes(struct.pack("<d", 0.0 if number == 0 else number))
-            return
-        if isinstance(current, str):
-            append_string(string_bytes(current))
-            return
-        if isinstance(current, list):
-            identity = id(current)
-            if identity in ancestors:
-                raise CaeError("invalid_program", "canonical data must not be circular")
-            ancestors.add(identity)
-            append_bytes(b"\x05")
-            append_length(len(current))
-            for item in current:
-                append(item)
-            ancestors.remove(identity)
-            return
-        if isinstance(current, dict):
-            identity = id(current)
-            if identity in ancestors:
-                raise CaeError("invalid_program", "canonical data must not be circular")
-            ancestors.add(identity)
-            entries: list[tuple[bytes, Any]] = []
-            for key, item in current.items():
-                if not isinstance(key, str):
-                    raise CaeError("invalid_program", "canonical data object keys must be strings")
-                entries.append((string_bytes(key), item))
-            entries.sort(key=lambda entry: entry[0])
-            append_bytes(b"\x06")
-            append_length(len(entries))
-            for key, item in entries:
-                append_string(key)
-                append(item)
-            ancestors.remove(identity)
-            return
-        raise CaeError(
-            "invalid_program",
-            "canonical data must contain only null, booleans, finite numbers, strings, arrays, and objects",
-        )
-
-    append(value)
-    return f"{result:08x}"
-
-
 def _validate_normalized_task_config(
     descriptor: dict[str, Any],
     config: Any,
-    output_artifacts: Any,
     task_name: str,
-) -> None:
+) -> dict[str, Any]:
     path = f"task {task_name}"
     if not isinstance(config, dict) or set(config) != {
         "parameters",
@@ -247,8 +346,7 @@ def _validate_normalized_task_config(
     minimum_outputs = descriptor.get("minimumOutputs", 0)
     if not isinstance(minimum_outputs, int) or len(config["outputs"]) < minimum_outputs:
         raise CaeError("invalid_task", f"{path}.outputs does not meet minimumOutputs")
-    if output_artifacts != resolved_outputs:
-        raise CaeError("program_hash_mismatch", f"{path}.outputArtifacts do not match normalized outputs")
+    return resolved_outputs
 
 
 def _validate_parameter_values(values: Any, specs: Any, path: str) -> None:
@@ -318,7 +416,9 @@ def validate_normalized_parameter_value(value: Any, spec: dict[str, Any], path: 
                 raise CaeError("invalid_task", f"{path}.axes[{index}].ticks are not canonical")
             outer_shape.append(length)
 
-    component_order = quantity_tensor_order(spec.get("quantityKind"))
+    component_order = spec.get("tensorOrder", 0)
+    if not isinstance(component_order, int) or isinstance(component_order, bool) or component_order < 0:
+        raise CaeError("descriptor_mismatch", f"{path} tensorOrder is invalid")
     expected_shape = [*outer_shape, *([3] * component_order)]
     leaves: list[Any] = []
 
@@ -392,22 +492,6 @@ def _validate_parameter_element(value: Any, dtype_name: str, path: str) -> int |
     elif dtype_name != "float64":
         raise CaeError("descriptor_mismatch", f"{path} uses unsupported dtype {dtype_name}")
     return value
-
-
-def _find_descriptor(descriptors: Any, identity: tuple[Any, Any]) -> dict[str, Any] | None:
-    if isinstance(descriptors, list):
-        candidates = descriptors
-    elif isinstance(descriptors, dict):
-        candidates = list(descriptors.values())
-    else:
-        return None
-    for candidate in candidates:
-        if not isinstance(candidate, dict):
-            continue
-        body = candidate.get("descriptor", candidate)
-        if isinstance(body, dict) and (body.get("name"), body.get("version")) == identity:
-            return candidate
-    return None
 
 
 async def _run_dc(
@@ -667,26 +751,12 @@ def _material_scalar(world: dict[str, Any], part: dict[str, Any], property_name:
             "invalid_material",
             f"{property_name} must come from the validated material snapshot",
         )
-    quantity_kind, expected_unit = _MATERIAL_KERNEL_SPECS[property_name]
-    try:
-        validate_data_schema(
-            {
-                "dtype": descriptor.get("dtype"),
-                "unit": descriptor.get("unit"),
-                "quantityKind": quantity_kind,
-                "basis": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
-            },
-            f"Material {property_name}",
-        )
-    except CaeError as exc:
-        raise CaeError("invalid_material", str(exc)) from exc
-    try:
-        conversion_scale = ucum_scale(descriptor["unit"], expected_unit)
-    except (OverflowError, ValueError, ZeroDivisionError) as exc:
+    expected = _MATERIAL_KERNEL_SPECS[property_name]
+    if descriptor.get("dtype") != expected["dtype"] or descriptor.get("unit") != expected["unit"]:
         raise CaeError(
             "invalid_material",
-            f"{property_name} unit cannot be converted to {expected_unit}",
-        ) from exc
+            f"{property_name} must use canonical {expected['dtype']} in {expected['unit']}",
+        )
     value = descriptor["value"]
     array = np.asarray(value, dtype=np.float64)
     if array.shape != (3, 3):
@@ -694,7 +764,7 @@ def _material_scalar(world: dict[str, Any], part: dict[str, Any], property_name:
     scale = float(np.max(np.abs(array)))
     if scale <= 0 or not np.allclose(array, np.eye(3) * array[0, 0], rtol=1e-12, atol=1e-12):
         raise CaeError("invalid_material", f"{property_name} must be positive and isotropic")
-    scalar = float(np.trace(array) / 3) * conversion_scale
+    scalar = float(np.trace(array) / 3)
     if not math.isfinite(scalar) or scalar <= 0:
         raise CaeError("invalid_material", f"{property_name} must be positive and finite")
     return scalar
@@ -1193,7 +1263,6 @@ def _js_round(value: float) -> int:
 
 
 def _length_scale(unit: Any) -> float:
-    try:
-        return ucum_scale(unit, "m")
-    except (OverflowError, ValueError, ZeroDivisionError) as exc:
-        raise CaeError("invalid_unit", f"unsupported Structure length unit: {unit}") from exc
+    if unit != "m":
+        raise CaeError("invalid_unit", f"Structure geometry must use the solver unit m, received {unit!r}")
+    return 1.0

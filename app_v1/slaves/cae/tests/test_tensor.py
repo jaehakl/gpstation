@@ -5,17 +5,11 @@ import pytest
 from sdk.protocol.messages import DataChannelAttachment
 
 from app.errors import CaeError
-from app.quantity_kind_orders import (
-    QUANTITY_KIND_APPLICABLE_UNITS,
-    QUANTITY_KIND_SOURCE_SHA256,
-    QUANTITY_KIND_TENSOR_ORDERS,
-)
 from app.tensor import (
     ATTACHMENT_SHARD_BYTES,
     MAX_RECORDED_BYTES,
     decode_attachment_tensors,
     encode_tensor,
-    quantity_tensor_order,
 )
 
 
@@ -27,6 +21,7 @@ def test_encodes_little_endian_float_tensor_and_dynamic_ticks():
             "axes": [{"name": "x"}, {"name": "y"}],
             "unit": "K",
             "quantityKind": "thermodynamics.Temperature",
+            "tensorOrder": 0,
         },
         {
             "value": np.arange(12, dtype=np.float64).reshape(3, 4),
@@ -50,6 +45,7 @@ def test_shards_large_tensor_at_16_mib():
             "dtype": "float64",
             "unit": "{fraction}",
             "quantityKind": "DimensionlessRatio",
+            "tensorOrder": 0,
             "axes": [{"length": len(values)}],
         },
         values,
@@ -82,6 +78,7 @@ def test_large_numeric_tensor_never_materializes_a_python_list(monkeypatch):
             "dtype": "float64",
             "unit": "{fraction}",
             "quantityKind": "DimensionlessRatio",
+            "tensorOrder": 0,
             "axes": [{"length": len(values)}],
         },
         values,
@@ -103,6 +100,7 @@ def test_record_budget_is_checked_before_dtype_expansion_and_raw_encoding():
                 "dtype": "float64",
                 "unit": "K",
                 "quantityKind": "thermodynamics.Temperature",
+                "tensorOrder": 0,
                 "axes": [{"name": "cell", "length": length}],
             },
             value,
@@ -121,6 +119,7 @@ def test_validates_fixed_axes_ticks_and_component_shape():
                 "dtype": "float32",
                 "unit": "{fraction}",
                 "quantityKind": "DimensionlessRatio",
+                "tensorOrder": 0,
                 "axes": [{"length": 2}],
             },
             [1, 2, 3],
@@ -133,6 +132,7 @@ def test_validates_fixed_axes_ticks_and_component_shape():
                 "dtype": "float32",
                 "unit": "{fraction}",
                 "quantityKind": "DimensionlessRatio",
+                "tensorOrder": 0,
                 "axes": [{}],
             },
             {"value": [1, 2], "axes": [{"ticks": [0]}]},
@@ -145,6 +145,7 @@ def test_validates_fixed_axes_ticks_and_component_shape():
                 "dtype": "float64",
                 "unit": "A.m-2",
                 "quantityKind": "electromagnetism.ElectricCurrentDensity",
+                "tensorOrder": 1,
                 "basis": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
                 "axes": [{"length": 2}],
             },
@@ -158,6 +159,7 @@ def test_validates_fixed_axes_ticks_and_component_shape():
                 "dtype": "float32",
                 "unit": "{fraction}",
                 "quantityKind": "DimensionlessRatio",
+                "tensorOrder": 0,
                 "axes": [{"name": "position"}],
             },
             [1, 2],
@@ -170,6 +172,7 @@ def test_validates_fixed_axes_ticks_and_component_shape():
                 "dtype": "float32",
                 "unit": "{fraction}",
                 "quantityKind": "DimensionlessRatio",
+                "tensorOrder": 0,
                 "axes": [{"length": 2, "ticks": ["left", "right"]}],
             },
             {"value": [1, 2], "axes": [{"ticks": ["right", "left"]}]},
@@ -180,13 +183,13 @@ def test_validates_fixed_axes_ticks_and_component_shape():
 def test_round_trips_bool_and_korean_string_inline_values():
     boolean, _, _ = encode_tensor(
         "mask",
-        {"dtype": "bool", "axes": [{"length": 3}]},
+        {"dtype": "bool", "tensorOrder": 0, "axes": [{"length": 3}]},
         [True, False, True],
         1,
     )
     korean, _, _ = encode_tensor(
         "labels",
-        {"dtype": "string", "axes": [{"length": 2}]},
+        {"dtype": "string", "tensorOrder": 0, "axes": [{"length": 2}]},
         ["온도", "전류"],
         2,
     )
@@ -199,29 +202,34 @@ def test_rejects_int64_values_outside_javascript_safe_range():
     with pytest.raises(CaeError, match="int64 range"):
         encode_tensor(
             "unsafe",
-            {"dtype": "int64"},
+            {"dtype": "int64", "tensorOrder": 0},
             2**53,
             1,
         )
 
 
-def test_uses_complete_generated_quantity_kind_tensor_orders():
-    assert QUANTITY_KIND_SOURCE_SHA256 == "7f9a6ed1f2f4c2fac2b48da170afebc545faa0118c6c6c8eba6138df80ee9030"
-    assert len(QUANTITY_KIND_TENSOR_ORDERS) == 1216
-    assert len(QUANTITY_KIND_APPLICABLE_UNITS) == 1216
-    assert quantity_tensor_order("acoustics.SoundIntensity") == 1
-    assert quantity_tensor_order("coupledPhenomena.PiezoelectricChargeCoefficient") == 3
-    assert quantity_tensor_order("mechanics.ElasticStiffnessTensor") == 4
+def test_uses_explicit_tensor_order_without_a_quantity_kind_catalog():
+    tensor, _, _ = encode_tensor(
+        "future-vector",
+        {
+            "dtype": "float64",
+            "unit": "future-unit",
+            "quantityKind": "future.UnknownVector",
+            "tensorOrder": 1,
+            "basis": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        },
+        [1, 2, 3],
+        1,
+    )
+    assert tensor["shape"] == [3]
 
-    with pytest.raises(CaeError, match="unknown QuantityKind"):
-        quantity_tensor_order("not-a-real-quantity-kind")
-    with pytest.raises(CaeError, match="not applicable"):
+    with pytest.raises(CaeError, match="tensorOrder"):
         encode_tensor(
-            "bad-unit",
+            "missing-order",
             {
                 "dtype": "float64",
-                "unit": "s",
-                "quantityKind": "thermodynamics.Temperature",
+                "unit": "future-unit",
+                "quantityKind": "future.UnknownScalar",
             },
             300,
             1,
