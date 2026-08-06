@@ -85,6 +85,10 @@ class WorkerManager:
         except Exception as exc:
             self.current_job_id = None
             self.worker_status = "idle"
+            print(
+                f"[{job_id}] worker start failed: slave_app_id={slave_app_id} error={exc}",
+                flush=True,
+            )
             await self.send_control(
                 {
                     "type": "job.error",
@@ -141,7 +145,7 @@ class WorkerManager:
             await self.reset_worker("switch slave app", cancel_current_job=False, notify_reset=False)
 
         slave_app = self.registry.require(slave_app_id)
-        if not slave_app.python_executable.exists():
+        if not slave_app.executable_ready:
             raise RuntimeError(f"slave executable environment is missing; run `{slave_app.install_hint}`")
 
         process = await asyncio.create_subprocess_exec(

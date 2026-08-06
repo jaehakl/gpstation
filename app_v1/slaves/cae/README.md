@@ -10,6 +10,25 @@ poetry install
 poetry run pytest
 ```
 
+Windows에서는 repository root의 `install_app_v1_slave_cae.bat`을 사용할 수 있다.
+`poetry.toml`은 AI slave와 동일하게 project-local `.venv`를 사용한다. Linux launcher
+컴퓨터에서는 설치 후 다음 명령으로 실제 launcher가 사용할 환경을 검증한다.
+
+```bash
+cd /home/cavenet/gpstation/app_v1/slaves/cae
+poetry install
+test -x .venv/bin/python
+poetry run python -c "import app, numpy, aiortc"
+```
+
+`poetry env info --path`가 이 폴더의 `.venv`가 아닌 기존 cache 환경을 가리키면
+`poetry env remove --all`로 해당 프로젝트 환경을 제거한 후 `poetry install`을 다시
+실행한다. `lr_launcher_run.sh`로 launcher를 실행한 경우 로그는 다음과 같이 확인한다.
+
+```bash
+tail -f /home/cavenet/gpstation/app_v1/launcher/launcher.log
+```
+
 Launcher는 `manifest.json`을 자동 검색한다. 첫 `next`가 계산을 시작하며 각 record는 다음
 `next`의 `ackSequence`를 받아야 해제된다. 기본 실행 제한은 2시간, 첫 `next` 제한은 30초,
 record ACK 제한은 120초다.

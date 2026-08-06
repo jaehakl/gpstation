@@ -1,10 +1,13 @@
 import asyncio
 import json
+import os
+import tomllib
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from app.control import handle_server_message, launcher_hello_payload
+from app.control import handle_server_message, launcher_hello_payload, print_slave_environment_status
 from app.settings import LauncherSettings
 from app.slave_registry import SlaveApp, SlaveAppRegistry, load_registry
 from app.subprocess_manager import ManagedWorker, WorkerManager, json_line, subprocess_env
@@ -92,6 +95,30 @@ def test_registry_builds_worker_subprocess_args(tmp_path):
     ]
 
 
+def test_cae_uses_project_local_poetry_environment():
+    config_path = Path(__file__).resolve().parents[2] / "slaves" / "cae" / "poetry.toml"
+
+    config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+
+    assert config["virtualenvs"]["in-project"] is True
+
+
+def test_print_slave_environment_status_reports_ready_and_missing(tmp_path, capsys):
+    ready = SlaveApp(id="ai", name="AI", module="app", project_dir=tmp_path / "ai")
+    missing = SlaveApp(id="cae", name="CAE", module="app", project_dir=tmp_path / "cae")
+    ready.python_executable.parent.mkdir(parents=True)
+    ready.python_executable.write_text("", encoding="utf-8")
+    if os.name != "nt":
+        ready.python_executable.chmod(0o755)
+
+    print_slave_environment_status(SlaveAppRegistry([ready, missing]))
+
+    output = capsys.readouterr().out
+    assert f"[slave:ai] environment ready: {ready.python_executable}" in output
+    assert f"[slave:cae] environment missing: {missing.python_executable}" in output
+    assert missing.install_hint in output
+
+
 def test_worker_manager_uses_slave_startup_timeout_when_larger(tmp_path):
     registry = SlaveAppRegistry(
         [
@@ -166,7 +193,7 @@ def test_registry_rejects_unknown_worker_app(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_start_job_missing_executable_venv_sends_error(tmp_path):
+async def test_start_job_missing_executable_venv_sends_error(tmp_path, capsys):
     messages = []
 
     async def send_control(message):
@@ -190,6 +217,9 @@ async def test_start_job_missing_executable_venv_sends_error(tmp_path):
     assert str(project_dir) in messages[0]["detail"]
     assert "poetry install" in messages[0]["detail"]
     assert manager.current_job_id is None
+    output = capsys.readouterr().out
+    assert "[job-1] worker start failed: slave_app_id=ai" in output
+    assert messages[0]["detail"] in output
 
 
 @pytest.mark.asyncio

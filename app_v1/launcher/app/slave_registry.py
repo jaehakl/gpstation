@@ -22,6 +22,11 @@ class SlaveApp:
         return self.project_dir / ".venv" / "bin" / "python"
 
     @property
+    def executable_ready(self) -> bool:
+        executable = self.python_executable
+        return executable.is_file() and (os.name == "nt" or os.access(executable, os.X_OK))
+
+    @property
     def install_hint(self) -> str:
         return f"cd {self.project_dir} && poetry install"
 

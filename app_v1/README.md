@@ -38,4 +38,18 @@ Each app has an `env.example` where applicable. The AI slave additionally provid
 
 If an existing launcher virtual environment still exposes only the old entrypoint, run `poetry install` again in `app_v1/launcher` to reinstall the current `launcher` console script.
 
+The AI and CAE slave projects both use their own project-local `.venv`. On a Linux
+launcher host, install and verify CAE before submitting a simulation:
+
+```bash
+cd /home/cavenet/gpstation/app_v1/slaves/cae
+poetry install
+test -x .venv/bin/python
+poetry run python -c "import app, numpy, aiortc"
+```
+
+The launcher prints each discovered slave environment as ready or missing whenever
+the control connection is established. When started through `lr_launcher_run.sh`,
+read those messages from `app_v1/launcher/launcher.log`.
+
 See each package README for dependency installation details.

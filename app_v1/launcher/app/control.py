@@ -56,6 +56,7 @@ async def run_connection(settings: LauncherSettings) -> None:
             if not isinstance(accepted, LauncherAccepted):
                 raise RuntimeError(f"Expected launcher.accepted, received {accepted.type}")
             print(f"Launcher connection: {accepted.launcher_id}", flush=True)
+            print_slave_environment_status(registry)
             manager = WorkerManager(
                 settings,
                 lambda message: send_json(websocket, send_lock, message),
@@ -131,6 +132,22 @@ async def handle_server_message(manager: WorkerManager, value: Any) -> None:
         print(f"Server control error: {message.detail}", flush=True)
         return
     raise RuntimeError(f"Unexpected server message after handshake: {message.type}")
+
+
+def print_slave_environment_status(registry: SlaveAppRegistry) -> None:
+    for slave_app_id in registry.ids():
+        slave_app = registry.require(slave_app_id)
+        if slave_app.executable_ready:
+            print(
+                f"[slave:{slave_app_id}] environment ready: {slave_app.python_executable}",
+                flush=True,
+            )
+        else:
+            print(
+                f"[slave:{slave_app_id}] environment missing: {slave_app.python_executable}; "
+                f"run `{slave_app.install_hint}`",
+                flush=True,
+            )
 
 
 def launcher_hello_payload(settings: LauncherSettings, registry: SlaveAppRegistry) -> dict[str, Any]:
