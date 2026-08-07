@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 
 from app.errors import CaeError
+from app.solver_framework.units import convert_ucum_value
 
 MAXIMUM_VOXEL_COUNT = 250_000
 
@@ -113,7 +114,7 @@ def material_scalar(
     if not isinstance(descriptor, dict) or set(descriptor) != {"dtype", "value", "unit"}:
         raise CaeError(
             "invalid_material",
-            f"{property_name} must come from the validated material snapshot",
+            f"material {material_name!r}.{property_name} must come from the validated material snapshot",
         )
     expected = None
     for role in solver_descriptor.get("materials", []):
@@ -124,13 +125,21 @@ def material_scalar(
             break
     if expected is None:
         raise CaeError("descriptor_mismatch", f"{property_name} is not declared by the solver manifest")
-    if descriptor.get("dtype") != expected["dtype"] or descriptor.get("unit") != expected["unit"]:
+    if descriptor.get("dtype") != expected["dtype"]:
         raise CaeError(
             "invalid_material",
-            f"{property_name} must use canonical {expected['dtype']} in {expected['unit']}",
+            f"material {material_name!r}.{property_name}.dtype {descriptor.get('dtype')!r} does not match manifest dtype {expected['dtype']!r}",
         )
     value = descriptor["value"]
-    array = np.asarray(value, dtype=np.float64)
+    path = f"material {material_name!r}.{property_name}.value"
+    source_unit = descriptor.get("unit")
+    target_unit = expected.get("unit")
+    try:
+        offset = convert_ucum_value(0, source_unit, target_unit, path)
+        scale = convert_ucum_value(1, source_unit, target_unit, path) - offset
+    except CaeError as exc:
+        raise CaeError("invalid_material", str(exc)) from exc
+    array = np.asarray(value, dtype=np.float64) * scale + offset
     if array.shape != (3, 3):
         raise CaeError("invalid_material", f"{property_name} must have component shape [3,3]")
     scale = float(np.max(np.abs(array)))

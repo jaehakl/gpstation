@@ -44,7 +44,16 @@ async def _run_heat(
     source = surface(scene, target_group(boundaries[0], "surface"), part["id"])
     reference = surface(scene, target_group(boundaries[1], "surface"), part["id"])
     shape = grid_shape(grid_rule)
-    domain = await build_voxel_domain(scene, part, source, reference, shape, progress, "Heat domain")
+    domain = await build_voxel_domain(
+        scene,
+        part,
+        source,
+        reference,
+        shape,
+        descriptor["referenceLengthUnit"],
+        progress,
+        "Heat domain",
+    )
     conductivity = material_scalar(world, part, descriptor, "thermal.conductivity")
     source_temperature = scalar_parameter(boundaries[0]["parameters"]["temperature"])
     reference_temperature = scalar_parameter(boundaries[1]["parameters"]["temperature"])

@@ -69,8 +69,10 @@ class CaeRun:
         self.schemas = manifest.get("recordedData")
         if not isinstance(tasks, dict) or not tasks or not isinstance(self.schemas, dict):
             raise CaeError("invalid_program", "simulation manifest tasks and recordedData are required")
-        validate_kernel_tasks(tasks)
-        canonical_tasks = copy.deepcopy(tasks)
+        normalized_tasks = validate_kernel_tasks(tasks)
+        canonical_tasks = copy.deepcopy(
+            tasks if normalized_tasks is None else normalized_tasks
+        )
         self._task_descriptors = {
             name: solver_spec(task, name)
             for name, task in canonical_tasks.items()

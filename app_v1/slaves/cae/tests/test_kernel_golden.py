@@ -3,6 +3,8 @@ import pytest
 
 from app.errors import CaeError
 from app.kernels import run_kernel
+from app.solver_framework.numerics.voxel import build_voxel_domain
+from app.solver_framework.world import surface
 
 
 def box_world():
@@ -213,16 +215,54 @@ async def test_dc_and_heat_match_existing_uniform_bar_golden():
 
 
 @pytest.mark.asyncio
-async def test_solver_rejects_noncanonical_geometry_unit():
+async def test_solver_converts_geometry_from_declared_ucum_length_unit():
     async def report(_value):
         return None
 
     world = box_world()
+    world["structure"]["parts"][0]["geometry"]["positions"] /= 0.3048006096012192
     world["structure"]["lengthUnit"] = "[ft_us]"
 
-    with pytest.raises(CaeError, match="solver unit m") as error:
-        await run_kernel(dc_task(), None, {}, world, report)
-    assert error.value.code == "invalid_unit"
+    result = await run_kernel(dc_task(), None, {}, world, report)
+
+    assert result["artifacts"]["totalCurrent"]["value"] == pytest.approx(14.9, abs=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_geometry_views_can_use_different_solver_reference_units():
+    async def report(_value):
+        return None
+
+    scene = box_world()["structure"]
+    part = scene["parts"][0]
+    source = surface(scene, "sourceTerminal", "conductor")
+    reference = surface(scene, "referenceTerminal", "conductor")
+    original_positions = part["geometry"]["positions"].copy()
+
+    meter_domain = await build_voxel_domain(
+        scene,
+        part,
+        source,
+        reference,
+        (3, 3, 3),
+        "m",
+        report,
+        "meter solver",
+    )
+    millimeter_domain = await build_voxel_domain(
+        scene,
+        part,
+        source,
+        reference,
+        (3, 3, 3),
+        "mm",
+        report,
+        "millimeter solver",
+    )
+
+    assert meter_domain.length == pytest.approx(0.1)
+    assert millimeter_domain.length == pytest.approx(100)
+    np.testing.assert_array_equal(part["geometry"]["positions"], original_positions)
 
 
 @pytest.mark.asyncio
@@ -251,7 +291,7 @@ async def test_dc_resolution_study_preserves_supplied_state_for_stateless_kernel
     [
         (
             {"dtype": "float64", "value": (np.eye(3) * 5.96e7).tolist(), "unit": "W.m-1.K-1"},
-            "canonical float64 in S.m-1",
+            "is not convertible to manifest unit 'S.m-1'",
         ),
         (
             {"dtype": "float64", "value": 5.96e7, "unit": "S.m-1"},
@@ -270,3 +310,20 @@ async def test_dc_rejects_noncanonical_material_descriptor(descriptor, expected)
     with pytest.raises(CaeError, match=expected) as error:
         await run_kernel(dc_task(), None, {}, world, report)
     assert error.value.code == "invalid_material"
+
+
+@pytest.mark.asyncio
+async def test_dc_converts_material_unit_on_access():
+    async def report(_value):
+        return None
+
+    world = box_world()
+    world["sample"]["materialParameters"]["materials"]["Copper"]["electrical.conductivity"]["value"] = {
+        "dtype": "float64",
+        "value": (np.eye(3) * 596000).tolist(),
+        "unit": "S.cm-1",
+    }
+
+    result = await run_kernel(dc_task(), None, {}, world, report)
+
+    assert result["artifacts"]["totalCurrent"]["value"] == pytest.approx(14.9, abs=1e-6)

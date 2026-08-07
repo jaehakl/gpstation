@@ -9,11 +9,10 @@ from app.errors import CaeError
 from app.solver_framework.registry import SolverRegistry, registry
 
 
-def write_solver(root, directory, *, name, authoring_name, implementation=None):
+def write_solver(root, directory, *, name, implementation=None):
     solver_directory = root / directory
     solver_directory.mkdir(parents=True)
     manifest = copy.deepcopy(registry.manifests()[0])
-    manifest["authoringName"] = authoring_name
     manifest["implementation"] = implementation or f"app.solvers.{directory}.solver:run"
     manifest["descriptor"]["name"] = name
     (solver_directory / "manifest.json").write_text(
@@ -35,32 +34,20 @@ def test_production_manifests_are_schema_valid_and_implementations_stay_lazy():
     assert "app.solvers.steady_state_heat.solver" not in set(sys.modules) - modules_before
 
 
-@pytest.mark.parametrize(
-    ("second_name", "second_authoring", "message"),
-    [
-        ("test-one", "testTwo", "Duplicate CAE kernel identity"),
-        ("test-two", "testOne", "Duplicate CAE kernel authoring name"),
-    ],
-)
-def test_registry_rejects_duplicate_identity_and_authoring_name(
-    tmp_path,
-    second_name,
-    second_authoring,
-    message,
-):
+def test_registry_rejects_duplicate_identity(tmp_path):
     root = tmp_path / "solvers"
-    first = write_solver(root, "first", name="test-one", authoring_name="testOne")
-    second = write_solver(root, "second", name=second_name, authoring_name=second_authoring)
+    first = write_solver(root, "first", name="test-one")
+    second = write_solver(root, "second", name="test-one")
     (first / "solver.py").write_text("async def run(context): return {}\n", encoding="utf-8")
     (second / "solver.py").write_text("async def run(context): return {}\n", encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match=message):
+    with pytest.raises(RuntimeError, match="Duplicate CAE kernel identity"):
         SolverRegistry.discover(root)
 
 
 def test_registry_rejects_malformed_or_missing_implementation(tmp_path):
     root = tmp_path / "solvers"
-    write_solver(root, "broken", name="broken", authoring_name="broken")
+    write_solver(root, "broken", name="broken")
 
     with pytest.raises(RuntimeError, match="implementation file is missing"):
         SolverRegistry.discover(root)
@@ -68,7 +55,7 @@ def test_registry_rejects_malformed_or_missing_implementation(tmp_path):
 
 def test_registry_rejects_manifest_schema_violation(tmp_path):
     root = tmp_path / "solvers"
-    solver_directory = write_solver(root, "invalid", name="invalid", authoring_name="invalid")
+    solver_directory = write_solver(root, "invalid", name="invalid")
     manifest_path = solver_directory / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["schemaVersion"] = 2
@@ -85,7 +72,6 @@ def test_registry_rejects_malformed_implementation_reference(tmp_path):
         root,
         "invalid",
         name="invalid",
-        authoring_name="invalid",
         implementation="not-a-module",
     )
     (solver_directory / "solver.py").write_text("async def run(context): return {}\n", encoding="utf-8")
@@ -97,7 +83,7 @@ def test_registry_rejects_malformed_implementation_reference(tmp_path):
 @pytest.mark.asyncio
 async def test_test_only_solver_is_discovered_and_run_without_central_registration(tmp_path, monkeypatch):
     root = tmp_path / "solvers"
-    solver_directory = write_solver(root, "test_echo", name="test-echo", authoring_name="testEcho")
+    solver_directory = write_solver(root, "test_echo", name="test-echo")
     (solver_directory / "__init__.py").write_text("", encoding="utf-8")
     (solver_directory / "solver.py").write_text(
         "async def run(context):\n"

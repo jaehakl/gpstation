@@ -8,6 +8,7 @@ import numpy as np
 
 from app.errors import CaeError
 from app.solver_framework.models import FiniteVolumeSystem, VoxelDomain
+from app.solver_framework.units import convert_ucum_value
 
 _NEIGHBOR_OFFSETS = ((-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0), (0, 0, -1), (0, 0, 1))
 
@@ -17,10 +18,14 @@ async def build_voxel_domain(
     source_surface: dict[str, Any],
     reference_surface: dict[str, Any],
     shape: tuple[int, int, int],
+    reference_length_unit: str,
     progress: Callable[[Any], Awaitable[None]],
     label: str,
 ) -> VoxelDomain:
-    positions, polygons = _mesh(part, _length_scale(scene.get("lengthUnit")))
+    positions, polygons = _mesh(
+        part,
+        _length_scale(scene.get("lengthUnit"), reference_length_unit, label),
+    )
     source = _surface_plane(source_surface, polygons, label)
     reference = _surface_plane(reference_surface, polygons, label)
     displacement = reference["center"] - source["center"]
@@ -262,7 +267,17 @@ def round_like_javascript(value: float) -> int:
     return math.floor(value + 0.5)
 
 
-def _length_scale(unit: Any) -> float:
-    if unit != "m":
-        raise CaeError("invalid_unit", f"Structure geometry must use the solver unit m, received {unit!r}")
-    return 1.0
+def _length_scale(unit: Any, reference_unit: str, path: str) -> float:
+    if not isinstance(unit, str) or not unit:
+        raise CaeError("invalid_unit", f"{path} scene.lengthUnit must be a non-empty UCUM unit")
+    return convert_ucum_value(
+        1,
+        unit,
+        reference_unit,
+        f"{path} scene.lengthUnit",
+    ) - convert_ucum_value(
+        0,
+        unit,
+        reference_unit,
+        f"{path} scene.lengthUnit",
+    )

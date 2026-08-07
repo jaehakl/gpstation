@@ -1,14 +1,79 @@
 import asyncio
 import gc
+import json
+import sys
 
 import numpy as np
 import pytest
-from sdk.protocol.messages import DataChannelMessage
+from sdk.protocol.messages import DataChannelAttachment, DataChannelMessage
 from sdk.slave import SlaveContext
 
 from app.errors import CaeError, ProtocolError
-from app.handlers import cae_simulation_next, cae_simulation_start
+from app.handlers import cae_simulation_next, cae_simulation_start, cae_solver_manifests
 from app.runtime import SimulationApi
+from app.solver_framework.registry import registry
+
+
+@pytest.mark.asyncio
+async def test_solver_manifests_returns_sorted_full_manifests_as_json_attachment():
+    modules_before = set(sys.modules)
+    response = await cae_solver_manifests(
+        DataChannelMessage(id="catalog", type="cae.solvers.manifests", payload={}),
+        {"runs": {}},
+        SlaveContext(session_id="session", ttl_seconds=10, call_id="catalog"),
+    )
+
+    assert response.type == "cae.solvers.manifests.result"
+    assert response.payload == {
+        "formatVersion": 1,
+        "count": 2,
+        "attachmentId": "solver-manifests",
+    }
+    assert len(response.attachments) == 1
+    attachment = response.attachments[0]
+    assert attachment.id == "solver-manifests"
+    assert attachment.name == "solver-manifests.json"
+    assert attachment.mimeType == "application/json; charset=utf-8"
+    assert json.loads(attachment.data) == registry.manifests()
+    assert [
+        manifest["descriptor"]["name"]
+        for manifest in json.loads(attachment.data)
+    ] == ["dc-current-density", "steady-state-heat"]
+    assert "implementation" in json.loads(attachment.data)[0]
+    assert "app.solvers.dc_current_density.solver" not in set(sys.modules) - modules_before
+    assert "app.solvers.steady_state_heat.solver" not in set(sys.modules) - modules_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        DataChannelMessage(
+            id="catalog",
+            type="cae.solvers.manifests",
+            payload={"unexpected": True},
+        ),
+        DataChannelMessage(
+            id="catalog",
+            type="cae.solvers.manifests",
+            payload={},
+            attachments=[
+                DataChannelAttachment(
+                    id="unexpected",
+                    name="unexpected.bin",
+                    data=b"x",
+                )
+            ],
+        ),
+    ],
+)
+async def test_solver_manifests_rejects_nonempty_requests(message):
+    with pytest.raises(ProtocolError):
+        await cae_solver_manifests(
+            message,
+            {"runs": {}},
+            SlaveContext(session_id="session", ttl_seconds=10, call_id="catalog"),
+        )
 
 
 def task_config(kernel: str, output_method: str, output_key: str):

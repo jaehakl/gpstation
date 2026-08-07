@@ -45,7 +45,16 @@ async def _run_dc(
     source = surface(scene, target_group(source_rule, "surface"), part["id"])
     reference = surface(scene, target_group(reference_rule, "surface"), part["id"])
     shape = grid_shape(grid_rule)
-    domain = await build_voxel_domain(scene, part, source, reference, shape, progress, "DC conductor")
+    domain = await build_voxel_domain(
+        scene,
+        part,
+        source,
+        reference,
+        shape,
+        descriptor["referenceLengthUnit"],
+        progress,
+        "DC conductor",
+    )
     conductivity = material_scalar(world, part, descriptor, "electrical.conductivity")
     source_voltage = scalar_parameter(source_rule["parameters"]["voltage"])
     reference_voltage = scalar_parameter(reference_rule["parameters"]["voltage"])

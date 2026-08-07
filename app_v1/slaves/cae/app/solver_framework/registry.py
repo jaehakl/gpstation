@@ -25,7 +25,6 @@ class SolverRegistry:
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         validator = Draft202012Validator(schema)
         entries: dict[tuple[str, str], dict[str, Any]] = {}
-        authoring_names: set[str] = set()
         for path in sorted(solvers_root.glob("*/manifest.json")):
             try:
                 manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -39,12 +38,8 @@ class SolverRegistry:
             identity = (descriptor["name"], descriptor["version"])
             if identity in entries:
                 raise RuntimeError(f"Duplicate CAE kernel identity {identity[0]}@{identity[1]}")
-            authoring_name = manifest["authoringName"]
-            if authoring_name in authoring_names:
-                raise RuntimeError(f"Duplicate CAE kernel authoring name {authoring_name}")
             _validate_implementation_path(path, manifest["implementation"])
             entries[identity] = manifest
-            authoring_names.add(authoring_name)
         if not entries:
             raise RuntimeError(f"No CAE solver manifests found under {solvers_root}")
         return cls(entries)

@@ -1,19 +1,59 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from sdk.protocol.messages import DataChannelMessage
+from sdk.protocol.messages import DataChannelAttachment, DataChannelMessage
 from sdk.slave import SlaveApp, SlaveContext
 from sdk.slave.runtime import emit
 
 from app.errors import CaeError, ProtocolError
 from app.runtime import CaeRun, create_run, started_payload
+from app.solver_framework.registry import registry
 from app.tensor import decode_attachment_tensors
 
 
 def register_handlers(app: SlaveApp) -> None:
+    app.handler("cae.solvers.manifests")(cae_solver_manifests)
     app.handler("cae.simulation.start")(cae_simulation_start)
     app.handler("cae.simulation.next")(cae_simulation_next)
+
+
+async def cae_solver_manifests(
+    message: DataChannelMessage,
+    memory: dict[str, Any] | None,
+    context: SlaveContext,
+) -> DataChannelMessage:
+    del memory, context
+    if message.attachments:
+        raise ProtocolError("cae.solvers.manifests does not accept attachments")
+    if message.payload != {}:
+        raise ProtocolError("cae.solvers.manifests payload must be an empty object")
+    manifests = registry.manifests()
+    data = json.dumps(
+        manifests,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    attachment_id = "solver-manifests"
+    return DataChannelMessage(
+        id=message.id,
+        type="cae.solvers.manifests.result",
+        payload={
+            "formatVersion": 1,
+            "count": len(manifests),
+            "attachmentId": attachment_id,
+        },
+        attachments=[
+            DataChannelAttachment(
+                id=attachment_id,
+                name="solver-manifests.json",
+                mimeType="application/json; charset=utf-8",
+                data=data,
+            )
+        ],
+    )
 
 
 async def cae_simulation_start(

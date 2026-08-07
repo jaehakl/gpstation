@@ -1,6 +1,5 @@
 {
   "schemaVersion": 1,
-  "authoringName": "steadyStateHeat",
   "implementation": "app.solvers.steady_state_heat.solver:run",
   "descriptor": {
     "name": "steady-state-heat",

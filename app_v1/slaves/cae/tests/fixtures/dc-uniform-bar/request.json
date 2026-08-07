@@ -8,7 +8,7 @@
         "sourceHash": "d0df4eb20176ca5cb24e1fa3917d6fe87c655ca8b83bbd61b28cf49421ba443e",
         "seed": 20260803,
         "scene": {
-          "lengthUnit": "m",
+          "lengthUnit": "mm",
           "parts": [
             {
               "id": "conductor",
@@ -235,7 +235,7 @@
               "missingMemberIds": []
             }
           ],
-          "sceneHash": "5d00b77f20c2815b21d982e96ce5ca278bad195d00060d435a7e1126eb0a8867"
+          "sceneHash": "71a327cb0b9b2bb19ad85869e05d53e1289dc5d149de0bd1ae39a5f48d8780e9"
         },
         "variables": {
           "conductorSize": [
@@ -272,7 +272,6 @@
               "origin": "source",
               "value": {
                 "dtype": "float64",
-                "unit": "S.m-1",
                 "value": [
                   [
                     59600000,
@@ -289,7 +288,8 @@
                     0,
                     59600000
                   ]
-                ]
+                ],
+                "unit": "S.m-1"
               },
               "source": null,
               "version": null,
@@ -308,10 +308,10 @@
       "kind": "setup",
       "experiment": {
         "kind": "experiment",
-        "sourceHash": "3625c3e0c453b1aaddd8e56ab129da84453637f0abf2a1f504c34592cc1a1ae6",
+        "sourceHash": "2169fae97376a3b4920bcca0a6f659452134d193d3310dc9bc7fe63f0501088a",
         "seed": 20260803,
         "scene": {
-          "lengthUnit": "m",
+          "lengthUnit": "mm",
           "parts": [
             {
               "id": "probe",
@@ -446,7 +446,7 @@
           },
           "geometryGroups": [],
           "surfaceGroups": [],
-          "sceneHash": "a038d6aac01aacd2caf207883ba574ce19c0286cba91fd9ac239733dc403b91e"
+          "sceneHash": "1d144636d532dfce749c94408ae9b162e2589e1c96cbeb86237d49c7cab9af32"
         },
         "variables": {
           "sourceVoltage": 1,
@@ -473,85 +473,85 @@
                 "version": "0.0.0"
               },
               "config": {
-                "parameters": {
-                  "relativeTolerance": {
-                    "dtype": "float64",
-                    "value": 1e-10,
-                    "unit": "{fraction}",
-                    "quantityKind": "DimensionlessRatio"
+                "boundaryConditions": [
+                  {
+                    "methodId": "dc.source-potential",
+                    "parameters": {
+                      "voltage": {
+                        "dtype": "float64",
+                        "quantityKind": "electromagnetism.Voltage",
+                        "unit": "mV",
+                        "value": 1
+                      }
+                    },
+                    "target": [
+                      "structure.surface.sourceTerminal"
+                    ]
                   },
-                  "maxIterations": 1000
-                },
+                  {
+                    "methodId": "dc.reference-potential",
+                    "parameters": {
+                      "voltage": {
+                        "dtype": "float64",
+                        "quantityKind": "electromagnetism.Voltage",
+                        "unit": "mV",
+                        "value": 0
+                      }
+                    },
+                    "target": [
+                      "structure.surface.referenceTerminal"
+                    ]
+                  }
+                ],
                 "initializations": [
                   {
-                    "target": [
-                      "structure.geometry.conductor"
-                    ],
                     "methodId": "dc.voxel-grid",
                     "parameters": {
                       "gridShape": {
-                        "dtype": "int32",
                         "axes": [
                           {
                             "length": 3
                           }
                         ],
+                        "dtype": "int32",
                         "value": [
                           20,
                           11,
                           11
                         ]
                       }
-                    }
-                  }
-                ],
-                "boundaryConditions": [
-                  {
+                    },
                     "target": [
-                      "structure.surface.sourceTerminal"
-                    ],
-                    "methodId": "dc.source-potential",
-                    "parameters": {
-                      "voltage": {
-                        "dtype": "float64",
-                        "value": 0.001,
-                        "unit": "V",
-                        "quantityKind": "electromagnetism.Voltage"
-                      }
-                    }
-                  },
-                  {
-                    "target": [
-                      "structure.surface.referenceTerminal"
-                    ],
-                    "methodId": "dc.reference-potential",
-                    "parameters": {
-                      "voltage": {
-                        "dtype": "float64",
-                        "value": 0,
-                        "unit": "V",
-                        "quantityKind": "electromagnetism.Voltage"
-                      }
-                    }
+                      "structure.geometry.conductor"
+                    ]
                   }
                 ],
                 "outputs": [
                   {
                     "key": "totalCurrent",
-                    "target": [
-                      "structure.geometry.conductor"
-                    ],
                     "methodId": "dc.total-current",
                     "parameters": {
                       "crossSectionPosition": {
                         "dtype": "float64",
-                        "value": 0.5,
+                        "quantityKind": "DimensionlessRatio",
                         "unit": "{fraction}",
-                        "quantityKind": "DimensionlessRatio"
+                        "value": 0.5
                       }
-                    }
+                    },
+                    "target": [
+                      "structure.geometry.conductor"
+                    ]
                   }
-                ]
+                ],
+                "parameters": {
+                  "maxIterations": 1000,
+                  "relativeTolerance": {
+                    "dtype": "float64",
+                    "quantityKind": "DimensionlessRatio",
+                    "unit": "{fraction}",
+                    "value": 1e-10
+                  }
+                }
               }
             }
           },

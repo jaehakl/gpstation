@@ -4,10 +4,9 @@
   "title": "GPStation CAE solver manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "authoringName", "implementation", "descriptor"],
+  "required": ["schemaVersion", "implementation", "descriptor"],
   "properties": {
     "schemaVersion": { "const": 1 },
-    "authoringName": { "type": "string", "pattern": "^[a-z][A-Za-z0-9]*$" },
     "implementation": {
       "type": "string",
       "pattern": "^app\\.solvers\\.[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*:[A-Za-z_][A-Za-z0-9_]*$"

@@ -1,6 +1,5 @@
 {
   "schemaVersion": 1,
-  "authoringName": "dcCurrentDensity",
   "implementation": "app.solvers.dc_current_density.solver:run",
   "descriptor": {
     "name": "dc-current-density",
