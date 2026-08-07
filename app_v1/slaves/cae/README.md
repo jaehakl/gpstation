@@ -4,11 +4,34 @@ Caemble의 fully-built `BuiltSample`과 `BuiltSetup`만 받아 Python kernel을 
 RecordedData만 GPStation WebRTC result attachment로 반환한다. GPStation SDK 소스는 수정하지
 않으며 application-level `cae.simulation.start` → `cae.simulation.next` protocol을 사용한다.
 
-CAE에는 전체 QuantityKind, Material, UCUM catalog가 없다. `kernels.py`에 등록된
-solver가 실제로 사용하는 canonical geometry unit, material property, parameter,
-input/output spec만 소유한다. 일반 tensor codec은 UI가 보낸 `dtype`, `tensorOrder`,
+CAE에는 전체 QuantityKind, Material, UCUM catalog가 없다. 각
+`app/solvers/<solver_name>/manifest.json`이 해당 solver가 실제로 사용하는 kernel identity,
+UI authoring name, canonical geometry unit, material property, parameter, method,
+input/output/observation spec과 Python implementation 경로를 소유한다. 일반 tensor codec은
+UI가 보낸 `dtype`, `tensorOrder`,
 shape, ticks와 byte length만 검증하며 `quantityKind`와 `unit` 문자열의 물리적 의미는
 해석하지 않는다.
+
+## Solver framework
+
+- `app/kernels.py`는 기존 runtime 호출부를 보존하는 얇은 facade다.
+- `app/solver_framework/registry.py`는 시작 시 모든 manifest를 schema 검증하고 identity,
+  authoring name, implementation 경로의 오류와 중복을 확인한다.
+- solver 구현 모듈은 manifest 검증 시 import하지 않으며 해당 kernel의 최초 실행 시
+  import하고 cache한다.
+- `app/solver_framework/world.py`는 target, surface, material, scalar parameter 해석을,
+  `app/solver_framework/numerics/`는 voxel domain, scalar finite-volume system, PCG,
+  axis tick과 dense field 변환을 제공한다.
+- DC와 Heat 고유 계산은 각각 `app/solvers/dc_current_density/solver.py`와
+  `app/solvers/steady_state_heat/solver.py`에만 둔다. 공통 physics base class는 사용하지 않는다.
+
+새 solver는 중앙 registry나 validation 코드를 수정하지 않고 다음 순서로 추가한다.
+
+1. `app/solvers/<solver_name>/manifest.json`, `solver.py`, 전용 테스트를 추가한다.
+2. `poetry run python -m app.solver_framework.codegen --caemble-ui E:\caemble\app\ui`를 실행한다.
+3. UI example을 추가하고 `npm run export:cae-fixture`로 실제 계약 fixture를 갱신한다.
+4. focused fixture test와 전체 `poetry run pytest -q`를 실행한다.
+5. 완료 전에 codegen `--check`, Caemble generated API check, Vitest, TypeScript, lint, build를 실행한다.
 
 ```powershell
 cd app_v1/slaves/cae
@@ -16,6 +39,24 @@ poetry install
 poetry run python -c "import app, numpy, aiortc"
 poetry run pytest
 ```
+
+UI가 실제로 build/canonicalize/serialize한 `sample`, `setup`, tensor attachment를
+GPStation server나 launcher 없이 검증하려면 repository 두 개가 있는 개발 환경에서 fixture를
+갱신한 뒤 focused test를 실행한다.
+
+```powershell
+cd E:\caemble\app\ui
+npm run export:cae-fixture -- --example dc-uniform-bar --out E:\gpstation\app_v1\slaves\cae\tests\fixtures\dc-uniform-bar
+
+cd E:\gpstation\app_v1\slaves\cae
+poetry run pytest -q tests/test_fixture_e2e.py -k dc_uniform_bar
+```
+
+fixture test는 실제 `cae.simulation.start`와 `cae.simulation.next` handler, tensor
+attachment decoding, solver, record ACK와 terminal sequence를 실행한다. 이는 UI-CAE
+계약 테스트이며 browser-launcher-CAE WebRTC E2E 통과를 의미하지 않는다. 새 kernel을
+추가할 때는 먼저 작은 직접 kernel test를 작성하고, 해당 kernel을 사용하는 UI example과
+fixture를 추가한다.
 
 Windows에서는 repository root의 `install_app_v1_slave_cae.bat`을 사용할 수 있다.
 `poetry.toml`은 AI slave와 동일하게 project-local `.venv`를 사용한다. Linux launcher
@@ -36,11 +77,10 @@ poetry run python -c "import app, numpy, aiortc"
 tail -f /home/cavenet/gpstation/app_v1/launcher/launcher.log
 ```
 
-UI와 CAE는 함께 배포하지만 별도 contract artifact나 hash 비교를 사용하지 않는다.
-solver의 단위 또는 입출력 계약을 바꿀 때는 UI의 해당 TS descriptor와 CAE의 해당
-solver spec을 같은 변경에서 갱신한다.
+UI와 CAE는 함께 배포하지만 별도 contract package나 hash 비교를 사용하지 않는다.
+GPStation CAE manifest가 단일 계약 원본이고 Caemble에는 codegen 결과만 커밋한다.
 
-Launcher는 `manifest.json`을 자동 검색한다. start payload는 정확히 `{sample, setup}`이다.
+CAE registry는 solver `manifest.json`을 자동 검색한다. start payload는 정확히 `{sample, setup}`이다.
 첫 `next`가 계산을 시작하며 각 record는 다음
 `next`의 `ackSequence`를 받아야 해제된다. 기본 실행 제한은 2시간, 첫 `next` 제한은 30초,
 record ACK 제한은 120초다.
